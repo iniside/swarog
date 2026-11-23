@@ -1,11 +1,11 @@
 ---
 name: step13-resume-point
-description: "Admin redesign resume point 2026-11-22: Step 19 + owner follow-ups done; next Step 20 notifications — ask owner first"
+description: "Admin redesign resume point 2026-11-23: Step 20 notifications done; next Step 21 apikeys — ask owner first"
 metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-22T22:25:46.525Z
+  modified: 2026-11-23T10:24:09.205Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -62,3 +62,6 @@ Owner chose option a: crawl fix 7e4462fd (tab follower picks a row that draws it
 
 ## State 2026-11-22 (post-19 owner answers)
 Owner: 1 fix, 2 todo, 3 yes, 4 todo. Done: 70aac810 pending_purges UTC day (7 modules), ab74dacf controlplane::ago ("now" <60 s), todo 4a8a1c87 (splitproof stack, storage meta). core-reviewer PASS. Open to report: flaky notifications/groups timing tests; mockup "yesterday" vs "1 d ago". Next: Step 20 — still awaiting owner go + Notify fields.
+
+## State 2026-11-23 (Step 20 complete)
+Checklist docs/plans/2026-11-22-step20-notifications-checklist.md (owner: Notify fields title+message; rest as recommended). Landed: 20a1 17518ece, 20a2 7840756b (+ bless f11899c4), 20a3 232adec5, 20t b7f3cfc8 (splitproof NA1-NA3, 259 passed/44 expected) + review-fix edd0110a, 20b 4572f506 (accept files, both crawls clean). All reviews ACCEPT. Proof-auditor on 20b: STRUCTURAL — tab follower (crawl.rs:221-244) picks the newest player, demoseed seeds in parallel, so player.friends tr#dd6dc9 and player.inbox entries pin one seed and go STALE on reseed; lists_rows never matches the Inbox timeline (no tbody tr). Reported to owner (stop-polishing-admindiff applies). Next: Step 21 apikeys — ask owner.
