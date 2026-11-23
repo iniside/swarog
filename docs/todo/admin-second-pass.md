@@ -52,30 +52,31 @@ _None._
 - [ ] **Scheduler run outcomes**
   ADMIN2-07. Mockup: the dashboard's "storage.gc failed at 03:30" attention item, and the
   Scheduler page's Target, Last result and Enabled columns and each Recent fires entry's
-  result, duration and note. Fakes: core/admin/src/fakes.rs:183 (`attention_scheduler`);
-  modules/scheduler/src/admin.rs:121 (`fake_target`), :127 (`fake_result`, shared by the
-  Last cell and the fire entry), :137 (`fake_enabled`), :143 (`fake_duration`), :153
+  result, duration and note. Fakes: modules/scheduler/src/admin.rs:167 (`attention_runs`,
+  moved from the portal in Step 22), :122 (`fake_target`), :128 (`fake_result`, shared by
+  the Last cell and the fire entry), :138 (`fake_enabled`), :144 (`fake_duration`), :154
   (`fake_note`). The scheduler records no run: a fire carries only the schedule name, bumps
   `last_fired` and stores no target, outcome, duration, note or per-schedule enabled flag,
   and Recent fires lists each schedule's last fire only. Replaced by: recorded runs (a
   target operation per schedule, a per-fire outcome history, a per-schedule enabled flag).
-  Until then the attention item could derive from `fake_result` (the first schedule whose
-  fake last result is "fail") instead of naming `storage.gc`, a schedule that does not
-  exist (Step 22 checklist S10 (b)).
+  Until then the attention item could derive from S6's FAKE (`fake_result`: the first
+  schedule whose fake last result is "fail", none otherwise) instead of naming
+  `storage.gc`, a schedule that does not exist (Step 22 checklist S10 (b); the owner chose
+  the verbatim move, S10 (a)).
 - [ ] **Event plane head sequence, append rate and checkpoints**
   ADMIN2-08. Mockup: Head sequence KPI with its rate, and each subscription's Head and
-  Checkpoint numbers. Fakes: core/admin/src/fakes.rs:195 (`HEAD_SEQUENCE`), :198
-  (`HEAD_RATE`), :205 (`checkpoint`, used at events_provider.rs:442): the event log has a
+  Checkpoint numbers. Fakes: core/admin/src/fakes.rs:179 (`HEAD_SEQUENCE`), :182
+  (`HEAD_RATE`), :189 (`checkpoint`, used at events_provider.rs:442): the event log has a
   (generation, xid, tie) position, not a sequence number, and no append rate is measured.
   Replaced by: a display ordinal for the log position and a measured append rate.
 - [ ] **Dead-lettered count and who skipped**
   ADMIN2-09. Mockup: "Dead-lettered (7 d)" KPI, "all skipped by operator". Fakes:
-  core/admin/src/fakes.rs:201 (`DEAD_LETTERED`), core/admin/src/events_provider.rs:697:
+  core/admin/src/fakes.rs:185 (`DEAD_LETTERED`), core/admin/src/events_provider.rs:697:
   skipped events are not kept. Replaced by: a stored record of skipped events with the
   operator.
 - [ ] **Subscription consumer module and handler name**
   ADMIN2-10. Mockup: the Consumer column and "module · handler" line. Fakes:
-  core/admin/src/fakes.rs:211 (`consumer`, first dotted segment of the id), :216
+  core/admin/src/fakes.rs:195 (`consumer`, first dotted segment of the id), :200
   (`handler`, hash-picked): neither is stored. Replaced by: the subscription registry
   recording its module and handler.
 
@@ -123,7 +124,7 @@ modules/mail/src/admin.rs landed in 544dd4e5; the line numbers are its committed
   ADMIN2-64. Mockup: the Schedules "+ Schedule" tool and the row button's "Fire now · Edit
   · Delete". Actions `schedule.create`, `schedule.fire`, `schedule.edit` and
   `schedule.delete`, each `implemented: false` and `Then::Invoke`:
-  modules/scheduler/src/admin.rs:348-354; the scheduler has no write path. Replaced by:
+  modules/scheduler/src/admin.rs:369-380; the scheduler has no write path. Replaced by:
   create and edit as `Then::Form` (name, interval), delete as `Then::Confirm`, fire now as
   `Then::Invoke` (an immediate fire under the advisory lock), with `writes: true` and a
   `cp.invoke scheduler` conformance case.

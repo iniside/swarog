@@ -1,15 +1,16 @@
 //! The `scheduler` control-plane provider: the Scheduler page (the Schedules table with each
 //! schedule's interval, next fire and last fire, and the Recent fires timeline of the last 24
 //! hours) and its disabled actions (create, fire now, edit, delete). Nothing here writes: the
-//! module declares no writes and every action is `implemented: false`.
+//! module declares no writes and every action is `implemented: false`. It also draws the
+//! dashboard's "Scheduler runs" attention item.
 
 use async_trait::async_trait;
 use controlplane::order;
 use controlplane::{
-    ActionDecl, ActionPoint, Align, Banner, Cell, CellKind, Column, ContributionDecl, DataTable, Emphasis,
-    EntityKindDecl, EntityRef, InvokeCall, InvokeOutcome, Layout, Manifest, NavEntry, Noun, PageDecl, PageInfo,
-    PanelBody, PanelQuery, Point, Primitive, Provider, Role, Row, SearchHit, SearchQuery, Then, Timeline,
-    TimelineEntry, Tone, DEFAULT_PANEL_DEADLINE_MS,
+    ActionDecl, ActionPoint, Align, AttentionItem, Banner, Cell, CellKind, Column, ContributionDecl, DataTable,
+    Emphasis, EntityKindDecl, EntityRef, InvokeCall, InvokeOutcome, Layout, Link, Manifest, NavEntry, Noun,
+    PageDecl, PageInfo, PanelBody, PanelQuery, Point, Primitive, Provider, Role, Row, SearchHit, SearchQuery,
+    Severity, Then, Timeline, TimelineEntry, Tone, DEFAULT_PANEL_DEADLINE_MS,
 };
 use opsapi::Error;
 use sqlx::PgPool;
@@ -157,6 +158,21 @@ pub(crate) fn fake_note(name: &str) -> String {
     }
     let rows = controlplane::fake_hash("scheduler.note", name) % 500;
     format!("{rows} rows affected")
+}
+
+/// The dashboard's "Scheduler runs" attention contribution.
+pub(crate) const ATTENTION_RUNS: &str = "attention.runs";
+
+// FAKE: the scheduler stores no run failures.
+pub(crate) fn attention_runs() -> Vec<AttentionItem> {
+    vec![AttentionItem {
+        severity: Severity::Warn,
+        title: "storage.gc failed at 03:30".to_string(),
+        text: "timeout: storage-svc deadline exceeded.".to_string(),
+        link: Link::Page { module: MODULE.to_string(), page: PAGE.to_string(), params: Default::default() },
+        action_label: "Logs".to_string(),
+        since: "03:30".to_string(),
+    }]
 }
 
 fn result_tone(result: &str) -> Tone {
@@ -340,7 +356,15 @@ pub(crate) fn manifest() -> Manifest {
             label: "Schedule".to_string(),
             icon: "clock".to_string(),
         }],
-        contributions: vec![contribution(SCHEDULES, 10, "Schedules"), contribution(FIRES, 20, "Recent fires")],
+        contributions: vec![
+            contribution(SCHEDULES, 10, "Schedules"),
+            contribution(FIRES, 20, "Recent fires"),
+            ContributionDecl {
+                point: Point::DashboardAttention,
+                icon: "clock".to_string(),
+                ..contribution(ATTENTION_RUNS, order::dashboard_attention::SCHEDULER, "Scheduler runs")
+            },
+        ],
         // NEW: the scheduler has no write path; schedules are seeded by DDL or inserted by hand.
         actions: vec![
             ActionDecl {
@@ -369,6 +393,7 @@ impl Provider for SchedulerAdmin {
         match req.contribution.as_str() {
             SCHEDULES => self.schedules().await,
             FIRES => self.fires().await,
+            ATTENTION_RUNS => Ok(PanelBody::new(Primitive::AttentionItems(attention_runs()))),
             other => Err(Error::not_found(format!("{MODULE} has no contribution {other:?}"))),
         }
     }

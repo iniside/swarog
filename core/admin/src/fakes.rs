@@ -175,18 +175,6 @@ pub(crate) fn attention_lore() -> Vec<AttentionItem> {
     }]
 }
 
-// FAKE: the scheduler stores no run failures.
-pub(crate) fn attention_scheduler() -> Vec<AttentionItem> {
-    vec![AttentionItem {
-        severity: Severity::Warn,
-        title: "storage.gc failed at 03:30".to_string(),
-        text: "timeout: storage-svc deadline exceeded.".to_string(),
-        link: page("scheduler", "scheduler"),
-        action_label: "Logs".to_string(),
-        since: "03:30".to_string(),
-    }]
-}
-
 // FAKE: the event log has an (generation, xid, tie) position, not a sequence number.
 pub(crate) const HEAD_SEQUENCE: &str = "991,210";
 

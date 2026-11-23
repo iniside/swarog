@@ -17,7 +17,6 @@ const TILE_LORE_STORE: &str = "tile.lore-store";
 const TILE_MATCHES: &str = "tile.matches";
 const ATTENTION_SERVICES: &str = "attention.services";
 const ATTENTION_LORE: &str = "attention.lore";
-const ATTENTION_SCHEDULER: &str = "attention.scheduler";
 const HEALTH: &str = "health";
 
 pub(crate) struct PortalProvider;
@@ -91,13 +90,6 @@ impl Provider for PortalProvider {
                     "Lore locks",
                     "lock",
                 ),
-                contribution(
-                    ATTENTION_SCHEDULER,
-                    Point::DashboardAttention,
-                    order::dashboard_attention::PORTAL_SCHEDULER,
-                    "Scheduler runs",
-                    "clock",
-                ),
                 contribution(HEALTH, Point::DashboardWide, order::dashboard_wide::PORTAL_HEALTH, "Service health", ""),
             ],
             writes: false,
@@ -113,7 +105,6 @@ impl Provider for PortalProvider {
             TILE_MATCHES => Primitive::KpiTile(fakes::matches_in_progress()),
             ATTENTION_SERVICES => Primitive::AttentionItems(fakes::attention_services()),
             ATTENTION_LORE => Primitive::AttentionItems(fakes::attention_lore()),
-            ATTENTION_SCHEDULER => Primitive::AttentionItems(fakes::attention_scheduler()),
             other => return Err(opsapi::Error::not_found(format!("{MODULE} has no contribution {other:?}"))),
         }))
     }

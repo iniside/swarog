@@ -92,14 +92,52 @@ fn manifest_declares_the_read_only_page() {
     assert_eq!(page.layout, Layout::Stack(vec![SCHEDULES.to_string(), FIRES.to_string()]));
     let ids: Vec<(&str, i32, &str)> =
         m.contributions.iter().map(|c| (c.id.as_str(), c.order, c.title.as_str())).collect();
-    assert_eq!(ids, [(SCHEDULES, 10, "Schedules"), (FIRES, 20, "Recent fires")]);
-    for c in &m.contributions {
+    assert_eq!(
+        ids,
+        [
+            (SCHEDULES, 10, "Schedules"),
+            (FIRES, 20, "Recent fires"),
+            (ATTENTION_RUNS, order::dashboard_attention::SCHEDULER, "Scheduler runs"),
+        ]
+    );
+    for c in &m.contributions[..2] {
         assert_eq!(c.point, Point::Page(PAGE.to_string()));
         assert_eq!((c.min_role, c.readonly.as_deref(), c.cache_ttl_s), (Role::Viewer, None, None));
     }
     assert_eq!(m.entity_kinds.len(), 1);
     assert_eq!((m.entity_kinds[0].kind.as_str(), m.entity_kinds[0].label.as_str()), (SCHEDULE_KIND, "Schedule"));
     assert!(m.search.is_empty());
+}
+
+/// The dashboard attention item moved here from the portal provider (step 22, S10): same id
+/// order, title, icon and text; its link opens the Schedules page.
+#[tokio::test]
+async fn attention_runs_draws_the_moved_item() {
+    let m = manifest();
+    let c = m.contributions.iter().find(|c| c.id == ATTENTION_RUNS).expect("the attention contribution");
+    assert_eq!((c.point.clone(), c.order), (Point::DashboardAttention, 50));
+    assert_eq!((c.title.as_str(), c.icon.as_str(), c.min_role), ("Scheduler runs", "clock", Role::Viewer));
+    let provider = SchedulerAdmin::new(PgPool::connect_lazy("postgres://unused").unwrap(), true);
+    let body = provider.panel(query(ATTENTION_RUNS)).await.expect("the attention panel");
+    let items = match body.primitive {
+        Primitive::AttentionItems(items) => items,
+        other => panic!("AttentionItems, got {other:?}"),
+    };
+    assert_eq!(items.len(), 1);
+    let item = &items[0];
+    assert_eq!(item.severity, Severity::Warn);
+    assert_eq!(
+        (item.title.as_str(), item.text.as_str()),
+        ("storage.gc failed at 03:30", "timeout: storage-svc deadline exceeded.")
+    );
+    assert_eq!((item.action_label.as_str(), item.since.as_str()), ("Logs", "03:30"));
+    match &item.link {
+        Link::Page { module, page, params } => {
+            assert_eq!((module.as_str(), page.as_str()), ("scheduler", "schedules"));
+            assert!(params.is_empty());
+        }
+        other => panic!("a page link, got {other:?}"),
+    }
 }
 
 #[test]
