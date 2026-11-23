@@ -150,6 +150,8 @@ placeholder that the wrapper element the page layout draws (e.g. `div.stack` for
 `Layout::Stack`) makes mock-only (`mock-only [panel "<title>"]`). Where the exact `<difference>` text needs a crawl, it names the element
 and the kind.
 
+A gate-files section lists every golden, baseline and accept file the step's changes touch. A step that changes a pub item of core/controlplane or api/* regenerates that crate's public-API baseline in the same commit as the change: `cargo +nightly public-api -p <pkg> -s --color=never`, stdout only, into `docs/reference/public-api-baseline/<pkg>.txt`. The `verifyctl` public-api stage runs only with `--all`, `--slow` or `--strict`, so no per-step gate catches the drift; step 22 found `controlplane::ago` missing since step 19.
+
 Once the owner decides the checklist's gaps, the checklist file is updated in place
 before part `a`: each decided gap gets its decision, and each overruled proposal is
 struck through (`~~…~~`). Part `b` reads the checklist literally, so a stale proposal
