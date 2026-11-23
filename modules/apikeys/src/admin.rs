@@ -74,8 +74,8 @@ impl ApiKeysAdmin {
         let roles = self.svc.store.roles_with_counts().await.map_err(internal)?;
         let role_names: Vec<String> = roles.into_iter().map(|r| r.name).collect();
         let role = filter_value(req, FILTER_ROLE);
-        if let Some(r) = role.filter(|r| !role_names.iter().any(|n| n == r)) {
-            return Err(Error::invalid(format!("{MODULE}: unknown role {r:?}")));
+        if role.is_some_and(|r| r.len() > MAX_NAME_BYTES) {
+            return Err(Error::invalid(format!("{MODULE}: the role filter is longer than {MAX_NAME_BYTES} bytes")));
         }
         let after = req.cursor.as_deref().map(parse_cursor).transpose()?;
         let rows = self

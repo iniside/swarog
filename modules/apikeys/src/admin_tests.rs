@@ -324,7 +324,12 @@ async fn keys_page_by_25_narrow_by_filters_and_drop_the_total_and_roles_count_ke
     let t = table(&by_role);
     assert_eq!(t.rows.iter().map(|r| r.cells[0].value.clone()).collect::<Vec<_>>(), vec![revoked.clone()]);
     assert_eq!(t.page.total, None, "a filter narrows, so no total");
-    let e = p.panel(query("keys", None, None, &[("role", &format!("{base}-none"))])).await.unwrap_err();
+    let gone = p.panel(query("keys", None, None, &[("role", &format!("{base}-none"))])).await.unwrap();
+    let t = table(&gone);
+    assert!(t.rows.is_empty(), "a role that no longer exists matches no keys");
+    assert_eq!(t.page.total, None, "a filter narrows, so no total");
+    let long = "r".repeat(MAX_NAME_BYTES + 1);
+    let e = p.panel(query("keys", None, None, &[("role", long.as_str())])).await.unwrap_err();
     assert_eq!(e.status, Status::Invalid);
 
     let all = p.panel(query("keys", None, None, &[("status", "any")])).await.unwrap();
