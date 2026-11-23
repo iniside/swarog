@@ -2401,6 +2401,15 @@ The ports:
   move). The schedule row menu is kind `schedule` (O-6 pattern); target, last result,
   per-schedule enabled and fire history are FAKE, "next fire" is derived as
   `last_fired + interval` (`docs/research/2026-11-21-0848-admin-ports-21-24-contract-gaps.md`).
+  Checklist and owner decisions: `docs/plans/2026-11-23-step22-scheduler-checklist.md`
+  (§11). The mockup draws no schedule menu, so kind `schedule` goes to `EXCLUDED_MENUS`;
+  no `storage.gc` schedule exists (the item moves verbatim, S10).
+  - **22a1** (Na1): the scheduler reads, provider and page, `pages.rs`, todo items.
+  - **22a2** (Na3), after 22a1: the attention move (also `core/controlplane/src/order.rs`
+    and `tools/admincheck/src/testdata/drawn_orders.txt`).
+  - **22t** (`[opus]` test-author), after 22a2: page and attention checks in both
+    topologies; proof-auditor audits.
+  - **22b**: accept files after the crawls.
 - **Step 23 — config.**
   - Config & flags page (`pages-platform.js:88-109`).
   - Edit via `cp.invoke` with `expected_revision` = the global revision. The edit form is
