@@ -181,15 +181,16 @@ URLs:
 `invoke` rules (invariants for 23a2):
 1. The first statement refuses any input value over `controlplane::MAX_INPUT_VALUE_BYTES` (`cp:205`); this is the conformance probe.
 2. Key: split at the one '.', both halves `valid_ident` (`cl:200-217`), else a field error on `key`.
-3. Value: decoded with the declared kind's `decode_field`, then normalised:
+3. Value: decoded with the declared kind's `decode_field` (edit: the key's field kind; create: the picked type's kind, since the create form declares `value` as Text), then normalised:
    - a float text without `.`, `e` or `E` gets `.0`;
    - a json value is trimmed.
-   - The value must then derive (D4) to the target type, else a field error naming both types. Edit keeps a key's type: the target is the current derived type. Create's target is the picked type.
+    - The value must then derive (D4) to the target type, else a field error naming both types. Edit keeps a key's type: the target is the current derived type. Create's target is the picked type.
+   - The `.0` rule is required, not cosmetic: the portal re-encodes an edited value before `invoke` (`act:497`, `encode_field` `cp:931-941`), and `f64::to_string` turns 2.0 into "2".
 4. Edit:
    - `expected_revision` is required and converted with `i64::try_from`, else Invalid (`aad:280-284` precedent);
    - `UPDATE config.settings SET value = $v WHERE namespace = $ns AND key = $k AND revision = $exp`;
    - 0 rows and the key exists → `Ok(InvokeOutcome::Conflict{current_revision})`; 0 rows and no key → `Error::conflict` (`rt:1323-1326`).
-5. Create: an insert-only write (C3); 0 rows → `Error::conflict("config: key ns.key already exists")`; nothing is written.
+5. Create: an insert-only write (C3); 0 rows → `InvokeOutcome::FieldErrors{key: "already exists"}` (precedent `aad:326`): 422, the form is shown again and not used up, nothing is written. Not `Error::conflict`: that renders the generic "This changed since you opened it" banner (`rt:1297,1326`) and uses the modal up (`act:549`).
 6. Both writes go through the trigger, so propagation, `config.changed` and audit are unchanged.
 
 New `todo` items:
@@ -232,7 +233,7 @@ New `todo` items:
 
 ## 6. Gaps and decisions
 
-Owner decisions D1-D7 are in §11; proposals the owner has not settled are C1-C9 under "Gaps as proposed". Plan text to update when this lands: `plan:2413-2441` still lists 23a0/23t (prelude) and the "global revision, any other key is a Conflict" design, both superseded by D1/D2.
+Owner decisions D1-D7 are in §11; proposals the owner has not settled are C1-C9 under "Gaps as proposed". The plan's Step 23 block cites this numbering.
 
 ## 7. Accept-file plan (predicted; exact text needs a crawl)
 
@@ -302,11 +303,11 @@ New `tools/splitproof/src/config_admin_checks.rs`, on the `apikeys_admin_checks.
     - `row.revision` > old and = the `config.changed` event revision for that key;
     - exactly one new event;
     - the `admin.action` detail ends with ` — reason: <note>` (D5 in the split).
-  - **CF3** Edit with the stale revision (the CF2 form re-posted) returns 409; the row is unchanged and no new event is written.
-  - **CF4** Create a new key: row present, type derived as picked. Create the same key again: 409, row unchanged.
+  - **CF3** Open two Edit forms at rev N (A and B); post A (Ok), then post B: 409 from the compare-and-swap; the row keeps A's value and no new event is written. Re-posting an already used form instance never reaches `invoke`: `take_form` falls through to `repeated()` (`rt:1096-1101,1119-1121`, 303 or a 200 toast under htmx); assert that as its own expected result, not as the CAS proof.
+  - **CF4** Create a new key: row present, type derived as picked. Create the same key again from a fresh modal instance: 422 with the `key` field error, row unchanged, no new event.
   - **CF5** Refusals, each writing nothing:
     - invalid id (`Bad.Key`);
-    - a value that changes the type (int key ← "abc");
+    - a value that changes the type and that the field kind accepts (a json key ← `5`; an int key ← "abc" is refused by the portal's Int `decode_field` before `invoke`, `cp:878`);
     - a value over 4096 bytes;
     - a Viewer post (H: a role check reachable in splitproof).
 - proof-auditor audits.
@@ -342,9 +343,9 @@ Owner 2026-11-23:
   - (a) Every INSERT/UPDATE on `config.settings` from any writer (service `set`/`set_tx`, raw SQL that names no `revision`, multi-row statements, upsert-on-conflict) stamps the row atomically in the writing transaction with a global revision strictly greater than any earlier one. Writers never supply it.
   - (b) The `config.changed` v1 event keeps its contract (`cev:31-43`, `cg:68-73`). Its `revision` equals the stamped row revision (DELETE: the bumped global value). Exactly one event and one NOTIFY per row mutation, including an upsert that hits ON CONFLICT (pinned by `ct:204-247`). Gaps in the global sequence are allowed; strict increase is what readers rely on (`capi:40-49`, `cl:303-315`).
   - (c) Snapshot coherence is unchanged: `load_snapshot_from`'s single statement (`cl:360-385`) still names the set.
-  - (d) The current AFTER/RETURN NULL function (`cl:78-128`) cannot set `NEW.revision`, so the stamp needs a BEFORE ROW trigger. Because BEFORE INSERT also fires on the conflict path, the bump-and-emit must not run twice for one row (bump in BEFORE and emit in AFTER from `NEW.revision`, or an equivalent).
+  - (d) The current AFTER/RETURN NULL function (`cl:78-128`) cannot set `NEW.revision`, so the stamp needs a BEFORE ROW trigger that bumps `config.revision` per row. On `INSERT … ON CONFLICT DO UPDATE` Postgres fires BEFORE INSERT and then BEFORE UPDATE, so the conflict path uses two global values, and `ON CONFLICT DO NOTHING` (C3) uses one and writes nothing. Both are gaps, allowed by (b). The emit (NOTIFY + `config.changed`) runs only in the AFTER trigger, from `NEW.revision` (DELETE: its own bump), so each row mutation emits exactly once. A "bump once" scheme (BEFORE peeks, AFTER sets) is wrong: AFTER ROW triggers run at end of statement, so every row of a multi-row statement (`sp:1053`) would get the same revision, breaking (a). New `ct` cases: a DO NOTHING insert moves `config.revision` and emits no event; a multi-row insert stamps distinct revisions. The DDL docs note the lock-order change: the BEFORE bump takes the `config.revision` row lock while the statement still has rows to lock, so two concurrent multi-row statements can deadlock (multi-statement `set_tx` batches already could).
   - (e) Rollout: DROP SCHEMA config CASCADE + boot fresh. `CREATE TABLE IF NOT EXISTS` (`cl:65`) would leave an old table without the column, so the migrate notes this. No migration bridge.
-  - (f) Wire shape: **no change** to `configapi::Setting`/`Snapshot` or `configevents::Changed`. The admin provider reads the store inside the module. No golden or baseline changes (§8).
+  - (f) Wire shape: **no change** to `configapi::Setting`/`Snapshot` or `configevents::Changed`. The admin provider reads the store inside the module, not the snapshot cache (it holds no per-key revision), so 23a1 deletes `cached_snapshot` and `all` (`cl:322-356`), whose `expect(dead_code)` reason ("Step 23 … renders it") becomes false. No golden or baseline changes (§8).
   - (g) CAS: `UPDATE … WHERE namespace = $ns AND key = $k AND revision = $expected`; 0 rows → Conflict. `FormSpec.revision` (u64) is set from the i64 row revision (≥ 1); `InvokeCall.expected_revision` goes back through `i64::try_from`, and an overflow is Invalid.
   - (h) History, updated_by and the restore link stay FAKE or contract gap.
 - **D2 — no 23a0 / T6 prelude.** Default selection is the first key by `namespace COLLATE "C", key COLLATE "C"`. The field-kind difference against the mockup's json default is a `data difference` accept entry (§7), plus H4.

@@ -2414,7 +2414,7 @@ The ports:
   - Config & flags page (`pages-platform.js:88-109`). Checklist:
     `docs/plans/2026-11-23-step23-config-checklist.md` (owner decisions D1-D7 in its §11,
     proposals C1-C9 under "Gaps as proposed").
-  - Owner decisions 2026-11-23:
+  - Owner decisions 2026-11-23 (numbered as in the checklist's §11; D1-D4 summarised here):
     - D1: a per-key revision. `config.settings` gains `revision bigint`, the global
       revision of the write that last wrote the row (etcd-style), stamped by the trigger for
       every writer. The edit's compare-and-swap is
@@ -2428,10 +2428,9 @@ The ports:
       Conflict with nothing written.
     - D4: the Type filter (type derived from the stored value) and the "Key prefix" search
       are drawn.
-    - D5: 23r0 below; the "Pending change vs rev N" preamble is a `contract gap` plus a
-      todo item; the Revisions timeline is FAKE except the current value and revision;
-      ADMIN2-39 (`docs/todo/admin-second-pass.md`) widened per P2-6; CONFIG-04 closes in
-      23a1.
+    - D5 (23r0 below), D6 (the "Pending change vs rev N" preamble is a `contract gap` plus
+      a todo item; the Revisions timeline is FAKE except the current value and revision;
+      ADMIN2-39 widened per P2-6) and D7 (CONFIG-04 closes in 23a1): see the checklist.
   - Writer. Parts, in order:
   - **23s** (`[opus]` core-implementer, core-reviewer): the per-key `revision` column and
     its stamping trigger (D1), with `modules/config/src/tests.rs` cases; first, before every
