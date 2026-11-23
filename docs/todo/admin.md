@@ -1,6 +1,6 @@
 # Admin
 
-Last updated: 2026-11-22
+Last updated: 2026-11-23
 
 ## In progress
 
@@ -23,6 +23,34 @@ _None._
   from the handle (`modules/accounts/src/admin.rs:560`) and swaps the header in place
   (`primitives.html.tmpl:416`, `hx-swap-oob`), so the first-render colour can differ from the
   swapped one, and a mixed-case id gives another colour (review of 2fdcfd93).
+
+### Known limits (admin-control-plane-redesign step 20)
+
+- [ ] **The admindiff tab follower picks the newest player, so tab accept entries pin one seed**
+  `tools/admindiff/src/crawl.rs:221-244` follows the first qualifying row of the players
+  list, ordered `created_at DESC` (`modules/accounts/src/store.rs:1077`), and demoseed
+  creates players in parallel (`tools/demoseed/src/lib.rs:513-517`), so every fresh seed
+  follows another player. The `player.friends` entry `tr#dd6dc9` and the four
+  `player.inbox` data-difference entries describe one seed and go STALE on the next (the
+  split crawl of 4572f506 already holds 3 inbox rows against the monolith's 1); their reasons
+  ("only accepted friendships", "one friend.accepted message per player") are false. Fix:
+  follow a fixed seeded player, then rewrite those entries (proof audit of 4572f506).
+  Owner 2026-11-23: deferred.
+- [ ] **The Inbox tab qualifier never matches**
+  `lists_rows` (`tools/admindiff/src/crawl.rs:497-499`) looks for `tbody > tr`; the Inbox
+  timeline draws none, so the inbox follower always falls back to the first row. The
+  `player.inbox` entry `b` is also a template fact (every message has a title,
+  `modules/notifications/src/admin.rs:240-252`), not a data difference.
+- [ ] **EXCLUDED_MODALS rows of an unfetched host are skipped silently**
+  `tools/admindiff/src/crawl.rs:657-663` drops the rows whose host was not crawled with no
+  UNCHECKED line, unlike the mock-modal list (proof audit of 232adec5).
+- [ ] **The tab-fallback test is vacuous**
+  `tools/admindiff/src/crawl_tests.rs:1418` asserts with `assert_failed`, which passes
+  whatever the follower picks (proof audit of 232adec5).
+- [ ] **A key-reused 409 shows the generic conflict banner**
+  The portal draws its fixed `CONFLICT_BANNER` for every conflict, so the Send notification
+  form's "key reused with another body" text never reaches the operator; the wallet forms
+  have the same gap.
 
 ### Known limits (admin-control-plane-redesign step 13f)
 

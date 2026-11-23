@@ -22,3 +22,13 @@ _None._
   NOTIFICATIONS-04. Every module wanting an inbox row edits notifications; mail
   closed this for itself with `mail.send_requested`. Source:
   docs/plans/2026-09-05-1921-friends-module-plan.md:591 (2026-09-05).
+
+### Known limits (admin-control-plane-redesign step 20)
+
+- [ ] **A message over 4096 bytes fails as a toast, not a field error**
+  The control-plane input cap runs before the form checks, so an over-long message on the
+  Send notification form answers a generic Invalid toast instead of an error on the
+  message field.
+- [ ] **Required fields are checked trimmed but stored untrimmed**
+  The Send notification form refuses a blank title or message after trimming, but stores
+  the values as typed, with their leading and trailing spaces.

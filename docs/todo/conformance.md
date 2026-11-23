@@ -1,6 +1,6 @@
 # Conformance
 
-Last updated: 2026-11-21
+Last updated: 2026-11-23
 
 ## In progress
 
@@ -17,6 +17,13 @@ _None._
   CONFORMANCE-02. The check compares `opaque.name == written` (tools/conformance/src/input_inventory.rs:354-356),
   so a foreign type imported under the bare name `Identity` bypasses the inventory.
   Source: docs/plans/2026-09-10-1917-account-deletion-purge-plan.md:635 (2026-09-10).
+
+### Known limits (admin-control-plane-redesign step 20)
+
+- [ ] **The cp.invoke request_id policy row does not list notifications**
+  `CONTROL_PLANE_INVOKE_REQUEST_ID_RATIONALE` (`tools/conformance/src/policy.rs:76-79`)
+  says how mail and wallet persist the request id; notifications, which hashes it into its
+  operator dedup key since Step 20, is missing from that text.
 
 ### Known limits (admin-control-plane-redesign step 15)
 

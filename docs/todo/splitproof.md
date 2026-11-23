@@ -1,6 +1,6 @@
 # Splitproof
 
-Last updated: 2026-11-22
+Last updated: 2026-11-23
 
 ## In progress
 
@@ -32,6 +32,21 @@ _None._
   main.rs:5131-5416) target the same route. Re-point them with the apikeys step of the
   admin control-plane redesign (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md,
   step 21).
+
+### Known limits (admin-control-plane-redesign step 20)
+
+- [ ] **NA3 never posts through the row action or the Inbox tool**
+  `tools/splitproof/src/notifications_admin_checks.rs` sends through the Notify header
+  action only; the `send` row action and the `inbox.send` panel tool are covered by unit
+  tests alone. One post per action closes it.
+- [ ] **No check for notification purges after an account delete**
+  NA4 (the purge of a deleted player's inbox, both topologies) was not written.
+- [ ] **NA2 releases the form claim by SQL**
+  The idempotent re-POST check deletes the `admin.forms` claim instead of waiting out a
+  real claim timeout.
+- [ ] **A mid-pass error hides the later NA checks**
+  An error inside the NA pass reports `[NA0]` red and the later NA ids do not appear at
+  all.
 
 ### Known limits (admin-control-plane-redesign step 19)
 
