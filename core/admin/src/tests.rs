@@ -2848,14 +2848,8 @@ async fn a_search_hit_opens_its_entity_or_its_page() {
     cleanup_user(&pool, &user).await;
 }
 
-/// A Select filter's current value outside its declared options (a stale bookmark) is drawn
-/// as a selected option of its own, so the select does not read "all" over a filtered table.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_select_filter_draws_an_undeclared_current_value_selected() {
-    let Some(pool) = test_pool().await else { return };
-    let (_ctx, st) = wired(&pool, false, true).await;
-    let user = uniq("t-select-undeclared");
-    let cookie = operator_cookie(&pool, &user).await;
+/// A provider whose `support/list` panel is a table with a Region Select over eu and us.
+async fn region_select_engine() -> Arc<Engine> {
     let page = controlplane::PageDecl {
         id: "queue".to_string(),
         title: "Queue".to_string(),
@@ -2873,13 +2867,42 @@ async fn a_select_filter_draws_an_undeclared_current_value_selected() {
         t.filters = vec![controlplane::FilterDef { key: "region".to_string(), label: "Region".to_string(), kind }];
     }
     let recording = Recording::new(manifest, &[("list", answer(table))]);
-    let engine = Arc::new(sourced(vec![recording as Arc<dyn controlplane::Provider>]).await);
+    Arc::new(sourced(vec![recording as Arc<dyn controlplane::Provider>]).await)
+}
+
+/// A Select filter's current value outside its declared options (a stale bookmark) is drawn
+/// as a selected option of its own, so the select does not read "all" over a filtered table.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_select_filter_draws_an_undeclared_current_value_selected() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-select-undeclared");
+    let cookie = operator_cookie(&pool, &user).await;
+    let engine = region_select_engine().await;
 
     let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/support/list?region=apac").await;
     assert_eq!(status, StatusCode::OK, "{raw}");
     let drawn = r#"<option value="">Region: all</option><option>eu</option><option>us</option><option selected>apac</option>"#;
     assert!(raw.contains(drawn), "the undeclared current value is the one selected option: {raw}");
     assert!(!raw.contains("<option selected>eu") && !raw.contains("<option selected>us"), "{raw}");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A Select filter value of `any` narrows nothing, so the select draws its "all" placeholder
+/// with no option selected and no extra option.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_select_filter_reads_any_as_no_filter() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-select-any");
+    let cookie = operator_cookie(&pool, &user).await;
+    let engine = region_select_engine().await;
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/support/list?region=any").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let drawn = r#"<option value="">Region: all</option><option>eu</option><option>us</option></select>"#;
+    assert!(raw.contains(drawn), "any draws the declared options only, none selected: {raw}");
 
     cleanup_user(&pool, &user).await;
 }

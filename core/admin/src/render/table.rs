@@ -90,7 +90,8 @@ pub(super) fn page_label(page: &controlplane::PageInfo, ctx: &Ctx<'_>) -> Option
     }
 }
 
-/// An empty filter value narrows nothing, so it reads as `"any"`. A Select's current value
+/// An empty or `"any"` filter value narrows nothing, so it reads as `"any"` and a Select
+/// draws its "all" placeholder. A Select's current value
 /// outside its declared options is drawn as one more selected option, so the select shows
 /// what the table is filtered by rather than its "all" placeholder.
 pub(super) fn filter_views(filters: &[controlplane::FilterDef], ctx: &Ctx<'_>) -> Vec<FilterView> {
@@ -98,7 +99,7 @@ pub(super) fn filter_views(filters: &[controlplane::FilterDef], ctx: &Ctx<'_>) -
         .iter()
         .map(|f| {
             seen::record(&f.kind);
-            let current = ctx.param(&f.key).filter(|v| !v.is_empty());
+            let current = ctx.param(&f.key).filter(|v| !v.is_empty() && *v != "any");
             let select = match &f.kind {
                 FilterKind::Select(options) => {
                     let mut views: Vec<OptionView> = options
