@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-23T14:04:15.420Z
+  modified: 2026-11-23T16:35:04.414Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -80,3 +80,10 @@ a9094615 ("any" = no filter in core filter_views) review REJECT structural S1: "
 
 ## State 2026-11-23 (21a2 done)
 3b67dd76 part 2 (key.create/change-role/revoke, probe), 0e34a361 part 3 (role.create/edit/delete, APIKEYS-01 closed), b9204689 test review-fix (refusal messages pinned), d682a01d part 4 (form foot no span.muted P2-9, pages.rs create-key + revoke modal rows, apirole/role/change-role exclusions, ADMIN2-61..63). All reviews ACCEPT. Owner open: S1 any a/b/c; Multi required:false (typed-only policy impossible from portal); canonical validate_policy (gateway vs admin read "full" differently, latent widen); admindiff test fixtures restate prod rules (claim_inventory built from PAGE_MAP) — stop-polishing applies. Next: 21t (test-author opus, splitproof D5, fleet runs — say count/time) then 21b (mockup-implementer sonnet, crawl + accept files).
+
+
+## State 2026-11-23 (post-21a2 fixes)
+- F1 8f8f67b1 (route drops empty+"any" filter params): review REJECT — (1) local: wallet admin.rs:193 + inventory admin.rs:121 still drop empty themselves, wallet admin_tests.rs:581 empty_select pins it → remove; (2) structural, ASKED OWNER: "any" collides with operator values (wallet currency/inventory kind "any"); recommendation = route drops only empty, no "any" sentinel. Fix both in one review-fix after owner answers.
+- F2 35fc40e0 canonical validate_policy + Multi required:false — ACCEPT. Note: old non-canonical rows in dev DBs → DROP SCHEMA apikeys + fresh boot if it matters.
+- F3 ed050bae revoked re-role guard + shared KEY_COLUMNS/ROLE_COUNTS; review-fix cf17e7b6 (same-role revoked test) — ACCEPT.
+- Next: F1 review-fix (owner decision), then 21t (announce run count/time), then 21b.
