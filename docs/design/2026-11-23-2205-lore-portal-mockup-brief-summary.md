@@ -17,7 +17,7 @@ One deployment means one studio and one Lore server. There is no tenant or organ
   - `DiffView`: unified and split views, with inline comment threads
   - `CommentThread`, which can be resolved
   - `ReviewState` badge: approved / changes requested / commented / pending
-  - `MergeBox`
+  - `MergeBox` (merge status and instructions; the portal never merges)
   - `RefPicker`, for choosing a branch or revision
   - `AssetCard`, the preview and metadata of a binary file
 
@@ -60,18 +60,15 @@ One deployment means one studio and one Lore server. There is no tenant or organ
       - **Files changed**: `DiffView` with inline threads, a "viewed" checkbox per file, and binary files listed with their size changes.
       - **Revisions**.
     - Submitting a review: a popover with Comment / Approve / Request changes and a summary.
-    - `MergeBox` states:
-      - ready;
+    - The portal does not merge. Merging is done with the Lore client; the portal detects the merge from the push to the target branch. `MergeBox` states:
+      - ready, showing the commands to merge locally (`lore branch switch main`, `lore sync`, `lore branch merge feature/x`, `lore push`) with a copy button;
       - blocked by missing approvals (2 of 2 required);
       - blocked by changes requested;
-      - conflicts, listing the files;
-      - blocked because files in this request are locked by someone else, naming the files and owners, with "Ask to release";
+      - conflicts, listing the files, with the commands to merge `main` into the source branch and push it again;
+      - warning that files in this request are locked by someone else, naming the files and owners, with "Ask to release";
       - target branch protected and you lack the right;
-      - merged, with the revision id;
-      - closed.
-
-      Merge options: merge revision or squash, and delete the source branch.
-14. **My locks.** My held locks across repositories, marking stale ones, with bulk release. A second tab shows locks others hold on files I touch in open merge requests.
+      - merged, with the revision id and who pushed it;
+      - closed.14. **My locks.** My held locks across repositories, marking stale ones, with bulk release. A second tab shows locks others hold on files I touch in open merge requests.
 15. **Notifications.** Review requested, mentioned, comment on my merge request, merged, lock released, and a "release request" for a lock I hold. Mark as read.
 16. **Profile and devices.** Name, handle, avatar initials, signed-in devices and CLI sessions with Revoke, and personal access tokens for CI with Create (secret shown once) and Revoke.
 
@@ -91,7 +88,7 @@ Where a lead would need such an action, show the read-only fact and nothing else
 
 Follow the content rules of the design system:
 - sentence case;
-- buttons that say what happens ("Request changes", "Release lock", "Merge into main");
+- buttons that say what happens ("Request changes", "Release lock", "Copy merge commands");
 - confirmations phrased as questions;
 - identifiers in mono, written `kind:id` where they reference an entity;
 - units on every number;
