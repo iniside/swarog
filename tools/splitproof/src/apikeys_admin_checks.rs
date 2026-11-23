@@ -27,7 +27,7 @@ const LATER: [(&str, &str); 8] = [
     ("AD6d", "key row: secret_hash==base64url(sha256), role FK, no cleartext (reflected cols)"),
     ("AD6e", "the minted key authenticates at the gateway: leaderboard 200, match.report 403"),
     ("AD6f", "key.create on a role deleted after the form opened -> 409, no row"),
-    ("AD6g", "admin.action records each role.create and key.create attempt, the 409 included"),
+    ("AD6g", "admin.action records each attempt's outcome: role.create ok twice, key.create ok and conflict"),
     ("AD6h", "key.revoke twice -> Ok 'Key revoked', then NoOp 'already revoked', row unchanged"),
     ("AD6i", "role.delete of a role a revoked key still uses -> 409, row kept; unused -> 303 deleted"),
 ];
@@ -36,8 +36,9 @@ const LATER: [(&str, &str); 8] = [
 /// the portal that `admin` holds a session on. In the split the portal is admin-svc: the page,
 /// both panels, the row menus, every prepared modal and every invoke are served by apikeys-svc
 /// and reach admin-svc only through its `apikeys` peer; the minted key then authenticates at
-/// the gateway. Re-points the checks of the razed `/admin/api-keys` configurator
-/// (SPLITPROOF-06, plan step 21, D5): AD3b (the monolith's M3a), AD4, AD6b (the monolith's
+/// the gateway. AD6b-AD6i prove that hop through `apikeys` rows only apikeys-svc writes (the
+/// role, the key, its hash and its revocation), read back from the DB after each portal post.
+/// Re-points the checks of the razed `/admin/api-keys` configurator (SPLITPROOF-06, plan step 21, D5): AD3b (the monolith's M3a), AD4, AD6b (the monolith's
 /// M3b) and AD6c-AD6g, and adds AD6h (revoke twice, D1) and AD6i (delete an in-use role, K9).
 /// The monolith runs the same ids tagged `m`.
 ///
@@ -45,9 +46,10 @@ const LATER: [(&str, &str); 8] = [
 /// no apikeys provider at all; every other check needs one.
 ///
 /// Break run (a full splitproof run, then reverted): admin-svc without its `apikeys` peer
-/// (`cmd/admin-svc/src/lib.rs`): AD3b and AD6b-AD6i red as new in the split (the page 404s,
-/// so no Create key opener), AD4 green, the monolith's AD*m green, 0 changed and 0 stale
-/// (2026-11-23, step 21t).
+/// (`cmd/admin-svc/src/lib.rs`): AD3b red as new in the split, AD4 green, the monolith's AD*m
+/// green, 0 changed and 0 stale (2026-11-23, step 21t). That run proves AD3b and AD4 only:
+/// AD6b-AD6i went red there from the missing Create key opener, before their own assertions
+/// ran.
 ///
 /// The pass is built and boxed here, out of line, as `notifications_admin_checks::assertions`
 /// is, to keep the caller's stack frame small.
@@ -61,23 +63,68 @@ pub(super) fn assertions<'a>(
     tag: &'a str,
 ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
     Box::pin(async move {
-        if let Err(e) = checks(ctx, pool, p, front, admin, tag).await {
+        let nonce = pass_nonce(tag);
+        let names = Names {
+            nonce: nonce.clone(),
+            role: format!("proofrole-{nonce}"),
+            ghost_role: format!("ghostrole-{nonce}"),
+            key: format!("proofkey-{nonce}"),
+            orphan_key: format!("orphankey-{nonce}"),
+        };
+        if let Err(e) = checks(ctx, pool, p, front, admin, tag, &names).await {
             p.check(&format!("[AD60{tag}] apikeys admin pass completes"), false, format!("{e:#}"));
         }
+        // On every exit of `checks`, Ok or Err, so a pass that stopped short leaves no
+        // working key or role in the reused DB.
+        cleanup(pool, &names, tag).await;
         Ok(())
     })
 }
 
-async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &reqwest::Client, tag: &str) -> Result<()> {
-    let nonce = pass_nonce(tag);
-    let role_name = format!("proofrole-{nonce}");
-    let ghost_role = format!("ghostrole-{nonce}");
-    let key_name = format!("proofkey-{nonce}");
-    let orphan_key = format!("orphankey-{nonce}");
+/// The rows one pass may write, nonce-scoped so no pass reads or deletes another's.
+struct Names {
+    nonce: String,
+    role: String,
+    ghost_role: String,
+    key: String,
+    orphan_key: String,
+}
+
+/// Deletes the pass's keys, then its roles (the FK), and says how many rows each removed or
+/// why it could not; a pass that ran to the end has already deleted both and removes none.
+async fn cleanup(pool: &PgPool, n: &Names, tag: &str) {
+    let keys = sqlx::query("DELETE FROM apikeys.keys WHERE name = ANY($1)")
+        .bind(vec![n.key.clone(), n.orphan_key.clone()])
+        .execute(pool)
+        .await;
+    let roles = sqlx::query("DELETE FROM apikeys.roles WHERE name = ANY($1)")
+        .bind(vec![n.role.clone(), n.ghost_role.clone()])
+        .execute(pool)
+        .await;
+    let said = |r: &std::result::Result<sqlx::postgres::PgQueryResult, sqlx::Error>| match r {
+        Ok(done) => format!("{} removed", done.rows_affected()),
+        Err(e) => format!("not removed: {e}"),
+    };
+    println!("[splitproof] apikeys pass{tag} cleanup: keys {}, roles {}", said(&keys), said(&roles));
+}
+
+async fn checks(
+    ctx: &Ctx,
+    pool: &PgPool,
+    p: &mut Proof,
+    front: &str,
+    admin: &reqwest::Client,
+    tag: &str,
+    names: &Names,
+) -> Result<()> {
+    let (role_name, ghost_role): (&str, &str) = (&names.role, &names.ghost_role);
+    let (key_name, orphan_key): (&str, &str) = (&names.key, &names.orphan_key);
 
     // [AD3b] the page draws the Create key head action and slots both panels; each panel,
-    // fetched as the browser fetches it, is ok. The Keys panel lists the dev seed key by name
-    // and never a dev secret (the table shows a prefix at most).
+    // fetched as the browser fetches it, is ok. The Keys panel searched for the dev seed key
+    // (so the check holds past page 1) draws that key's own row, read off its row menu bound
+    // to `apikey:dev-client` (a role cell naming dev-client cannot meet it), and no panel
+    // shows a dev secret (the table shows a prefix at most).
     let (page_code, page) = fetch(admin, &format!("{front}{PAGE}")).await?;
     let page_hx = attr_values(&page, "hx-get");
     let create_key_url = page_hx.iter().find(|u| u.starts_with("/admin/_action/apikeys/key.create")).cloned();
@@ -91,35 +138,44 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
         Some(u) => fetch(admin, &format!("{front}{u}")).await?,
         None => (0, String::new()),
     };
-    let leak = ["dev-key-server", "dev-key-client"].iter().any(|s| keys.contains(s) || page.contains(s));
+    let (dev_code, dev) = match &keys_url {
+        Some(u) => fetch(admin, &format!("{front}{u}{}q=dev-client", if u.contains('?') { '&' } else { '?' })).await?,
+        None => (0, String::new()),
+    };
+    let dev_row = attr_values(&dev, "data-menu-url").iter().any(|u| u == "/admin/_menu/apikey/dev-client");
+    let leak =
+        ["dev-key-server", "dev-key-client"].iter().any(|s| keys.contains(s) || dev.contains(s) || page.contains(s));
     p.check(
         &format!("[AD3b{tag}] {PAGE} draws the Keys and Roles panels and the Create key opener, no dev secret"),
         page_code == 200
             && create_key_url.is_some()
             && keys_code == 200
             && attr(&keys, "data-state") == "ok"
-            && text(&keys).contains("dev-client")
+            && dev_code == 200
+            && dev_row
             && roles_code == 200
             && attr(&roles, "data-state") == "ok"
             && !leak,
         format!(
-            "page={page_code} create={create_key_url:?} keys={keys_code} keys_state={:?} roles={roles_code} \
-             roles_state={:?} leak={leak} page_body={}",
+            "page={page_code} create={create_key_url:?} keys={keys_code} keys_state={:?} dev={dev_code} \
+             dev_row={dev_row} roles={roles_code} roles_state={:?} leak={leak} page_body={}",
             attr(&keys, "data-state"),
             attr(&roles, "data-state"),
             cut(&page)
         ),
     );
 
-    // [AD4] an apikeys action posted with a session and no _csrf is 403 and writes nothing.
-    let ad4_form = [("name", role_name.as_str()), ("methods", POLICY)];
+    // [AD4] the portal's CSRF check runs before the action lookup (`core/admin/src/routes.rs`
+    // `action_submit`): an apikeys action posted with a session and no _csrf is refused there,
+    // 403 "invalid csrf token", whether or not any apikeys provider is reachable.
+    let ad4_form = [("name", role_name), ("methods", POLICY)];
     let ad4 = patient(|| admin.post(format!("{front}/admin/_action/apikeys/role.create")).form(&ad4_form)).await?;
     let ad4_code = ad4.status().as_u16();
-    let ad4_row = role_row(pool, &role_name).await?;
+    let ad4_body = text(&ad4.text().await.unwrap_or_default());
     p.check(
-        &format!("[AD4{tag}] apikeys action POST without _csrf -> 403, no row"),
-        ad4_code == 403 && ad4_row.is_none(),
-        format!("status={ad4_code} row={ad4_row:?}"),
+        &format!("[AD4{tag}] portal CSRF before action lookup: apikeys POST without _csrf -> 403 'invalid csrf token'"),
+        ad4_code == 403 && ad4_body.contains("invalid csrf token"),
+        format!("status={ad4_code} body={}", cut(&ad4_body)),
     );
 
     let Some(create_key_url) = create_key_url else {
@@ -129,7 +185,7 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
         }
         return Ok(());
     };
-    let audit_before = audit_counts(pool).await?;
+    let audit_mark = audit_mark(pool).await?;
 
     // [AD6b] the Roles panel tool opens the role form; posted with one catalog method it
     // answers the 303 PRG with "Role created" and writes the role with exactly that policy at
@@ -140,9 +196,9 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
     };
     let role_form = open(admin, front, &role_create_url).await?;
     let offered = attr_values(&role_form.html, "value").iter().any(|v| v == POLICY);
-    let role_fields = [("name", role_name.as_str()), ("methods", POLICY), ("extra_methods", "")];
+    let role_fields = [("name", role_name), ("methods", POLICY), ("extra_methods", "")];
     let created = post(admin, front, "role.create", &role_form, &role_fields).await?;
-    let row = role_row(pool, &role_name).await?;
+    let row = role_row(pool, role_name).await?;
     p.check(
         &format!("[AD6b{tag}] {}", LATER[0].1),
         offered && created == (303, "Role created".to_string()) && row == Some((POLICY.to_string(), 1)),
@@ -152,7 +208,7 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
     // [AD6c] the Create key form, posted for that role, answers 303 to ?reveal=<token>; the
     // GET of that URL shows the secret once in the reveal modal, and a second GET shows none.
     let key_form = open(admin, front, &create_key_url).await?;
-    let (ck_code, location, ck_body) = create_key(admin, front, &key_form, &key_name, &role_name).await?;
+    let (ck_code, location, ck_body) = create_key(admin, front, &key_form, key_name, role_name).await?;
     let (first_code, first) = fetch(admin, &format!("{front}{location}")).await?;
     let secret = secret_of(&first).unwrap_or_default();
     let (second_code, second) = fetch(admin, &format!("{front}{location}")).await?;
@@ -181,7 +237,7 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
     // so no match can straddle a boundary); concat_ws skips NULLs.
     let key_meta: Option<(String, String)> =
         sqlx::query_as("SELECT secret_hash::text, role::text FROM apikeys.keys WHERE name = $1")
-            .bind(&key_name)
+            .bind(key_name)
             .fetch_optional(pool)
             .await
             .context("read the minted key row")?;
@@ -197,7 +253,7 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
     } else {
         let casts = key_columns.iter().map(|c| format!("\"{c}\"::text")).collect::<Vec<_>>().join(", ");
         sqlx::query_scalar(&format!("SELECT concat_ws(chr(31), {casts}) FROM apikeys.keys WHERE name = $1"))
-            .bind(&key_name)
+            .bind(key_name)
             .fetch_optional(pool)
             .await
             .context("read the minted key row's columns")?
@@ -222,7 +278,7 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
     // 403 on another (transient gateway 429s retried past, never counted).
     let auth_code = keyed(|| ctx.http.get(format!("{front}/leaderboard")).header("X-Api-Key", secret.as_str())).await?;
     let report = serde_json::json!({
-        "ReportId": format!("ad6-{nonce}"),
+        "ReportId": format!("ad6-{}", names.nonce),
         "Winner": harness_player("ad6-w"),
         "Loser": harness_player("ad6-l"),
     });
@@ -237,19 +293,19 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
     // [AD6f] a Create key form opened while its role exists, posted after that role was
     // deleted underneath it, is a 409 (the FK refusal, never a 405 or a 422) and writes no key.
     let ghost_form = open(admin, front, &role_create_url).await?;
-    let ghost_fields = [("name", ghost_role.as_str()), ("methods", POLICY), ("extra_methods", "")];
+    let ghost_fields = [("name", ghost_role), ("methods", POLICY), ("extra_methods", "")];
     let ghost = post(admin, front, "role.create", &ghost_form, &ghost_fields).await?;
     let orphan_form = open(admin, front, &create_key_url).await?;
     let offers_ghost = orphan_form.html.contains(&format!(">{ghost_role}<"));
     let dropped = sqlx::query("DELETE FROM apikeys.roles WHERE name = $1")
-        .bind(&ghost_role)
+        .bind(ghost_role)
         .execute(pool)
         .await
         .context("delete the ghost role under the open form")?
         .rows_affected();
-    let (orphan_code, _, orphan_body) = create_key(admin, front, &orphan_form, &orphan_key, &ghost_role).await?;
+    let (orphan_code, _, orphan_body) = create_key(admin, front, &orphan_form, orphan_key, ghost_role).await?;
     let orphan_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM apikeys.keys WHERE name = $1")
-        .bind(&orphan_key)
+        .bind(orphan_key)
         .fetch_one(pool)
         .await
         .context("count the orphan key rows")?;
@@ -262,31 +318,42 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
         ),
     );
 
-    // [AD6g] the portal's plane recorded one admin.action per invoke attempt: two
-    // apikeys.role.create (the role and the ghost) and two apikeys.key.create (the minted key
-    // and the 409, the refused attempt included).
-    let audit_after = audit_counts(pool).await?;
-    let new = (audit_after.0 - audit_before.0, audit_after.1 - audit_before.1);
+    // [AD6g] the portal's plane recorded one admin.action per invoke attempt since the mark,
+    // each with its outcome (the detail up to its first ':'): two apikeys.role.create ok (the
+    // role and the ghost), one apikeys.key.create ok (the minted key) and one
+    // apikeys.key.create conflict (the 409, the refused attempt included).
+    let recorded = audit_since(pool, audit_mark).await?;
+    let mut outcomes: Vec<(String, String)> = recorded
+        .iter()
+        .map(|(action, detail)| (action.clone(), detail.split(':').next().unwrap_or_default().to_string()))
+        .collect();
+    outcomes.sort();
+    let want = [
+        ("apikeys.key.create", "conflict"),
+        ("apikeys.key.create", "ok"),
+        ("apikeys.role.create", "ok"),
+        ("apikeys.role.create", "ok"),
+    ];
     p.check(
         &format!("[AD6g{tag}] {}", LATER[5].1),
-        new == (2, 2),
-        format!("before={audit_before:?} after={audit_after:?} new(role.create,key.create)={new:?}"),
+        outcomes.len() == want.len() && outcomes.iter().zip(want).all(|((a, o), (wa, wo))| a == wa && o == wo),
+        format!("mark={audit_mark} recorded={recorded:?}"),
     );
 
     // [AD6h] the key's row menu opens Revoke bound to the key; confirmed with the typed name it
     // answers "Key revoked" and sets revoked_at; a second Revoke is a NoOp that leaves the row
     // (revoked_at, revision) as the first left it.
     let ad6h = async {
-        let Some(url) = menu_action(admin, front, "apikey", &key_name, "key.revoke").await? else {
+        let Some(url) = menu_action(admin, front, "apikey", key_name, "key.revoke").await? else {
             bail!("no apikeys/key.revoke in {key_name}'s row menu");
         };
-        let confirm = [("_reason", ""), ("_confirm", key_name.as_str())];
+        let confirm = [("_reason", ""), ("_confirm", key_name)];
         let form = open(admin, front, &url).await?;
         let first = post(admin, front, "key.revoke", &form, &confirm).await?;
-        let after_first = revoked(pool, &key_name).await?;
+        let after_first = revoked(pool, key_name).await?;
         let form = open(admin, front, &url).await?;
         let second = post(admin, front, "key.revoke", &form, &confirm).await?;
-        let after_second = revoked(pool, &key_name).await?;
+        let after_second = revoked(pool, key_name).await?;
         let ok = first == (303, "Key revoked".to_string())
             && after_first.as_ref().is_some_and(|(at, _)| at.is_some())
             && second == (303, format!("Key {key_name} is already revoked"))
@@ -300,21 +367,21 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
     // [AD6i] Delete role on the role the (now revoked) key still uses is a 409 and the role
     // stays; with the key gone the same action deletes it, so the 409 is the key, not the route.
     let ad6i = async {
-        let Some(url) = menu_action(admin, front, "apirole", &role_name, "role.delete").await? else {
+        let Some(url) = menu_action(admin, front, "apirole", role_name, "role.delete").await? else {
             bail!("no apikeys/role.delete in {role_name}'s row menu");
         };
         let form = open(admin, front, &url).await?;
         let in_use = post(admin, front, "role.delete", &form, &[]).await?;
-        let kept = role_row(pool, &role_name).await?;
+        let kept = role_row(pool, role_name).await?;
         let gone_key = sqlx::query("DELETE FROM apikeys.keys WHERE name = $1")
-            .bind(&key_name)
+            .bind(key_name)
             .execute(pool)
             .await
             .context("delete the revoked key")?
             .rows_affected();
         let form = open(admin, front, &url).await?;
         let unused = post(admin, front, "role.delete", &form, &[]).await?;
-        let after = role_row(pool, &role_name).await?;
+        let after = role_row(pool, role_name).await?;
         let ok = in_use.0 == 409
             && kept.is_some()
             && gone_key == 1
@@ -325,18 +392,6 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
     .await;
     let (ad6i_ok, ad6i_detail) = ad6i.unwrap_or_else(|e| (false, format!("{e:#}")));
     p.check(&format!("[AD6i{tag}] {}", LATER[7].1), ad6i_ok, ad6i_detail);
-
-    // Leave nothing behind when a check above stopped short (keys before roles: the FK).
-    sqlx::query("DELETE FROM apikeys.keys WHERE name = ANY($1)")
-        .bind(vec![key_name.clone(), orphan_key.clone()])
-        .execute(pool)
-        .await
-        .ok();
-    sqlx::query("DELETE FROM apikeys.roles WHERE name = ANY($1)")
-        .bind(vec![role_name.clone(), ghost_role.clone()])
-        .execute(pool)
-        .await
-        .ok();
     Ok(())
 }
 
@@ -437,16 +492,26 @@ async fn revoked(pool: &PgPool, name: &str) -> Result<Option<(Option<String>, i6
         .context("read the key's revocation")
 }
 
-/// proofadmin's `admin.action` rows for (apikeys.role.create, apikeys.key.create).
-async fn audit_counts(pool: &PgPool) -> Result<(i64, i64)> {
+/// The newest event's `tie_breaker` (an identity, so every event appended later is above it).
+async fn audit_mark(pool: &PgPool) -> Result<i64> {
+    sqlx::query_scalar("SELECT coalesce(max(tie_breaker), 0) FROM asyncevents.events")
+        .fetch_one(pool)
+        .await
+        .context("mark the event plane before the apikeys posts")
+}
+
+/// proofadmin's apikeys create `admin.action` rows appended after `mark`: (action, detail).
+async fn audit_since(pool: &PgPool, mark: i64) -> Result<Vec<(String, String)>> {
     sqlx::query_as(
-        "SELECT count(*) FILTER (WHERE payload->>'action' = 'apikeys.role.create'), \
-                count(*) FILTER (WHERE payload->>'action' = 'apikeys.key.create') \
-           FROM asyncevents.events WHERE topic = 'admin.action' AND payload->>'actor' = 'proofadmin'",
+        "SELECT payload->>'action', payload->>'detail' FROM asyncevents.events \
+          WHERE topic = 'admin.action' AND payload->>'actor' = 'proofadmin' AND tie_breaker > $1 \
+            AND payload->>'action' IN ('apikeys.role.create', 'apikeys.key.create') \
+          ORDER BY tie_breaker",
     )
-    .fetch_one(pool)
+    .bind(mark)
+    .fetch_all(pool)
     .await
-    .context("count the apikeys admin.action rows")
+    .context("read the apikeys admin.action rows")
 }
 
 /// Sends the request `build` makes until the answer is not a 429 (ten tries, a growing pause

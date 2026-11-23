@@ -15,3 +15,5 @@ Last updated: 2026-11-23
   Closed by `tools/splitproof/src/apikeys_admin_checks.rs`: AD3b, AD4, AD6b-AD6g re-pointed to
   `/admin/p/apikeys/keys` and its actions in both topologies (the monolith ids tagged `m`
   replace `[M3a]`/`[M3b]`), plus AD6h (revoke twice) and AD6i (delete an in-use role).
+  AD6b-AD6i prove the split hop through `apikeys` rows only apikeys-svc writes; the break
+  run (admin-svc without its `apikeys` peer) proves AD3b and AD4 only.

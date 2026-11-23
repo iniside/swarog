@@ -259,7 +259,7 @@ fn extract_form_fields(html: &str) -> Vec<(String, String)> {
 }
 
 /// Monolith-parity phase: boot cmd/server (all modules Local) on the split's player
-/// front and re-prove register/QUIC/auth/admin work identically (M0-M3b).
+/// front and re-prove register/QUIC/auth/admin work identically (M0-M3).
 async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Result<()> {
     println!("\n[splitproof] === MONOLITH PARITY (cmd/server, all Local) ===");
     sqlx::query("DELETE FROM admin.sessions").execute(pool).await.ok();
@@ -856,7 +856,7 @@ async fn proof_phase(
     drop(fleet);
     tokio::time::sleep(Duration::from_millis(800)).await;
     if let Err(e) = monolith_parity(ctx, pool, idp, p).await {
-        p.check("[M0-M3b] monolith parity phase", false, format!("fatal: {e:#}"));
+        p.check("[M0-M3] monolith parity phase", false, format!("fatal: {e:#}"));
     }
     Ok(())
 }
@@ -1778,7 +1778,7 @@ async fn edge_state(pool: &PgPool, edge_id: &str) -> Option<String> {
 /// player uuids, with no FK to `accounts` by design.
 /// [`friends_checks`] with its transport errors converted into ONE named failing check. The
 /// parity pass runs BEFORE `[W2]`, and an `Err` out of `monolith_parity` collapses into a
-/// single `[M0-M3b]` failure — so a friends 429 or a dropped connection would delete the
+/// single `[M0-M3]` failure — so a friends 429 or a dropped connection would delete the
 /// graceful-shutdown proof from the run and point the diagnosis at the wrong assertion.
 async fn friends_assertions(
     ctx: &Ctx,
