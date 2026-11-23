@@ -41,19 +41,20 @@ One deployment means one studio and one Lore server. There is no tenant or organ
 2. **Device login approval.** "Enter the code shown in your terminal" (`ABCD-EFGH`), then a screen to confirm "Allow `lore` CLI on WS-AIKO-01 to act as aiko.tanaka?", and the approved and denied results.
 3. **Home.** Review requests for me, my open merge requests, my locks (marking stale ones), recent activity in my repositories (pushes, merges, comments), and pinned repositories.
 4. **Repositories list.** Name, description, default branch, last push, my access level (read / write / maintain), open merge requests, locks.
-5. **Repository: Files.** A `RefPicker` and the file tree. The README renders under the tree. Directory rows show the last revision and its author. Show the clone command `lore clone lore://lore.emberline.gg/ashfall-game`.
+5. **Repository: Files.** A `RefPicker` and the file tree. Clicking a directory opens that folder: clickable breadcrumb segments, a ".." row, its children, its README if it has one, and "History of this folder". The README renders under the tree. Directory rows show the last revision and its author. Show the clone command `lore clone lore://lore.emberline.gg/ashfall-game`.
 6. **Repository: File view.**
    - Text files: `CodeView` with a "Show attribution" toggle, the per-line author and revision gutter.
    - Binary assets: `AssetCard` with a preview where one exists, size, type, lock state (held by whom and since when, and Lock / Release for me) and this file's history.
 7. **Repository: History.** Revisions as a timeline grouped by day: id in mono, message, author, size of the change (files and bytes), and filters by branch, path and author.
 8. **Revision detail.** Message, parents and changed files, with a `DiffView` for text and before/after metadata (size, and a preview where one exists) for binaries. Readers can comment on lines and on whole files.
-9. **Repository: Branches.** Name, head, updated, ahead/behind against the default branch, a protected badge, open merge request, and "New merge request" from a branch row.
-10. **Compare.** Base … head `RefPicker`s, the summary, revisions and the diff. Ends in "Create merge request".
-11. **Merge requests list.**
+9. **Repository: Merge requests and Locks.** The repository tab bar (Files, History, Branches, Merge requests, Locks) stays inside the repository: Merge requests lists all of this repository's requests (same tabs, filters and rows as screen 11); Locks lists every lock in the repository, held by anyone, with "Release lock" on mine and "Ask to release" on others'. The sidebar entries stay personal.
+10. **Repository: Branches.** Name, head, updated, ahead/behind against the default branch, a protected badge, open merge request, and "New merge request" from a branch row.
+11. **Compare.** Base … head `RefPicker`s, the summary, revisions and the diff. Ends in "Create merge request".
+12. **Merge requests list.**
     - Tabs Open / Merged / Closed, with filters for author, reviewer, label and target branch.
     - Each row: title, `!42`, source → target, author, reviewers with their `ReviewState`, comment count, updated.
-12. **New merge request.** Source and target branches, title, description (markdown with a preview), reviewers, labels, a draft toggle, and the change summary beneath.
-13. **Merge request detail.**
+13. **New merge request.** Source and target branches, title, description (markdown with a preview), reviewers, labels, a draft toggle, and the change summary beneath.
+14. **Merge request detail.**
     - Header: title, state, source → target, author.
     - Tabs:
       - **Conversation**: the description, then a timeline of comments, reviews, pushes and state changes, then the reply box.
