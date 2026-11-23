@@ -60,7 +60,7 @@
 - [weles must stay C-free](weles-must-stay-c-free-cross-compile.md) — no *-sys / bundled-C deps in weles/processctl
 - [Module reference pair](module-reference-pair.md) — characters + inventory are the reference modules
 - [Generic remote-admin-write seam](generic-remote-admin-write-seam.md) — enrich generic adminapi, never a module-coupled page
-- [Admin extension points shipped](admin-extension-points-shipped.md) — ExtensionPoint/ExtensionEntry cross-module admin seam
+- [Admin seam = controlplane::Provider](admin-extension-points-shipped.md) — old ExtensionPoint seam razed (b8435c9a); use Provider/Manifest/Point
 - [Splitproof is proof surface](splitproof-is-proof-surface.md) — authoring = test-author opus; auditing = proof-auditor
 - [Plans: invariants, not prose code](plans-specify-invariants-not-prose-code.md) — specify decisions + invariants; one plan review
 - [Purge race is a bug](purge-race-is-a-bug-not-accepted.md) — fix tombstone/sweep races per module, never accept
