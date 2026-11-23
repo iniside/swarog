@@ -263,14 +263,14 @@ New `docs/todo/admin-second-pass.md` items in part `a`:
 
 **K2. Reads.** **Recommended:** new store reads in 21a1:
 - `keys_page(needle, status, role, after, limit)`: keyset on `(created_at, name)` DESC, `limit` 26 for a page of 25.
-- One stats query: total, active, and the narrowed total. These are exact `count(*)`; the comment names the missing index (none on `created_at` or `role`).
+- One stats query: total and active (no narrowed total: K3 draws no total when narrowed). These are exact `count(*)`; the comment names the missing index (none on `created_at` or `role`).
 - `roles_with_counts()`: `LEFT JOIN keys` and `count(k.name)` per role, ordered by name.
-- `key(name)` and `role(name)` for `prepare`.
+- `key(name)` and `role(name)` for `prepare` (moved to 21a2, its only caller).
 - Delete `list_keys` and `list_roles` once nothing calls them.
 
 **K3. Filters and search.** **Recommended:**
 - Status `Select(["active","revoked"])`; Role `Select(<role names at render>)`; empty narrows nothing.
-- The needle is an `ILIKE` on name or prefix, capped as accounts caps (`aad:744`).
+- The needle matches name or prefix with `strpos(lower(col), lower(needle)) > 0`, as the accounts store does, so `%` and `_` are literal; capped in `admin.rs` as accounts caps (`aad:744`). (Changed from `ILIKE` in 21a1 part 1.)
 - The total is drawn only when not narrowed (as `mad:457`).
 
 **K4. FAKE cells.** All come from `controlplane::fake_hash(salt, name)`, marked `// FAKE:`, each with a todo item:
