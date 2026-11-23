@@ -14,6 +14,7 @@ dashboard_attention | inventory | attention.purges | 63
 dashboard_attention | friends | attention.purges | 64
 dashboard_attention | groups | attention.purges | 65
 dashboard_attention | storage | attention.purges | 66
+dashboard_attention | notifications | attention.purges | 67
 dashboard_tile | accounts | tile.active | 10
 dashboard_tile | portal | tile.lore-seats | 20
 dashboard_tile | portal | tile.lore-store | 30
@@ -41,12 +42,15 @@ entity_tab player | inventory | inventory | 40
 entity_tab player | friends | friends | 50
 entity_tab player | groups | groups | 60
 entity_tab player | storage | saves | 70
+entity_tab player | notifications | inbox | 80
 entity_tab subscription | core.events | subscription.details | 0
 entity_tab_count player/characters | characters | tab.count | 0
 entity_tab_count player/friends | friends | tab.count | 0
 entity_tab_count player/groups | groups | tab.count | 0
+entity_tab_count player/inbox | notifications | inbox.count | 0
 entity_tab_count player/inventory | inventory | tab.count | 0
 entity_tab_tile player/wallet | wallet | wallet.tiles | 0
+header_action player | notifications | notify | 20
 header_action player | accounts | suspend-header | 30
 row_action friendship | friends | friendship.remove | 0
 row_action holding | inventory | holding.revoke | 0
@@ -55,6 +59,7 @@ row_action player | accounts | delete-account | 30
 row_action player | wallet | currency.grant | 40
 row_action player | wallet | currency.revoke | 40
 row_action player | inventory | item.grant | 50
+row_action player | notifications | send | 60
 row_action player | storage | player.download-saves | 80
 row_action subscription | core.events | sub.pause | 10
 row_action subscription | core.events | sub.resume | 20
