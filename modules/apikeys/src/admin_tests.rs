@@ -518,26 +518,34 @@ async fn refusals_are_decided_before_the_store() {
     assert_eq!(e.status, Status::NotFound);
     let e = p.invoke(InvokeCall { entity: None, ..call("key.revoke", BTreeMap::new()) }).await.unwrap_err();
     assert_eq!(e.status, Status::Invalid);
+    assert!(e.msg.contains("needs an API key"), "{e:?}");
     let role_entity = Some(EntityRef { kind: ROLE_KIND.into(), id: "k".into() });
     let e = p.invoke(InvokeCall { entity: role_entity.clone(), ..call("key.change-role", BTreeMap::new()) }).await.unwrap_err();
     assert_eq!(e.status, Status::Invalid);
+    assert!(e.msg.contains("needs an API key"), "{e:?}");
     let no_role = p.invoke(key_call("key.change-role", "k", BTreeMap::new(), Some(1))).await.unwrap();
     assert_eq!(no_role, InvokeOutcome::FieldErrors(BTreeMap::from([("role".into(), "required".into())])));
     let to_ops = BTreeMap::from([("role".to_string(), "ops".to_string())]);
     let e = p.invoke(key_call("key.change-role", "k", to_ops, None)).await.unwrap_err();
     assert_eq!(e.status, Status::Invalid, "no revision is refused before the key is read: {e:?}");
+    assert!(e.msg.contains("changing a role needs the form's revision"), "{e:?}");
     let no_role = p.invoke(call("key.create", create_input("fine", "", Some("Never")))).await.unwrap();
     assert_eq!(no_role, InvokeOutcome::FieldErrors(BTreeMap::from([("role".into(), "required".into())])));
 
     let role_call = |action: &str, input| InvokeCall { entity: role_entity.clone(), ..call(action, input) };
     for action in ["role.edit", "role.delete"] {
-        let e = p.invoke(call(action, policy_input(&["full"], None))).await.unwrap_err();
+        // No methods and a revision: only the entity check can answer before `compose_policy`.
+        let bound_to_key = InvokeCall { expected_revision: Some(1), ..call(action, BTreeMap::new()) };
+        let e = p.invoke(bound_to_key).await.unwrap_err();
         assert_eq!(e.status, Status::Invalid, "{action} bound to a key");
+        assert!(e.msg.contains("needs an API role"), "{action} bound to a key: {e:?}");
         let e = p.prepare(prepare_call(action, Some("k"))).await.unwrap_err();
         assert_eq!(e.status, Status::Invalid, "{action} prepared for a key");
+        assert!(e.msg.contains("needs an API role"), "{action} prepared for a key: {e:?}");
     }
     let e = p.invoke(role_call("role.edit", policy_input(&["full"], None))).await.unwrap_err();
     assert_eq!(e.status, Status::Invalid, "an edit with no revision: {e:?}");
+    assert!(e.msg.contains("editing a policy needs the form's revision"), "{e:?}");
     match p.invoke(InvokeCall { expected_revision: Some(1), ..role_call("role.edit", BTreeMap::new()) }).await {
         Ok(InvokeOutcome::FieldErrors(errors)) => assert!(errors.contains_key("methods"), "{errors:?}"),
         other => panic!("an edit picking nothing: FieldErrors on methods, got {other:?}"),
@@ -554,6 +562,7 @@ async fn refusals_are_decided_before_the_store() {
     assert_eq!(e.status, Status::NotFound);
     let e = p.prepare(prepare_call("key.revoke", None)).await.unwrap_err();
     assert_eq!(e.status, Status::Invalid);
+    assert!(e.msg.contains("needs an API key"), "{e:?}");
     for (name, expires, field) in [
         ("", "Never", "name"),
         (" padded", "Never", "name"),
@@ -574,14 +583,17 @@ async fn refusals_are_decided_before_the_store() {
     let big = BTreeMap::from([("x".to_string(), "v".repeat(controlplane::MAX_INPUT_VALUE_BYTES + 1))]);
     let e = p.invoke(call("key.rotate", big)).await.unwrap_err();
     assert_eq!(e.status, Status::Invalid);
+    assert!(e.msg.contains("an input value is longer than"), "{e:?}");
 
     let e = p.panel(query("nope", None, None, &[])).await.unwrap_err();
     assert_eq!(e.status, Status::NotFound);
     let long = "n".repeat(MAX_NEEDLE_BYTES + 1);
     let e = p.panel(query("keys", Some(&long), None, &[])).await.unwrap_err();
     assert_eq!(e.status, Status::Invalid);
+    assert!(e.msg.contains("the search is longer than"), "{e:?}");
     let e = p.panel(query("keys", None, None, &[("status", "lost")])).await.unwrap_err();
     assert_eq!(e.status, Status::Invalid);
+    assert!(e.msg.contains("unknown status"), "{e:?}");
 
     for (kind, q) in [("apirole", "x"), ("apikey", "  "), ("apikey", long.as_str())] {
         let req = SearchQuery { module: "apikeys".into(), kind: kind.into(), q: q.into(), limit: 10 };
