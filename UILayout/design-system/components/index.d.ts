@@ -40,6 +40,8 @@ export declare function PropertyList(pairs: Array<[label: string, valueHtml: str
 export interface RawRecordOptions { maxHeight?: number }
 export declare function RawRecord(value: unknown, opts?: RawRecordOptions): string;
 export declare function rawCopyBtn(): string;
+/** Copies the raw record of the button's panel; toasts a failure when the clipboard is blocked. */
+export declare function copyRaw(btn: HTMLElement): void;
 
 export interface TimelineEntry { t: string; day?: string; icon?: string; tone?: Tone; html: string; meta?: string }
 export declare function Timeline(entries: TimelineEntry[]): string;
@@ -95,7 +97,7 @@ declare global {
       Panel: typeof Panel; DataTable: typeof DataTable; KpiTile: typeof KpiTile; PropertyList: typeof PropertyList;
       Timeline: typeof Timeline; Form: typeof Form; ConfirmAction: typeof ConfirmAction; SecretReveal: typeof SecretReveal;
       ServiceStatus: typeof ServiceStatus; TimeSeriesChart: typeof TimeSeriesChart; MenuAction: typeof MenuAction;
-      Badge: typeof Badge; Annotation: typeof Annotation; RawRecord: typeof RawRecord; rawJson: typeof RawRecord; rawCopyBtn: typeof rawCopyBtn; status: typeof status; icon: typeof icon; ref: typeof ref;
+      Badge: typeof Badge; Annotation: typeof Annotation; RawRecord: typeof RawRecord; rawJson: typeof RawRecord; rawCopyBtn: typeof rawCopyBtn; copyRaw: typeof copyRaw; status: typeof status; icon: typeof icon; ref: typeof ref;
       defineMenu: typeof defineMenu; rowMenuBtn: typeof rowMenuBtn; toast: typeof toast;
       openMenu: typeof MenuAction; frag: typeof Annotation; badge: typeof Badge; confirm: typeof ConfirmAction; secret: typeof SecretReveal;
       MODULE_COLORS: Record<string, string>;

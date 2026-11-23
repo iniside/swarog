@@ -71,7 +71,7 @@ window.UI = (() => {
     scheduler: "#be185d", audit: "#334155", apikeys: "#4338ca", lore: "#dc2626", "core.events": "#0369a1",
   };
 
-  const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const fmt = n => typeof n === "number" ? n.toLocaleString("en-US") : n;
 
   const state = {
@@ -206,8 +206,9 @@ window.UI = (() => {
   const rawCopyBtn = () => `<button class="btn sm" onclick="UI.copyRaw(this)">${icon("copy")} Copy</button>`;
   function copyRaw(btn) {
     const pre = btn.closest(".panel")?.querySelector(".raw-json");
-    try { navigator.clipboard?.writeText(pre ? pre.textContent : ""); } catch (e) { /* clipboard blocked */ }
-    copied(btn);
+    const fail = () => toast("Copy failed: the browser blocked the clipboard", "info");
+    if (!navigator.clipboard) return fail();
+    navigator.clipboard.writeText(pre ? pre.textContent : "").then(() => copied(btn), fail);
   }
 
   // ---------- timeline ----------
@@ -334,7 +335,7 @@ window.UI = (() => {
     const tone = o.tone || "danger";
     const typed = o.typeToConfirm ? `<div style="margin-top:10px"><div style="font-size:12px;margin-bottom:4px">Type <b class="mono">${esc(o.typeToConfirm)}</b> to confirm</div><input class="input mono" style="width:100%" oninput="this.closest('.modal').querySelector('.go').disabled = this.value !== '${esc(o.typeToConfirm)}'"></div>` : "";
     const reason = o.reason ? `<div style="margin-top:10px"><div style="font-size:12px;margin-bottom:4px">Reason <span class="muted">(recorded in audit log)</span></div><input class="input" style="width:100%" placeholder="${esc(o.reason)}"></div>` : "";
-    const html = `${frag(o.c, `<div class="modal-head"><div class="modal-icon ${tone === "danger" ? "danger" : tone}">${icon(o.icon || (tone === "danger" ? "alert" : "info"))}</div><div><h2>${esc(o.title)}</h2></div></div><div class="modal-body">${o.body || ""}${o.impact ? `<div class="impact">${o.impact.map(([k, v]) => `<div><span>${esc(k)}</span><b>${v}</b></div>`).join("")}</div>` : ""}${reason}${typed}</div>`, { left: true })}<div class="modal-foot"><span class="muted" style="margin-right:auto;font-size:12px;align-self:center">${o.footNote || ""}</span><button class="btn" onclick="UI.closeModal()">Cancel</button><button class="btn ${tone === "danger" ? "danger" : "primary"} go" ${o.typeToConfirm ? "disabled" : ""} onclick="${o.onConfirm ? esc(o.onConfirm) : "UI.closeModal();UI.toast('" + esc(o.done || "Done") + "')"}">${esc(o.confirm || "Confirm")}</button></div>`;
+    const html = `${frag(o.c, `<div class="modal-head"><div class="modal-icon ${tone === "danger" ? "danger" : tone}">${icon(o.icon || (tone === "danger" ? "alert" : "info"))}</div><div><h2>${esc(o.title)}</h2></div></div><div class="modal-body">${o.body || ""}${o.impact ? `<div class="impact">${o.impact.map(([k, v]) => `<div><span>${esc(k)}</span><b>${v}</b></div>`).join("")}</div>` : ""}${reason}${typed}</div>`, { left: true })}<div class="modal-foot"><span class="muted" style="margin-right:auto;font-size:12px;align-self:center">${o.footNote || ""}</span><button class="btn" onclick="UI.closeModal()">Cancel</button><button class="btn ${tone === "danger" ? "danger" : "primary"} go" ${o.typeToConfirm ? "disabled" : ""} data-done="${esc(o.done || "Done")}" onclick="${o.onConfirm ? esc(o.onConfirm) : "UI.toast(this.dataset.done);UI.closeModal()"}">${esc(o.confirm || "Confirm")}</button></div>`;
     modal(html, o);
   }
   function toast(text, tone = "ok") {

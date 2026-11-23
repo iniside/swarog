@@ -147,7 +147,7 @@
         body: `${props([["Event", `<span class="mono">wallet.debited #${s.poison.seq.toLocaleString("en-US")}</span>`], ["Consumer", `${s.module} · handler on_purchase`], ["Error", `<span class="mono" style="color:var(--err)">${esc(s.poison.err)}</span>`]])}<div class="code" style="margin-top:10px">{
   "seq": 12905,
   "topic": "wallet.debited",
-  "player_id": "d71b2f86",
+  "player_id": "${D.byHandle.kestrel.id}",
   "amount": { "value": 1, "currency": "TOK2" },
   "reason": "store.purchase",
   "tx": "tx_89f7"

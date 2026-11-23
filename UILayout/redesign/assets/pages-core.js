@@ -87,7 +87,7 @@ window.PAGES = window.PAGES || {};
           badge(u.kind, u.kind === "staff" ? "accent" : "", true),
           status(u.status),
           u.providers.map(p => `<span class="tag">${p}</span>`).join(" "),
-          u.characters,
+          D.characters.filter(c => c.player_id === u.id).length,
           u.loreRole ? badge(u.loreRole, "", true) : `<span class="muted">—</span>`,
           `<span class="muted" title="wallet module unavailable">${icon("alert")}</span>`,
           `<span class="dim">${u.lastSeen}</span>`,
@@ -140,7 +140,7 @@ window.PAGES = window.PAGES || {};
     const list = all.filter(h => !P.holdKind || P.itemById[h.item_id].kind === P.holdKind);
     const off = "Grant and revoke are not exposed to admins by the inventory module yet";
     const owner = h => h.owner_type === "player" ? `<span class="tag">player</span>` : `<span class="row" style="gap:6px"><span class="tag">character</span>${P.charLink(P.charById[h.owner_id])}</span>`;
-    return panel({ c: { module: "inventory", point: "entity.user.tab", prim: "DataTable" }, title: "Inventory", meta: `player ${u.id} and ${P.plural(mine.length, "character", "characters")}`, flush: true,
+    return panel({ c: { module: "inventory", point: "entity.user.tab", prim: "DataTable" }, title: "Inventory", meta: `player ${u.id.slice(0, 8)} and ${P.plural(mine.length, "character", "characters")}`, flush: true,
       tools: `<button class="btn sm" disabled title="${off}">${icon("gift")} Grant item</button>`,
       emptyTitle: "No items", emptyDetail: "Neither the player nor their characters hold anything.",
       body: table({ searchPlaceholder: "Item id or name", filters: [P.pick("holdKind", "Kind", kinds, P.holdKind)],
@@ -246,7 +246,7 @@ window.PAGES = window.PAGES || {};
       body: "A group admin can invite players and accept or reject join requests.",
       reason: "Optional",
       impact: [["Player", userCell(handleOf(pid))], ["Group", esc(groupById[gid].name)], ["Role", `${roleBadge("member")} → ${roleBadge("admin")}`]],
-      confirm: "Promote", done: `${handleOf(pid)} is now an admin of ${esc(groupById[gid].name)}`,
+      confirm: "Promote", done: `${handleOf(pid)} is now an admin of ${groupById[gid].name}`,
     });
   };
 
@@ -303,7 +303,7 @@ window.PAGES = window.PAGES || {};
       const active = activeTab(tabs, q, "overview");
       P.character.meta.crumbs = [["Players", "players.html"], ["Characters", "characters.html"], [esc(c.name)]];
       const tabBar = tabs.map(t => tabButton("entity.character.tab", t, active, t.count && t.count(c))).join("");
-      const actions = `<a class="btn" href="player.html?u=${handleOf(c.player_id)}">${icon("user")} Open owner</a><button class="btn icon" aria-label="More actions" onclick="UI.openMenu(event,'character','${c.id}')">${icon("more")}</button>`;
+      const actions = frag({ module: "characters", point: "entity.character.header_action", prim: "MenuAction" }, `<a class="btn" href="player.html?u=${handleOf(c.player_id)}">${icon("user")} Open owner</a>`, { inline: true, tag: "span" }) + `<button class="btn icon" aria-label="More actions" onclick="UI.openMenu(event,'character','${c.id}')">${icon("more")}</button>`;
       return entityHeader("entity.character (host)", charAvatar(c, true), `<h1>${esc(c.name)}</h1>${badge(c.class, "", true)}`, factsOf(REG.characterFacts, "entity.character.summary_field", c), actions, tabBar) + charTab[active](c);
     },
   };
@@ -340,7 +340,7 @@ window.PAGES = window.PAGES || {};
     const list = D.memberships.filter(m => m.group_id === g.id && m.state === "member");
     return panel({ c: { module: "groups", point: "entity.group.tab", prim: "DataTable" }, title: "Members", meta: plural(list.length, "member", "members"), flush: true,
       emptyTitle: "No members", emptyDetail: "Nobody has joined this group.",
-      body: table({ searchPlaceholder: "Player handle", filters: [], cols: [{ label: "Player" }, { label: "Role" }, { label: "Joined", sorted: "asc" }],
+      body: table({ searchPlaceholder: "Player handle", filters: [], cols: [{ label: "Player" }, { label: "Role" }, { label: "Since", sorted: "asc" }],
         rows: list.map(m => ({ key: `${g.id}|${m.player_id}`, cells: [userCell(handleOf(m.player_id)), roleBadge(m.role), when(m.created_at)] })),
         rowMenu: r => rowMenuBtn("groupMember", r.key), total: plural(list.length, "member", "members"), page: "1 / 1" }) });
   };

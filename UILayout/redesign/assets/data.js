@@ -1,21 +1,30 @@
 // Fake data shared by every mockup screen. Deployment: Emberline Studio, game "Ashfall".
 window.DATA = (() => {
   const users = [
-    { id: "7f3a9c21", handle: "aiko.tanaka", seatSince: "2025-03-11", name: "Aiko Tanaka", email: "aiko@emberline.gg", kind: "staff", status: "active", providers: ["google", "epic"], created: "2025-03-11", lastSeen: "4 min ago", country: "JP", loreRole: "Lead", color: "#d9488a", characters: 3, wallet: { EMB: 12400, GLD: 850, TOK: 12 } },
-    { id: "1b84e0d7", handle: "marta.k", seatSince: "2024-11-02", name: "Marta Kowalczyk", email: "marta@emberline.gg", kind: "staff", status: "active", providers: ["google"], created: "2024-11-02", lastSeen: "now", country: "PL", loreRole: "Admin", color: "#4f5bd5", characters: 1, wallet: { EMB: 0, GLD: 0, TOK: 0 } },
-    { id: "c02d5f19", handle: "jonas.l", seatSince: "2024-11-03", name: "Jonas Lindqvist", email: "jonas@emberline.gg", kind: "staff", status: "active", providers: ["google"], created: "2024-11-03", lastSeen: "18 min ago", country: "SE", loreRole: "Lead", color: "#0f9488", characters: 2, wallet: { EMB: 300, GLD: 40, TOK: 0 } },
-    { id: "9e61aa04", handle: "diego.r", seatSince: "2025-01-20", name: "Diego Ramos", email: "diego@emberline.gg", kind: "staff", status: "active", providers: ["google", "epic"], created: "2025-01-20", lastSeen: "1 h ago", country: "ES", loreRole: "Developer", color: "#c2630f", characters: 4, wallet: { EMB: 5200, GLD: 120, TOK: 3 } },
-    { id: "44f0b3e8", handle: "priya.n", seatSince: "2025-02-14", name: "Priya Nair", email: "priya@emberline.gg", kind: "staff", status: "active", providers: ["google"], created: "2025-02-14", lastSeen: "2 h ago", country: "IN", loreRole: "Developer", color: "#7c3aed", characters: 0, wallet: { EMB: 0, GLD: 0, TOK: 0 } },
-    { id: "5a7c19d2", handle: "tomasz.w", seatSince: "2026-06-03", name: "Tomasz Wrona", email: "tomasz@emberline.gg", kind: "staff", status: "active", providers: ["google"], created: "2025-05-06", lastSeen: "yesterday", country: "PL", loreRole: "Developer", color: "#2563eb", characters: 1, wallet: { EMB: 90, GLD: 0, TOK: 0 } },
-    { id: "e8d24c61", handle: "elena.p", seatSince: "2026-09-01", name: "Elena Petrova", email: "elena@contractor.io", kind: "staff", status: "active", providers: ["google"], created: "2026-08-19", lastSeen: "3 d ago", country: "BG", loreRole: "Viewer", color: "#be123c", characters: 0, wallet: { EMB: 0, GLD: 0, TOK: 0 } },
-    { id: "b39f7e10", handle: "sam.o", seatSince: "2026-08-11", name: "Sam Okafor", email: "sam@emberline.gg", kind: "staff", status: "suspended", providers: ["google"], created: "2025-07-30", lastSeen: "21 d ago", country: "NG", loreRole: "Developer", color: "#65a30d", characters: 1, wallet: { EMB: 0, GLD: 0, TOK: 0 } },
-    { id: "3c90e5ab", handle: "NightOwl_77", name: "NightOwl_77", email: "—", kind: "player", status: "active", providers: ["epic"], created: "2026-02-08", lastSeen: "12 min ago", country: "DE", loreRole: null, color: "#0891b2", characters: 5, wallet: { EMB: 48210, GLD: 3120, TOK: 44 } },
-    { id: "d71b2f86", handle: "kestrel", name: "kestrel", email: "—", kind: "player", status: "active", providers: ["google"], created: "2026-04-17", lastSeen: "1 h ago", country: "US", loreRole: null, color: "#9333ea", characters: 2, wallet: { EMB: 6100, GLD: 410, TOK: 2 } },
-    { id: "0a5e8c33", handle: "ash_and_ember", name: "ash_and_ember", email: "—", kind: "player", status: "banned", providers: ["epic"], created: "2026-01-29", lastSeen: "9 d ago", country: "BR", loreRole: null, color: "#dc2626", characters: 3, wallet: { EMB: 0, GLD: 0, TOK: 0 } },
-    { id: "f6c4d097", handle: "MiraVoss", name: "MiraVoss", email: "—", kind: "player", status: "active", providers: ["epic", "google"], created: "2025-12-02", lastSeen: "now", country: "PL", loreRole: null, color: "#059669", characters: 6, wallet: { EMB: 91300, GLD: 7720, TOK: 130 } },
-    { id: "28be71f5", handle: "guest-28be71f5", name: "guest-28be71f5", email: "—", kind: "player", status: "active", providers: ["guest"], created: "2026-10-22", lastSeen: "6 min ago", country: "FR", loreRole: null, color: "#64748b", characters: 1, wallet: { EMB: 500, GLD: 0, TOK: 0 } },
-    { id: "a419d3c0", handle: "Volkhv", name: "Volkhv", email: "—", kind: "player", status: "active", providers: ["epic"], created: "2025-10-14", lastSeen: "3 h ago", country: "UA", loreRole: null, color: "#ca8a04", characters: 2, wallet: { EMB: 22040, GLD: 1310, TOK: 9 } },
+    { id: "7f3a9c21", handle: "aiko.tanaka", seatSince: "2025-03-11", name: "Aiko Tanaka", email: "aiko@emberline.gg", kind: "staff", status: "active", providers: ["google", "epic"], created: "2025-03-11", lastSeen: "4 min ago", country: "JP", loreRole: "Lead", color: "#d9488a", wallet: { EMB: 12400, GLD: 850, TOK: 12 } },
+    { id: "1b84e0d7", handle: "marta.k", seatSince: "2024-11-02", name: "Marta Kowalczyk", email: "marta@emberline.gg", kind: "staff", status: "active", providers: ["google"], created: "2024-11-02", lastSeen: "now", country: "PL", loreRole: "Admin", color: "#4f5bd5", wallet: { EMB: 0, GLD: 0, TOK: 0 } },
+    { id: "c02d5f19", handle: "jonas.l", seatSince: "2024-11-03", name: "Jonas Lindqvist", email: "jonas@emberline.gg", kind: "staff", status: "active", providers: ["google"], created: "2024-11-03", lastSeen: "18 min ago", country: "SE", loreRole: "Lead", color: "#0f9488", wallet: { EMB: 300, GLD: 40, TOK: 0 } },
+    { id: "9e61aa04", handle: "diego.r", seatSince: "2025-01-20", name: "Diego Ramos", email: "diego@emberline.gg", kind: "staff", status: "active", providers: ["google", "epic"], created: "2025-01-20", lastSeen: "1 h ago", country: "ES", loreRole: "Developer", color: "#c2630f", wallet: { EMB: 5200, GLD: 120, TOK: 3 } },
+    { id: "44f0b3e8", handle: "priya.n", seatSince: "2025-02-14", name: "Priya Nair", email: "priya@emberline.gg", kind: "staff", status: "active", providers: ["google"], created: "2025-02-14", lastSeen: "2 h ago", country: "IN", loreRole: "Developer", color: "#7c3aed", wallet: { EMB: 0, GLD: 0, TOK: 0 } },
+    { id: "5a7c19d2", handle: "tomasz.w", seatSince: "2026-06-03", name: "Tomasz Wrona", email: "tomasz@emberline.gg", kind: "staff", status: "active", providers: ["google"], created: "2025-05-06", lastSeen: "yesterday", country: "PL", loreRole: "Developer", color: "#2563eb", wallet: { EMB: 90, GLD: 0, TOK: 0 } },
+    { id: "e8d24c61", handle: "elena.p", seatSince: "2026-09-01", name: "Elena Petrova", email: "elena@contractor.io", kind: "staff", status: "active", providers: ["google"], created: "2026-08-19", lastSeen: "3 d ago", country: "BG", loreRole: "Viewer", color: "#be123c", wallet: { EMB: 0, GLD: 0, TOK: 0 } },
+    { id: "b39f7e10", handle: "sam.o", seatSince: "2026-08-11", name: "Sam Okafor", email: "sam@emberline.gg", kind: "staff", status: "suspended", providers: ["google"], created: "2025-07-30", lastSeen: "21 d ago", country: "NG", loreRole: "Developer", color: "#65a30d", wallet: { EMB: 0, GLD: 0, TOK: 0 } },
+    { id: "3c90e5ab", handle: "NightOwl_77", name: "NightOwl_77", email: "—", kind: "player", status: "active", providers: ["epic"], created: "2026-02-08", lastSeen: "12 min ago", country: "DE", loreRole: null, color: "#0891b2", wallet: { EMB: 48210, GLD: 3120, TOK: 44 } },
+    { id: "d71b2f86", handle: "kestrel", name: "kestrel", email: "—", kind: "player", status: "active", providers: ["google"], created: "2026-04-17", lastSeen: "1 h ago", country: "US", loreRole: null, color: "#9333ea", wallet: { EMB: 6100, GLD: 410, TOK: 2 } },
+    { id: "0a5e8c33", handle: "ash_and_ember", name: "ash_and_ember", email: "—", kind: "player", status: "banned", providers: ["epic"], created: "2026-01-29", lastSeen: "9 d ago", country: "BR", loreRole: null, color: "#dc2626", wallet: { EMB: 0, GLD: 0, TOK: 0 } },
+    { id: "f6c4d097", handle: "MiraVoss", name: "MiraVoss", email: "—", kind: "player", status: "active", providers: ["epic", "google"], created: "2025-12-02", lastSeen: "now", country: "PL", loreRole: null, color: "#059669", wallet: { EMB: 91300, GLD: 7720, TOK: 130 } },
+    { id: "28be71f5", handle: "guest-28be71f5", name: "guest-28be71f5", email: "—", kind: "player", status: "active", providers: ["guest"], created: "2026-10-22", lastSeen: "6 min ago", country: "FR", loreRole: null, color: "#64748b", wallet: { EMB: 500, GLD: 0, TOK: 0 } },
+    { id: "a419d3c0", handle: "Volkhv", name: "Volkhv", email: "—", kind: "player", status: "active", providers: ["epic"], created: "2025-10-14", lastSeen: "3 h ago", country: "UA", loreRole: null, color: "#ca8a04", wallet: { EMB: 22040, GLD: 1310, TOK: 9 } },
   ];
+  const uuid = seed => {
+    let h = 2166136261;
+    const hex = [];
+    for (let k = 0; k < 32; k++) { h = Math.imul(h ^ (seed.charCodeAt(k % seed.length) + k), 16777619) >>> 0; hex.push((h >>> 7 & 15).toString(16)); }
+    hex[12] = "4"; hex[16] = "89ab"[parseInt(hex[16], 16) & 3];
+    const s = hex.join("");
+    return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`;
+  };
+  users.forEach(u => { u.id = u.id + uuid("user:" + u.handle).slice(8); });
   const byHandle = Object.fromEntries(users.map(u => [u.handle, u]));
 
   const repos = [
@@ -212,14 +221,6 @@ window.DATA = (() => {
   };
 
   const byId = Object.fromEntries(users.map(u => [u.id, u]));
-  const uuid = seed => {
-    let h = 2166136261;
-    const hex = [];
-    for (let k = 0; k < 32; k++) { h = Math.imul(h ^ (seed.charCodeAt(k % seed.length) + k), 16777619) >>> 0; hex.push((h >>> 7 & 15).toString(16)); }
-    hex[12] = "4"; hex[16] = "89ab"[parseInt(hex[16], 16) & 3];
-    const s = hex.join("");
-    return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`;
-  };
   const stamp = (day, i) => `${day}T${String(8 + i * 5 % 12).padStart(2, "0")}:${String(i * 17 % 60).padStart(2, "0")}:${String(i * 29 % 60).padStart(2, "0")}Z`;
   const addDays = (day, n) => new Date(Date.parse(day + "T00:00:00Z") + n * 86400000).toISOString().slice(0, 10);
 
@@ -271,12 +272,12 @@ window.DATA = (() => {
   users.forEach((u, i) => {
     if (u.kind === "staff") hold("player", u.id, "warden_banner", 1);
     if (i % 3 === 0) hold("player", u.id, "frost_warden_skin", 1);
-    hold("player", u.id, "reroll_token", u.wallet.TOK);
+    hold("player", u.id, "reroll_token", i * 5 % 4);
   });
 
   const groupSeed = [
     ["Frostreach Playtesters", "request", "aiko.tanaka", "2025-04-02", [["aiko.tanaka", "member", "admin", "2025-04-02"], ["jonas.l", "member", "member", "2025-04-03"], ["Volkhv", "member", "member", "2025-10-20"], ["MiraVoss", "member", "admin", "2025-12-05"], ["NightOwl_77", "member", "member", "2026-02-12"], ["kestrel", "requested", "", "2026-10-21"], ["guest-28be71f5", "requested", "", "2026-10-23"]]],
-    ["Emberline Staff", "invite", "marta.k", "2025-03-11", [["marta.k", "member", "admin", "2025-03-11"], ["aiko.tanaka", "member", "member", "2025-03-11"], ["jonas.l", "member", "member", "2025-03-12"], ["diego.r", "member", "member", "2025-03-14"], ["priya.n", "member", "member", "2025-03-14"], ["tomasz.w", "member", "member", "2025-05-07"], ["sam.o", "member", "member", "2025-07-31"], ["elena.p", "invited", "", "2026-08-20"]]],
+    ["Emberline Staff", "invite", "marta.k", "2025-03-11", [["marta.k", "member", "admin", "2025-03-11"], ["aiko.tanaka", "member", "member", "2025-03-12"], ["jonas.l", "member", "member", "2025-03-12"], ["diego.r", "member", "member", "2025-03-14"], ["priya.n", "member", "member", "2025-03-14"], ["tomasz.w", "member", "member", "2025-05-07"], ["sam.o", "member", "member", "2025-07-31"], ["elena.p", "invited", "", "2026-08-20"]]],
     ["Night Watch", "open", "NightOwl_77", "2026-02-20", [["NightOwl_77", "member", "admin", "2026-02-20"], ["MiraVoss", "member", "member", "2026-03-01"], ["Volkhv", "member", "member", "2026-03-02"], ["kestrel", "member", "member", "2026-04-20"]]],
     ["Kestrel's Flight", "request", "kestrel", "2026-05-01", [["kestrel", "member", "admin", "2026-05-01"], ["NightOwl_77", "requested", "", "2026-10-30"]]],
     ["Ashborn", "invite", "ash_and_ember", "2026-02-10", [["ash_and_ember", "member", "admin", "2026-02-10"], ["Volkhv", "invited", "", "2026-02-11"], ["MiraVoss", "invited", "", "2026-02-11"]]],
@@ -284,13 +285,13 @@ window.DATA = (() => {
     ["Slavic Myth Club", "open", "Volkhv", "2025-11-01", [["Volkhv", "member", "admin", "2025-11-01"], ["tomasz.w", "member", "member", "2025-11-04"], ["marta.k", "member", "member", "2025-11-05"], ["MiraVoss", "member", "member", "2025-12-03"]]],
     ["Lore Reviewers", "invite", "jonas.l", "2025-02-01", [["jonas.l", "member", "admin", "2025-02-01"], ["diego.r", "member", "member", "2025-02-02"], ["priya.n", "member", "member", "2025-02-15"], ["aiko.tanaka", "member", "admin", "2025-03-12"], ["elena.p", "invited", "", "2026-09-01"]]],
     ["Weekend Raiders", "open", "diego.r", "2025-06-14", [["diego.r", "member", "admin", "2025-06-14"], ["ash_and_ember", "member", "member", "2026-01-30"], ["NightOwl_77", "member", "member", "2026-02-14"], ["kestrel", "member", "member", "2026-04-18"]]],
-    ["Polish Players", "open", "tomasz.w", "2025-06-01", [["tomasz.w", "member", "admin", "2025-06-01"], ["marta.k", "member", "member", "2025-06-01"], ["MiraVoss", "member", "member", "2025-12-02"]]],
+    ["Polish Players", "open", "tomasz.w", "2025-06-01", [["tomasz.w", "member", "admin", "2025-06-01"], ["marta.k", "member", "member", "2025-06-02"], ["MiraVoss", "member", "member", "2025-12-02"]]],
   ];
   const groups = [], memberships = [];
   groupSeed.forEach(([name, join_policy, creator, day, members], gi) => {
     const id = uuid("group:" + name);
     groups.push({ id, name, join_policy, creator_id: byHandle[creator].id, created_at: stamp(day, gi) });
-    members.forEach(([h, state, role, d], mi) => memberships.push({ group_id: id, player_id: byHandle[h].id, state, role, created_at: stamp(d, gi + mi + 1) }));
+    members.forEach(([h, state, role, d], mi) => memberships.push({ group_id: id, player_id: byHandle[h].id, state, role, created_at: h === creator ? stamp(day, gi) : stamp(d, gi + mi + 1) }));
   });
 
   return { users, byHandle, byId, characters, items, holdings, groups, memberships, repos, locks, branches, roles, actions, overrides, loreEvents, services, apiRoles, apiKeys, mail, subs, audit, ledger, currencies, schedules, fires, config, billing };

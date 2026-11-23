@@ -38,7 +38,7 @@ window.REG = (() => {
 
   // search.provider — each provider answers independently; one may time out.
   const search = [
-    { module: "accounts", kind: "user", label: "Users & players", icon: "user", results: q => D.users.filter(u => !q || u.handle.toLowerCase().includes(q) || u.name.toLowerCase().includes(q)).slice(0, 5).map(u => ({ title: u.handle, sub: `${u.kind} · ${u.id}`, right: u.status, href: `player.html?u=${u.handle}` })) },
+    { module: "accounts", kind: "user", label: "Users & players", icon: "user", results: q => D.users.filter(u => !q || u.handle.toLowerCase().includes(q) || u.name.toLowerCase().includes(q)).slice(0, 5).map(u => ({ title: u.handle, sub: `${u.kind} · ${u.id.slice(0, 8)}`, right: u.status, href: `player.html?u=${u.handle}` })) },
     { module: "lore", kind: "repository", label: "Lore repositories", icon: "repo", results: q => D.repos.filter(r => !q || r.name.includes(q)).slice(0, 4).map(r => ({ title: r.name, sub: `${r.branches} branches · default ${r.branch}`, right: `${r.locks} locks`, href: `lore-repo.html?r=${r.name}` })) },
     { module: "apikeys", kind: "apikey", label: "API keys", icon: "key", results: q => D.apiKeys.filter(k => !q || k.name.includes(q) || k.id.includes(q)).slice(0, 3).map(k => ({ title: k.name, sub: `${k.id} · role ${k.role}`, right: k.status, href: "apikeys.html" })) },
     { module: "wallet", kind: "transaction", label: "Wallet transactions", icon: "coins", timeout: true },
@@ -80,7 +80,7 @@ window.REG = (() => {
 
   // entity.user.summary_field — facts shown in the entity header.
   const userFacts = [
-    { module: "accounts", render: u => `${icon("hash")} <span class="mono">${u.id}</span>` },
+    { module: "accounts", render: u => `${icon("hash")} <span class="mono">${u.id.slice(0, 8)}</span>` },
     { module: "accounts", render: u => `${icon("clock")} joined ${u.created}` },
     { module: "characters", render: u => `${icon("swords")} ${D.characters.filter(c => c.player_id === u.id).length} characters` },
     { module: "lore", render: u => u.loreRole ? `${icon("shield")} Lore ${u.loreRole}` : "" },
