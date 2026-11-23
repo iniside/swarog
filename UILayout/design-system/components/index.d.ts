@@ -36,6 +36,11 @@ export declare function KpiTile(props: KpiTileProps): string;
 
 export declare function PropertyList(pairs: Array<[label: string, valueHtml: string]>): string;
 
+/** Pretty-printed, highlighted JSON of one stored record. Put Swarog.rawCopyBtn() in the panel tools. */
+export interface RawRecordOptions { maxHeight?: number }
+export declare function RawRecord(value: unknown, opts?: RawRecordOptions): string;
+export declare function rawCopyBtn(): string;
+
 export interface TimelineEntry { t: string; day?: string; icon?: string; tone?: Tone; html: string; meta?: string }
 export declare function Timeline(entries: TimelineEntry[]): string;
 
@@ -90,7 +95,7 @@ declare global {
       Panel: typeof Panel; DataTable: typeof DataTable; KpiTile: typeof KpiTile; PropertyList: typeof PropertyList;
       Timeline: typeof Timeline; Form: typeof Form; ConfirmAction: typeof ConfirmAction; SecretReveal: typeof SecretReveal;
       ServiceStatus: typeof ServiceStatus; TimeSeriesChart: typeof TimeSeriesChart; MenuAction: typeof MenuAction;
-      Badge: typeof Badge; Annotation: typeof Annotation; status: typeof status; icon: typeof icon; ref: typeof ref;
+      Badge: typeof Badge; Annotation: typeof Annotation; RawRecord: typeof RawRecord; rawJson: typeof RawRecord; rawCopyBtn: typeof rawCopyBtn; status: typeof status; icon: typeof icon; ref: typeof ref;
       defineMenu: typeof defineMenu; rowMenuBtn: typeof rowMenuBtn; toast: typeof toast;
       openMenu: typeof MenuAction; frag: typeof Annotation; badge: typeof Badge; confirm: typeof ConfirmAction; secret: typeof SecretReveal;
       MODULE_COLORS: Record<string, string>;

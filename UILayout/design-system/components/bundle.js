@@ -1,4 +1,4 @@
-/* @ds-bundle: {"format":4,"namespace":"Swarog","components":[{"name":"Panel"},{"name":"DataTable"},{"name":"KpiTile"},{"name":"PropertyList"},{"name":"Timeline"},{"name":"Form"},{"name":"ConfirmAction"},{"name":"SecretReveal"},{"name":"ServiceStatus"},{"name":"TimeSeriesChart"},{"name":"MenuAction"},{"name":"Badge"},{"name":"Annotation"}]} */
+/* @ds-bundle: {"format":4,"namespace":"Swarog","components":[{"name":"Panel"},{"name":"DataTable"},{"name":"KpiTile"},{"name":"PropertyList"},{"name":"Timeline"},{"name":"Form"},{"name":"ConfirmAction"},{"name":"SecretReveal"},{"name":"ServiceStatus"},{"name":"TimeSeriesChart"},{"name":"MenuAction"},{"name":"Badge"},{"name":"Annotation"},{"name":"RawRecord"}]} */
 window.UI = (() => {
   const ICONS = {
     home: '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/>',
@@ -188,6 +188,28 @@ window.UI = (() => {
   // ---------- property list ----------
   const props = pairs => `<dl class="props">${pairs.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>`;
 
+  // ---------- raw record ----------
+  function rawJson(value, o = {}) {
+    const pad = n => "  ".repeat(n);
+    const tok = (cls, s) => `<span class="j-${cls}">${esc(s)}</span>`;
+    const walk = (v, d) => {
+      if (v === null || v === undefined) return tok("null", "null");
+      if (Array.isArray(v)) return v.length ? `[\n${v.map(x => pad(d + 1) + walk(x, d + 1)).join(",\n")}\n${pad(d)}]` : "[]";
+      if (typeof v === "object") { const ks = Object.keys(v); return ks.length ? `{\n${ks.map(k => `${pad(d + 1)}${tok("key", JSON.stringify(k))}: ${walk(v[k], d + 1)}`).join(",\n")}\n${pad(d)}}` : "{}"; }
+      if (typeof v === "string") return tok("str", JSON.stringify(v));
+      if (typeof v === "number") return tok("num", String(v));
+      if (typeof v === "boolean") return tok("bool", String(v));
+      return tok("null", "null");
+    };
+    return `<pre class="code raw-json"${o.maxHeight ? ` style="max-height:${o.maxHeight}px"` : ""}>${walk(value, 0)}</pre>`;
+  }
+  const rawCopyBtn = () => `<button class="btn sm" onclick="UI.copyRaw(this)">${icon("copy")} Copy</button>`;
+  function copyRaw(btn) {
+    const pre = btn.closest(".panel")?.querySelector(".raw-json");
+    try { navigator.clipboard?.writeText(pre ? pre.textContent : ""); } catch (e) { /* clipboard blocked */ }
+    copied(btn);
+  }
+
   // ---------- timeline ----------
   function timeline(items) {
     if (!items.length) return stateBlock("empty", { title: "No events", detail: "Nothing recorded in this range.", icon: "activity", actions: "", compact: true });
@@ -330,11 +352,11 @@ window.UI = (() => {
     setTimeout(() => { btn.disabled = false; btn.innerHTML = `${icon("refresh")} Retry`; toast(`Still unavailable — ${m}-svc refused connection`, "info"); }, 900);
   }
 
-  return { icon, esc, fmt, frag, badge, status, avatar, userCell, repoLink, ref, panel, stateBlock, table, rowMenuBtn, kpi, spark, props, timeline, form, field, secret, services, uptimeBar, chart, defineMenu, openMenu, popover, closePop, modal, closeModal, confirm, toast, copied, retry, state, MODULE_COLORS };
+  return { icon, esc, fmt, frag, badge, status, avatar, userCell, repoLink, ref, panel, stateBlock, table, rowMenuBtn, kpi, spark, props, rawJson, rawCopyBtn, copyRaw, timeline, form, field, secret, services, uptimeBar, chart, defineMenu, openMenu, popover, closePop, modal, closeModal, confirm, toast, copied, retry, state, MODULE_COLORS };
 })();
 
 window.Swarog = Object.assign(window.UI, {
   Panel: UI.panel, DataTable: UI.table, KpiTile: UI.kpi, PropertyList: UI.props, Timeline: UI.timeline,
   Form: UI.form, ConfirmAction: UI.confirm, SecretReveal: UI.secret, ServiceStatus: UI.services,
-  TimeSeriesChart: UI.chart, MenuAction: UI.openMenu, Badge: UI.badge, Annotation: UI.frag,
+  TimeSeriesChart: UI.chart, MenuAction: UI.openMenu, Badge: UI.badge, Annotation: UI.frag, RawRecord: UI.rawJson,
 });

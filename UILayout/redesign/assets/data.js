@@ -211,5 +211,87 @@ window.DATA = (() => {
     volumeTB: 20,
   };
 
-  return { users, byHandle, repos, locks, branches, roles, actions, overrides, loreEvents, services, apiRoles, apiKeys, mail, subs, audit, ledger, currencies, schedules, fires, config, billing };
+  const byId = Object.fromEntries(users.map(u => [u.id, u]));
+  const uuid = seed => {
+    let h = 2166136261;
+    const hex = [];
+    for (let k = 0; k < 32; k++) { h = Math.imul(h ^ (seed.charCodeAt(k % seed.length) + k), 16777619) >>> 0; hex.push((h >>> 7 & 15).toString(16)); }
+    hex[12] = "4"; hex[16] = "89ab"[parseInt(hex[16], 16) & 3];
+    const s = hex.join("");
+    return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`;
+  };
+  const stamp = (day, i) => `${day}T${String(8 + i * 5 % 12).padStart(2, "0")}:${String(i * 17 % 60).padStart(2, "0")}:${String(i * 29 % 60).padStart(2, "0")}Z`;
+  const addDays = (day, n) => new Date(Date.parse(day + "T00:00:00Z") + n * 86400000).toISOString().slice(0, 10);
+
+  const characterNames = {
+    "aiko.tanaka": [["Yuki", "warden"], ["Hoshi", "ashcaller"], ["Tsubaki", "ranger"]],
+    "marta.k": [["Wren", "novice"]],
+    "jonas.l": [["Fjell", "warden"], ["Saga", "novice"]],
+    "diego.r": [["Brasa", "ashcaller"], ["Lucero", "ranger"], ["Niebla", "novice"], ["Toro", "warden"]],
+    "tomasz.w": [["Kruk", "novice"]],
+    "sam.o": [["Odun", "ranger"]],
+    "NightOwl_77": [["Nyx", "ashcaller"], ["Hollow", "warden"], ["Vesper", "ranger"], ["Moth", "novice"], ["Strix", "ashcaller"]],
+    "kestrel": [["Talon", "ranger"], ["Kite", "novice"]],
+    "ash_and_ember": [["Cinder", "ashcaller"], ["Soot", "novice"], ["Ashling", "warden"]],
+    "MiraVoss": [["Mira", "warden"], ["Zora", "ashcaller"], ["Lys", "ranger"], ["Iskra", "ashcaller"], ["Vila", "novice"], ["Dziewanna", "ranger"]],
+    "guest-28be71f5": [["Wanderer", "novice"]],
+    "Volkhv": [["Perun", "warden"], ["Mokosh", "novice"]],
+  };
+  const characters = [];
+  users.forEach(u => (characterNames[u.handle] || []).forEach(([name, cls], k) => {
+    const i = characters.length;
+    characters.push({ id: uuid("character:" + u.handle + ":" + name), player_id: u.id, name, class: cls, created_at: stamp(addDays(u.created, (k + 1) * 9), i) });
+  }));
+
+  const items = [
+    { id: "coin", name: "Coin", kind: "currency" },
+    { id: "starter_sword", name: "Starter Sword", kind: "weapon" },
+    { id: "health_potion", name: "Health Potion", kind: "consumable" },
+    { id: "mana_potion", name: "Mana Potion", kind: "consumable" },
+    { id: "frost_blade", name: "Frost Blade", kind: "weapon" },
+    { id: "iron_shield", name: "Iron Shield", kind: "armor" },
+    { id: "leather_cap", name: "Leather Cap", kind: "armor" },
+    { id: "ember_shard", name: "Ember Shard", kind: "material" },
+    { id: "iron_ore", name: "Iron Ore", kind: "material" },
+    { id: "warden_banner", name: "Warden Banner", kind: "cosmetic" },
+    { id: "frost_warden_skin", name: "Frost Warden Skin", kind: "cosmetic" },
+    { id: "reroll_token", name: "Reroll Token", kind: "currency" },
+  ];
+  const itemById = Object.fromEntries(items.map(it => [it.id, it]));
+  const holdings = [];
+  const hold = (owner_type, owner_id, item_id, quantity) => { if (quantity > 0) holdings.push({ owner_type, owner_id, item_id, item_name: itemById[item_id].name, quantity }); };
+  const extras = ["iron_shield", "mana_potion", "ember_shard", "frost_blade", "leather_cap", "iron_ore"];
+  characters.forEach((c, i) => {
+    hold("character", c.id, "coin", 10 + i * 37 % 900);
+    hold("character", c.id, "starter_sword", 1);
+    hold("character", c.id, "health_potion", i * 3 % 7);
+    hold("character", c.id, extras[i % 6], extras[i % 6].endsWith("_ore") || extras[i % 6] === "ember_shard" ? 1 + i * 13 % 400 : 1);
+    if (i % 2) hold("character", c.id, extras[(i + 3) % 6], extras[(i + 3) % 6].endsWith("_ore") || extras[(i + 3) % 6] === "ember_shard" ? 1 + i * 7 % 250 : 1);
+  });
+  users.forEach((u, i) => {
+    if (u.kind === "staff") hold("player", u.id, "warden_banner", 1);
+    if (i % 3 === 0) hold("player", u.id, "frost_warden_skin", 1);
+    hold("player", u.id, "reroll_token", u.wallet.TOK);
+  });
+
+  const groupSeed = [
+    ["Frostreach Playtesters", "request", "aiko.tanaka", "2025-04-02", [["aiko.tanaka", "member", "admin", "2025-04-02"], ["jonas.l", "member", "member", "2025-04-03"], ["Volkhv", "member", "member", "2025-10-20"], ["MiraVoss", "member", "admin", "2025-12-05"], ["NightOwl_77", "member", "member", "2026-02-12"], ["kestrel", "requested", "", "2026-10-21"], ["guest-28be71f5", "requested", "", "2026-10-23"]]],
+    ["Emberline Staff", "invite", "marta.k", "2025-03-11", [["marta.k", "member", "admin", "2025-03-11"], ["aiko.tanaka", "member", "member", "2025-03-11"], ["jonas.l", "member", "member", "2025-03-12"], ["diego.r", "member", "member", "2025-03-14"], ["priya.n", "member", "member", "2025-03-14"], ["tomasz.w", "member", "member", "2025-05-07"], ["sam.o", "member", "member", "2025-07-31"], ["elena.p", "invited", "", "2026-08-20"]]],
+    ["Night Watch", "open", "NightOwl_77", "2026-02-20", [["NightOwl_77", "member", "admin", "2026-02-20"], ["MiraVoss", "member", "member", "2026-03-01"], ["Volkhv", "member", "member", "2026-03-02"], ["kestrel", "member", "member", "2026-04-20"]]],
+    ["Kestrel's Flight", "request", "kestrel", "2026-05-01", [["kestrel", "member", "admin", "2026-05-01"], ["NightOwl_77", "requested", "", "2026-10-30"]]],
+    ["Ashborn", "invite", "ash_and_ember", "2026-02-10", [["ash_and_ember", "member", "admin", "2026-02-10"], ["Volkhv", "invited", "", "2026-02-11"], ["MiraVoss", "invited", "", "2026-02-11"]]],
+    ["Voss Trading Co", "request", "MiraVoss", "2025-12-20", [["MiraVoss", "member", "admin", "2025-12-20"], ["Volkhv", "member", "admin", "2025-12-21"], ["NightOwl_77", "member", "member", "2026-02-09"], ["kestrel", "requested", "", "2026-11-02"], ["guest-28be71f5", "requested", "", "2026-11-10"]]],
+    ["Slavic Myth Club", "open", "Volkhv", "2025-11-01", [["Volkhv", "member", "admin", "2025-11-01"], ["tomasz.w", "member", "member", "2025-11-04"], ["marta.k", "member", "member", "2025-11-05"], ["MiraVoss", "member", "member", "2025-12-03"]]],
+    ["Lore Reviewers", "invite", "jonas.l", "2025-02-01", [["jonas.l", "member", "admin", "2025-02-01"], ["diego.r", "member", "member", "2025-02-02"], ["priya.n", "member", "member", "2025-02-15"], ["aiko.tanaka", "member", "admin", "2025-03-12"], ["elena.p", "invited", "", "2026-09-01"]]],
+    ["Weekend Raiders", "open", "diego.r", "2025-06-14", [["diego.r", "member", "admin", "2025-06-14"], ["ash_and_ember", "member", "member", "2026-01-30"], ["NightOwl_77", "member", "member", "2026-02-14"], ["kestrel", "member", "member", "2026-04-18"]]],
+    ["Polish Players", "open", "tomasz.w", "2025-06-01", [["tomasz.w", "member", "admin", "2025-06-01"], ["marta.k", "member", "member", "2025-06-01"], ["MiraVoss", "member", "member", "2025-12-02"]]],
+  ];
+  const groups = [], memberships = [];
+  groupSeed.forEach(([name, join_policy, creator, day, members], gi) => {
+    const id = uuid("group:" + name);
+    groups.push({ id, name, join_policy, creator_id: byHandle[creator].id, created_at: stamp(day, gi) });
+    members.forEach(([h, state, role, d], mi) => memberships.push({ group_id: id, player_id: byHandle[h].id, state, role, created_at: stamp(d, gi + mi + 1) }));
+  });
+
+  return { users, byHandle, byId, characters, items, holdings, groups, memberships, repos, locks, branches, roles, actions, overrides, loreEvents, services, apiRoles, apiKeys, mail, subs, audit, ledger, currencies, schedules, fires, config, billing };
 })();

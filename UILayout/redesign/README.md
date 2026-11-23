@@ -27,6 +27,9 @@ Topbar controls (mockup only):
 | Lore permissions, locks, server, events, billing | `lore-*.html` |
 | API keys (secret reveal: `?reveal=1`), mail, scheduler, config, audit, event plane | `apikeys.html`, `mail.html`, `scheduler.html`, `config.html`, `audit.html`, `events.html` |
 | Economy | `economy.html` |
+| Characters / character detail | `characters.html`, `character.html?c=<id>` |
+| Groups / group detail (members, pending, raw record) | `groups.html`, `group.html?g=<id>` |
+| Item catalog (Economy) | `items.html` |
 | **Primitive catalog** (API driver) | `catalog.html` |
 | Panel states gallery | `states.html` |
 

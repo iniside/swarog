@@ -16,6 +16,8 @@ window.REG = (() => {
   const nav = [
     { module: "portal", section: "overview", id: "dashboard", label: "Dashboard", icon: "home", href: "index.html" },
     { module: "accounts", section: "players", id: "players", label: "Users & players", icon: "users", href: "players.html", count: "214,903" },
+    { module: "characters", section: "players", id: "characters", label: "Characters", icon: "swords", href: "characters.html", count: String(D.characters.length) },
+    { module: "groups", section: "players", id: "groups", label: "Groups", icon: "group", href: "groups.html", count: String(D.groups.length) },
     { module: "lore", section: "lore", id: "lore.repos", label: "Repositories", icon: "repo", href: "lore-repos.html", count: "6" },
     { module: "lore", section: "lore", id: "lore.permissions", label: "Permissions", icon: "shield", href: "lore-permissions.html" },
     { module: "lore", section: "lore", id: "lore.locks", label: "Locks", icon: "lock", href: "lore-locks.html", count: "26", countTone: "warn" },
@@ -23,6 +25,7 @@ window.REG = (() => {
     { module: "lore", section: "lore", id: "lore.events", label: "Events", icon: "activity", href: "lore-events.html" },
     { module: "lore", section: "lore", id: "lore.billing", label: "Billing & usage", icon: "chart", href: "lore-billing.html" },
     { module: "wallet", section: "economy", id: "economy", label: "Currencies & ledger", icon: "coins", href: "economy.html", down: true },
+    { module: "inventory", section: "economy", id: "items", label: "Item catalog", icon: "box", href: "items.html" },
     { module: "apikeys", section: "platform", id: "apikeys", label: "API keys", icon: "key", href: "apikeys.html" },
     { module: "mail", section: "platform", id: "mail", label: "Mail outbox", icon: "mail", href: "mail.html", count: "312", countTone: "warn" },
     { module: "scheduler", section: "platform", id: "scheduler", label: "Scheduler", icon: "clock", href: "scheduler.html" },
@@ -65,11 +68,11 @@ window.REG = (() => {
   // entity.user.tab — the entity detail for kind "user" is built from these.
   const userTabs = [
     { module: "accounts", id: "profile", label: "Profile & identities", prim: "PropertyList + DataTable" },
-    { module: "characters", id: "characters", label: "Characters", prim: "DataTable", count: u => u.characters },
+    { module: "characters", id: "characters", label: "Characters", prim: "DataTable", count: u => D.characters.filter(c => c.player_id === u.id).length },
     { module: "wallet", id: "wallet", label: "Wallet", prim: "KpiTile + DataTable", state: "error" },
-    { module: "inventory", id: "inventory", label: "Inventory", prim: "DataTable", count: () => 37 },
+    { module: "inventory", id: "inventory", label: "Inventory", prim: "DataTable", count: u => D.holdings.filter(h => h.owner_type === "player" ? h.owner_id === u.id : D.characters.some(c => c.id === h.owner_id && c.player_id === u.id)).length },
     { module: "friends", id: "friends", label: "Friends", prim: "DataTable", count: () => 12 },
-    { module: "groups", id: "groups", label: "Groups", prim: "DataTable", count: () => 2 },
+    { module: "groups", id: "groups", label: "Groups", prim: "DataTable", count: u => D.memberships.filter(m => m.player_id === u.id).length },
     { module: "storage", id: "saves", label: "Cloud saves", prim: "DataTable", readonly: true },
     { module: "notifications", id: "inbox", label: "Inbox", prim: "Timeline", count: () => 4 },
     { module: "lore", id: "lore", label: "Lore", prim: "PropertyList + Timeline", when: u => !!u.loreRole },
@@ -79,9 +82,35 @@ window.REG = (() => {
   const userFacts = [
     { module: "accounts", render: u => `${icon("hash")} <span class="mono">${u.id}</span>` },
     { module: "accounts", render: u => `${icon("clock")} joined ${u.created}` },
-    { module: "characters", render: u => `${icon("swords")} ${u.characters} characters` },
+    { module: "characters", render: u => `${icon("swords")} ${D.characters.filter(c => c.player_id === u.id).length} characters` },
     { module: "lore", render: u => u.loreRole ? `${icon("shield")} Lore ${u.loreRole}` : "" },
     { module: "wallet", render: () => `<span style="color:var(--err)">${icon("alert")} wallet unavailable</span>` },
+  ];
+
+  // entity.character.tab — the character detail is built from these.
+  const characterTabs = [
+    { module: "characters", id: "overview", label: "Overview", prim: "PropertyList + RawRecord" },
+    { module: "inventory", id: "items", label: "Items", prim: "DataTable", count: c => D.holdings.filter(h => h.owner_type === "character" && h.owner_id === c.id).length },
+  ];
+  // entity.character.summary_field
+  const characterFacts = [
+    { module: "characters", render: c => `${icon("hash")} <span class="mono">${c.id}</span>` },
+    { module: "characters", render: c => `${icon("user")} owner ${UI.userCell(D.byId[c.player_id].handle)}` },
+    { module: "characters", render: c => `${icon("clock")} created ${c.created_at}` },
+  ];
+  // entity.group.tab
+  const groupTabs = [
+    { module: "groups", id: "members", label: "Members", prim: "DataTable", count: g => D.memberships.filter(m => m.group_id === g.id && m.state === "member").length },
+    { module: "groups", id: "pending", label: "Pending", prim: "DataTable", count: g => D.memberships.filter(m => m.group_id === g.id && m.state !== "member").length },
+    { module: "groups", id: "overview", label: "Overview", prim: "RawRecord" },
+  ];
+  // entity.group.summary_field
+  const groupFacts = [
+    { module: "groups", render: g => `${icon("hash")} <span class="mono">${g.id}</span>` },
+    { module: "groups", render: g => `${icon("user")} creator ${UI.userCell(D.byId[g.creator_id].handle)}` },
+    { module: "groups", render: g => `${icon("clock")} created ${g.created_at}` },
+    { module: "groups", render: g => { const n = D.memberships.filter(m => m.group_id === g.id && m.state === "member").length; return `${icon("users")} ${n} ${n === 1 ? "member" : "members"}`; } },
+    { module: "groups", render: g => `${icon("inbox")} ${D.memberships.filter(m => m.group_id === g.id && m.state !== "member").length} pending` },
   ];
 
   // entity.user.header_action
@@ -225,5 +254,5 @@ window.REG = (() => {
     input.focus();
   }
 
-  return { sections, nav, search, tiles, attention, userTabs, userFacts, userHeaderActions, userRowActions, notifications, mount, render, setForce, toggleAnnot, toggleTheme, healthPop, notifPop, openSearch };
+  return { sections, nav, search, tiles, attention, userTabs, userFacts, characterTabs, characterFacts, groupTabs, groupFacts, userHeaderActions, userRowActions, notifications, mount, render, setForce, toggleAnnot, toggleTheme, healthPop, notifPop, openSearch };
 })();

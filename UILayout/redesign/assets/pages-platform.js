@@ -183,4 +183,22 @@
       return P.head("Currencies & ledger", "wallet module", "") + `<div class="grid g-21" style="margin-bottom:12px">${cur}${grant}</div>${led}`;
     },
   };
+
+  // ---------- item catalog ----------
+  UI.defineMenu("item", id => [{ c: { module: "inventory", point: "page.row_action", prim: "MenuAction" }, label: "inventory", items: [
+    { label: "Copy id", icon: "copy", run: P.copyId(id) },
+  ] }]);
+  P.items = {
+    meta: { nav: "items", crumbs: [["Economy", "economy.html"], ["Item catalog"]] },
+    render: () => {
+      const kinds = [...new Set(D.items.map(it => it.kind))].sort();
+      const list = D.items.filter(it => !P.itemKind || it.kind === P.itemKind);
+      const tbl = table({ searchPlaceholder: "Item id or name", searchWidth: 260, filters: [P.pick("itemKind", "Kind", kinds, P.itemKind)],
+        cols: [{ label: "Item id", sorted: "asc" }, { label: "Name" }, { label: "Kind" }],
+        rows: list.map(it => ({ id: it.id, cells: [`<span class="mono">${it.id}</span>`, esc(it.name), P.classTag(it.kind)] })),
+        rowMenu: r => UI.rowMenuBtn("item", r.id), total: P.plural(list.length, "item", "items"), page: "1 / 1" });
+      return P.head("Item catalog", "inventory module · every item definition a holding can reference.", "") +
+        panel({ c: pg("inventory", "DataTable"), flush: true, body: tbl, emptyTitle: "No items", emptyDetail: "The catalog has no item definitions." });
+    },
+  };
 })();

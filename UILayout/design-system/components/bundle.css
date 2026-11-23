@@ -352,6 +352,11 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 
 /* ---------- code/diff ---------- */
 .code { font-family: var(--font-mono); font-size: 12px; background: var(--bg-sunken); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; overflow-x: auto; white-space: pre; color: var(--text); }
+.raw-json { margin: 0; line-height: 1.55; max-height: 420px; overflow: auto; }
+.raw-json .j-key { color: var(--accent); }
+.raw-json .j-str { color: var(--ok); }
+.raw-json .j-num { color: var(--info); }
+.raw-json .j-bool, .raw-json .j-null { color: var(--warn); }
 .diff-del { background: var(--err-soft); color: var(--err); display: block; }
 .diff-add { background: var(--ok-soft); color: var(--ok); display: block; }
 

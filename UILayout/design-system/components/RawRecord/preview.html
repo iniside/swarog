@@ -1,0 +1,19 @@
+<!-- @dsCard group="Data" height=260 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  var S = window.Swarog;
+  document.getElementById("root").innerHTML = S.Panel({ c: { module: "characters", point: "entity.character.tab", prim: "RawRecord" }, noForce: true, title: "Raw record", tools: S.rawCopyBtn(),
+    body: S.RawRecord({ id: "0b7c2e4a-91d3-4f6e-8a15-3c9d2f71e604", player_id: "7f3a9c21-4b2e-4d8a-9c1f-2e6b8d0a5f13", name: "Yuki", class: "novice", created_at: "2025-03-12T09:41:07Z" }) });
+</script>
+</body>
+</html>
