@@ -1,0 +1,17 @@
+<!-- @dsCard group="Data" height=300 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  document.getElementById("root").innerHTML = '<div class="mbox" style="max-width:680px"><div class="mbox-head"><span class="mbox-ico ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg></span><div class="grow"><div class="mbox-title">Ready to merge</div><div class="mbox-detail">Merge it with the Lore client.</div></div></div><div class="mbox-checks"><div class="mbox-check ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg>No conflicts with <span class="mono">main</span></div><div class="mbox-check ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg>Approvals: 2 of 2 expected</div></div><div class="mbox-cmd"><div class="mbox-cmd-head"><span class="grow">Lore client</span><button class="btn sm" type="button">Copy merge commands</button></div><pre>lore branch switch main\nlore sync\nlore branch merge feature/frostreach-lighting --message "Merge !42"\nlore push</pre></div></div>';
+</script>
+</body>
+</html>
