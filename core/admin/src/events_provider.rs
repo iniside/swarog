@@ -441,7 +441,7 @@ impl EventsProvider {
 
     async fn table(&self, req: &PanelQuery) -> Result<Primitive, opsapi::Error> {
         let needle = req.search.as_deref().unwrap_or("").to_lowercase();
-        let state = req.params.get(FILTER_STATE).filter(|s| !s.is_empty() && *s != "any");
+        let state = req.params.get(FILTER_STATE);
         let rows: Vec<Row> = self
             .infos()
             .await?

@@ -110,7 +110,7 @@ fn a_queue_narrowed_to_nothing_keeps_its_toolbar() {
     }
     let searched = render(queue_narrowed_case(&[("q", "zed")], Some("zed")));
     assert!(searched.contains("value=\"zed\""), "the search box keeps the search");
-    let unfiltered = render(queue_narrowed_case(&[("template", "any")], None));
+    let unfiltered = render(queue_narrowed_case(&[], None));
     assert!(!unfiltered.contains("tbl-toolbar"), "an unfiltered empty queue draws no toolbar: {unfiltered}");
     assert!(unfiltered.contains("Queue is empty") && !unfiltered.contains("No matching items"));
 }

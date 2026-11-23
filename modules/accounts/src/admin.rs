@@ -117,14 +117,6 @@ fn parse_cursor(raw: &str) -> Result<(i64, &str), Error> {
     Ok((micros, id))
 }
 
-/// A filter value that narrows: absent, empty and `"any"` do not.
-fn filter_value<'a>(req: &'a PanelQuery, key: &str) -> Option<&'a str> {
-    req.params
-        .get(key)
-        .map(String::as_str)
-        .filter(|v| !v.is_empty() && *v != "any")
-}
-
 /// `"in 40 min"`, `"in 6 h"` or `"in 29 d"`.
 fn expires_in(secs: i64) -> String {
     match secs.max(0) {
@@ -519,7 +511,7 @@ impl AccountsAdmin {
             )));
         }
         // The Kind and Status chips are inert: every account is a player and active.
-        let provider = filter_value(req, FILTER_PROVIDER);
+        let provider = req.params.get(FILTER_PROVIDER).map(String::as_str);
         if let Some(p) = provider.filter(|p| !PROVIDERS.contains(p)) {
             return Err(Error::invalid(format!("accounts: unknown provider {p:?}")));
         }

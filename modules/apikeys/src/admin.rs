@@ -89,7 +89,7 @@ impl ApiKeysAdmin {
         if needle.is_some_and(|n| n.len() > MAX_NEEDLE_BYTES) {
             return Err(Error::invalid(format!("{MODULE}: the search is longer than {MAX_NEEDLE_BYTES} bytes")));
         }
-        let status = match filter_value(req, FILTER_STATUS) {
+        let status = match req.params.get(FILTER_STATUS).map(String::as_str) {
             None => None,
             Some(ACTIVE) => Some(KeyStatus::Active),
             Some(REVOKED) => Some(KeyStatus::Revoked),
@@ -97,7 +97,7 @@ impl ApiKeysAdmin {
         };
         let roles = self.svc.store.roles_with_counts().await.map_err(internal)?;
         let role_names: Vec<String> = roles.into_iter().map(|r| r.name).collect();
-        let role = filter_value(req, FILTER_ROLE);
+        let role = req.params.get(FILTER_ROLE).map(String::as_str);
         if role.is_some_and(|r| r.len() > MAX_NAME_BYTES) {
             return Err(Error::invalid(format!("{MODULE}: the role filter is longer than {MAX_NAME_BYTES} bytes")));
         }
@@ -327,11 +327,6 @@ fn write_error(e: WriteError) -> Error {
         WriteError::Invalid(msg) => Error::invalid(msg),
         WriteError::Db(e) => internal(e),
     }
-}
-
-/// A filter value that narrows: absent, empty and `"any"` do not.
-fn filter_value<'a>(req: &'a PanelQuery, key: &str) -> Option<&'a str> {
-    req.params.get(key).map(String::as_str).filter(|v| !v.is_empty() && *v != "any")
 }
 
 /// `"<created_at µs>.<name>"` of the last row shown.

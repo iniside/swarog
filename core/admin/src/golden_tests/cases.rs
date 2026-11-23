@@ -590,7 +590,7 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     panel!("queue_later_page", queue_later_page_case());
     panel!("queue_search_empty", queue_narrowed_case(&[("q", "zed")], Some("zed")));
     panel!("queue_filter_empty", queue_narrowed_case(&[("template", "welcome")], None));
-    panel!("queue_unfiltered_empty", queue_narrowed_case(&[("template", "any")], None));
+    panel!("queue_unfiltered_empty", queue_narrowed_case(&[], None));
 
     // ---- TimeSeriesChart ----
     panel!(

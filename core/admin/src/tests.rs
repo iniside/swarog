@@ -2909,8 +2909,8 @@ async fn a_select_filter_reads_any_as_no_filter() {
 
 /// A page passes to its panels, and the panel route to its provider, only the URL keys a
 /// page placing the contribution declares in `PageDecl::params`; an undeclared key is
-/// dropped while the portal's own keys keep their typed fields. A blank filter value reads
-/// as `any`.
+/// dropped while the portal's own keys keep their typed fields. An empty or `any` value of a
+/// declared key narrows nothing, so it reaches neither the provider nor the panel's URLs.
 #[tokio::test(flavor = "multi_thread")]
 async fn only_declared_page_params_reach_the_panel_query() {
     let Some(pool) = test_pool().await else { return };
@@ -2973,17 +2973,26 @@ async fn only_declared_page_params_reach_the_panel_query() {
     assert_eq!(status, StatusCode::OK, "{raw}");
     let calls = recording.calls();
     let req = calls.last().expect("the panel reaches its provider");
-    let declared = BTreeMap::from([("region".to_string(), "eu".to_string()), ("tier".to_string(), String::new())]);
-    assert_eq!(req.params, declared, "only the declared keys reach PanelQuery.params");
+    let declared = BTreeMap::from([("region".to_string(), "eu".to_string())]);
+    assert_eq!(req.params, declared, "only the declared keys with a narrowing value reach PanelQuery.params");
     assert_eq!(req.search.as_deref(), Some("ann"));
     assert_eq!(req.queue_state.as_deref(), Some("open"));
     assert_eq!(req.cursor.as_deref(), Some("c"));
     assert_eq!(req.before.as_deref(), Some("b"));
     assert!(!raw.contains("undeclared"), "an undeclared key stays out of the panel's URLs: {raw}");
+    assert!(!raw.contains("tier="), "an empty value stays out of the panel's URLs: {raw}");
     assert!(raw.contains(r#"<select class="select""#), "a Select filter draws a select: {raw}");
     assert!(raw.contains("<option selected>eu</option><option>us</option>"), "{raw}");
     assert!(raw.contains("Tier: <b>any</b>"), "a blank filter value narrows nothing: {raw}");
     assert!(raw.contains("q=ann") && raw.contains("state=open"), "the panel's own links keep its typed keys: {raw}");
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/support/list?region=any&tier=any").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let calls = recording.calls();
+    let req = calls.last().expect("the panel reaches its provider");
+    assert!(req.params.is_empty(), "an any value reaches the provider as absent: {:?}", req.params);
+    assert!(!raw.contains("=any"), "an any value stays out of the panel's URLs: {raw}");
+    assert!(raw.contains("<option>eu</option><option>us</option>"), "any selects no option: {raw}");
 
     let uri = "/admin/_panel/support/load?shard=s1&region=eu&range=7d";
     let (status, raw) = portal_get(&engine, &st, &cookie, uri).await;

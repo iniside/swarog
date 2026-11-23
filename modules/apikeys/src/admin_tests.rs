@@ -647,7 +647,7 @@ async fn keys_page_by_25_narrow_by_filters_and_drop_the_total_and_roles_count_ke
     let e = p.panel(query("keys", None, None, &[("role", long.as_str())])).await.unwrap_err();
     assert_eq!(e.status, Status::Invalid);
 
-    let all = p.panel(query("keys", None, None, &[("status", "any")])).await.unwrap();
+    let all = p.panel(query("keys", None, None, &[])).await.unwrap();
     let (total, active) = store.key_counts().await.unwrap();
     assert_eq!(table(&all).page.total, Some(total as u64));
     assert_eq!(all.meta, Some(format!("{active} active")));

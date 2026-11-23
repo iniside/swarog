@@ -413,7 +413,7 @@ impl MailAdmin {
         };
         let (tab, selected_key, _) = TABS[selected];
         let needle = req.search.as_deref().map(str::trim).filter(|s| !s.is_empty());
-        let kind = req.params.get(FILTER_TEMPLATE).map(String::as_str).filter(|k| !k.is_empty() && *k != "any");
+        let kind = req.params.get(FILTER_TEMPLATE).map(String::as_str);
         let after = req.cursor.as_deref().map(parse_cursor).transpose()?;
         let listing = OutboxListing { tab, needle, kind, after, limit: PAGE_SIZE as i64 + 1 };
         let (stats, mut rows) = self.svc.outbox_page(&listing).await?;
