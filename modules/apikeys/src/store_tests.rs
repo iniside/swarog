@@ -6,7 +6,7 @@
 //! never has the harness's `dev-client`/`dev-server` rows touched.
 
 use super::*;
-use crate::store::{Store, WriteError};
+use crate::store::{KeyStatus, Store, WriteError};
 use sqlx::PgPool;
 
 static DB_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -56,7 +56,7 @@ async fn role_revision(pool: &PgPool, name: &str) -> Option<i64> {
 
 async fn role_policy(store: &Store, name: &str) -> Option<String> {
     store
-        .list_roles()
+        .roles_with_counts()
         .await
         .unwrap()
         .into_iter()
@@ -64,9 +64,9 @@ async fn role_policy(store: &Store, name: &str) -> Option<String> {
         .map(|r| r.policy)
 }
 
-async fn key_summary(store: &Store, name: &str) -> Option<crate::store::KeySummary> {
+async fn key_summary(store: &Store, name: &str) -> Option<crate::store::KeyRow> {
     store
-        .list_keys()
+        .keys_page(Some(name), None, None, None, 1000)
         .await
         .unwrap()
         .into_iter()
@@ -554,6 +554,150 @@ async fn seed_upsert_roles_and_keys_self_heal() {
 
 /// The one whitespace-normalized `CONSTRAINT <name> CHECK (...)` clause `SCHEMA_DDL`
 /// declares, or a panic naming the missing constraint.
+/// Every key of a test, walked page by page through the keyset cursor.
+async fn walk_pages(store: &Store, needle: &str, page: i64) -> Vec<crate::store::KeyRow> {
+    let mut all = Vec::new();
+    let mut after: Option<(i64, String)> = None;
+    loop {
+        let rows = store
+            .keys_page(Some(needle), None, None, after.as_ref().map(|(us, n)| (*us, n.as_str())), page)
+            .await
+            .unwrap();
+        let done = (rows.len() as i64) < page;
+        after = rows.last().map(|r| (r.created_us, r.name.clone()));
+        all.extend(rows);
+        if done {
+            return all;
+        }
+    }
+}
+
+#[tokio::test]
+async fn keys_page_keyset_walks_every_key_once_newest_first() {
+    let _guard = db_test_lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let store = Store { pool: pool.clone() };
+    let base = unique_name(&pool).await;
+    let role = format!("{base}-role");
+    store.create_role(&role, "full").await.unwrap();
+    for i in 0..27 {
+        store.create_key(&format!("{base}-k{i:02}"), &role).await.unwrap();
+    }
+    // Two keys sharing one created_at exercise the name half of the cursor.
+    sqlx::query("UPDATE apikeys.keys SET created_at = (SELECT created_at FROM apikeys.keys WHERE name = $1) WHERE name = $2")
+        .bind(format!("{base}-k10"))
+        .bind(format!("{base}-k11"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let walked = walk_pages(&store, &base, 10).await;
+    let mut expected: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT (EXTRACT(EPOCH FROM created_at) * 1000000)::int8, name FROM apikeys.keys WHERE name LIKE $1",
+    )
+    .bind(format!("{base}%"))
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    expected.sort_by(|a, b| b.cmp(a));
+    let got: Vec<(i64, String)> = walked.iter().map(|r| (r.created_us, r.name.clone())).collect();
+    assert_eq!(got, expected, "every key exactly once, (created_at, name) DESC");
+    assert_eq!(got.len(), 27);
+    let first = &walked[0];
+    assert_eq!(first.role, role);
+    assert!(!first.revoked);
+    assert!(first.revision >= 0);
+    let c = first.created.as_bytes();
+    assert!(c.len() == 10 && c[4] == b'-' && c[7] == b'-', "YYYY-MM-DD: {}", first.created);
+
+    cleanup(&pool, &base).await;
+}
+
+#[tokio::test]
+async fn keys_page_filters_by_status_role_and_literal_needle() {
+    let _guard = db_test_lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let store = Store { pool: pool.clone() };
+    let base = unique_name(&pool).await;
+    let role_a = format!("{base}-ra");
+    let role_b = format!("{base}-rb");
+    store.create_role(&role_a, "full").await.unwrap();
+    store.create_role(&role_b, "full").await.unwrap();
+    let live = format!("{base}-live%_x");
+    let gone = format!("{base}-gone");
+    let other = format!("{base}-other");
+    let (_, live_prefix) = store.create_key(&live, &role_a).await.unwrap();
+    store.create_key(&gone, &role_a).await.unwrap();
+    store.create_key(&other, &role_b).await.unwrap();
+    let rev = key_summary(&store, &gone).await.unwrap().revision;
+    store.revoke_key(&gone, rev).await.unwrap();
+
+    let names = |rows: Vec<crate::store::KeyRow>| {
+        let mut n: Vec<String> = rows.into_iter().map(|r| r.name).collect();
+        n.sort();
+        n
+    };
+    let page = |status, role: Option<String>, needle: String| {
+        let store = &store;
+        async move { store.keys_page(Some(&needle), status, role.as_deref(), None, 100).await.unwrap() }
+    };
+    let mut all = vec![gone.clone(), live.clone(), other.clone()];
+    all.sort();
+    assert_eq!(names(page(None, None, base.clone()).await), all);
+    assert_eq!(names(page(Some(KeyStatus::Revoked), None, base.clone()).await), vec![gone.clone()]);
+    assert_eq!(
+        names(page(Some(KeyStatus::Active), None, base.clone()).await),
+        vec![live.clone(), other.clone()]
+    );
+    assert_eq!(names(page(None, Some(role_b.clone()), base.clone()).await), vec![other.clone()]);
+    assert_eq!(
+        names(page(Some(KeyStatus::Active), Some(role_a.clone()), base.clone()).await),
+        vec![live.clone()]
+    );
+    // % and _ are literal: a LIKE would match every key here.
+    assert_eq!(names(page(None, None, format!("{base}-LIVE%_")).await), vec![live.clone()]);
+    assert!(page(None, None, format!("{base}-%")).await.is_empty(), "% is not a wildcard");
+    assert!(page(None, None, format!("{base}_")).await.is_empty(), "_ is not a wildcard");
+    // The prefix matches too, case-insensitively.
+    let by_prefix = store.keys_page(Some(&live_prefix.to_uppercase()), None, None, None, 100).await.unwrap();
+    assert!(by_prefix.iter().any(|r| r.name == live && r.prefix == live_prefix));
+
+    cleanup(&pool, &base).await;
+}
+
+#[tokio::test]
+async fn role_counts_include_revoked_keys_and_key_counts_split_active() {
+    let _guard = db_test_lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let store = Store { pool: pool.clone() };
+    let base = unique_name(&pool).await;
+    let used = format!("{base}-used");
+    let empty = format!("{base}-empty");
+    store.create_role(&used, "full").await.unwrap();
+    store.create_role(&empty, "full").await.unwrap();
+    let (total0, active0) = store.key_counts().await.unwrap();
+    let k1 = format!("{base}-k1");
+    store.create_key(&k1, &used).await.unwrap();
+    store.create_key(&format!("{base}-k2"), &used).await.unwrap();
+    let rev = key_summary(&store, &k1).await.unwrap().revision;
+    store.revoke_key(&k1, rev).await.unwrap();
+
+    let roles: Vec<_> = store
+        .roles_with_counts()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.name.starts_with(&base))
+        .collect();
+    let got: Vec<(&str, i64)> = roles.iter().map(|r| (r.name.as_str(), r.keys)).collect();
+    assert_eq!(got, vec![(empty.as_str(), 0), (used.as_str(), 2)], "name-ordered, revoked counted");
+    assert_eq!(roles[1].revision, role_revision(&pool, &used).await.unwrap());
+    assert_eq!(roles[1].policy, "full");
+    assert_eq!(store.key_counts().await.unwrap(), (total0 + 2, active0 + 1));
+
+    cleanup(&pool, &base).await;
+}
+
 fn ddl_clause(constraint: &str) -> String {
     let flat = SCHEMA_DDL.split_whitespace().collect::<Vec<_>>().join(" ");
     let needle = format!("CONSTRAINT {constraint} ");

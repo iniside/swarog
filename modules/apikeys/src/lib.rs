@@ -35,7 +35,7 @@ use async_trait::async_trait;
 use lifecycle::{Context, Ddl, Module};
 use opsapi::Error;
 
-use crate::store::{KeySummary, RoleSummary, Store, WriteError};
+use crate::store::{Store, WriteError};
 
 /// Creates this module's OWN schema and nothing else — full logical isolation (#10).
 /// Idempotent DDL (`CREATE … IF NOT EXISTS`), fresh-boot only per the wipe policy: since
@@ -162,14 +162,6 @@ impl apikeysapi::Keys for Service {
               (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2346)"
 )]
 impl Service {
-    pub(crate) async fn list_roles(&self) -> Result<Vec<RoleSummary>, sqlx::Error> {
-        self.store.list_roles().await
-    }
-
-    pub(crate) async fn list_keys(&self) -> Result<Vec<KeySummary>, sqlx::Error> {
-        self.store.list_keys().await
-    }
-
     pub(crate) async fn create_role(&self, name: &str, policy: &str) -> Result<(), WriteError> {
         self.store.create_role(name, policy).await
     }

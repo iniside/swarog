@@ -8,7 +8,7 @@
 //!
 //! Secrets are SERVER-GENERATED and stored ONLY as a SHA-256 digest (`secret_hash`) plus
 //! a display `prefix`; the plaintext is returned exactly once (from [`Store::create_key`])
-//! and never persisted, so `list_keys` can never expose it. Lookup hashes the presented
+//! and never persisted, so no key read can expose it. Lookup hashes the presented
 //! key and matches the digest — an O(1) indexed read.
 //!
 //! Optimistic concurrency is CAS-by-`revision`: every mutating UPDATE/DELETE carries the
@@ -212,26 +212,36 @@ impl WriteError {
     }
 }
 
-/// One role as the admin form renders it: its name, current policy, and CAS `revision`.
+/// One role with the number of keys referencing it, revoked keys included.
+#[cfg_attr(not(test), expect(dead_code, reason = "admin.rs reads them in the next part of step 21a1"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RoleSummary {
+pub(crate) struct RoleRow {
     pub name: String,
     pub policy: String,
     pub revision: i64,
+    pub keys: i64,
 }
 
-/// One key as the admin table renders it: NEVER the secret or its hash — only the display
-/// `prefix`, the referenced `role`, the CAS `revision`, the `revoked` flag, and a
-/// pre-rendered `created_at`.
+/// One key as the admin table renders it: never the secret or its hash.
+#[cfg_attr(not(test), expect(dead_code, reason = "admin.rs reads them in the next part of step 21a1"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct KeySummary {
+pub(crate) struct KeyRow {
     pub name: String,
-    pub role: String,
     pub prefix: String,
+    pub role: String,
     pub revision: i64,
     pub revoked: bool,
-    /// Pre-rendered "Mon DD, HH24:MI" (Postgres `to_char`).
-    pub created_at: String,
+    /// `YYYY-MM-DD` in UTC.
+    pub created: String,
+    /// `created_at` in microseconds since the epoch, the keyset cursor's first half.
+    pub created_us: i64,
+}
+
+#[cfg_attr(not(test), expect(dead_code, reason = "admin.rs reads them in the next part of step 21a1"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeyStatus {
+    Active,
+    Revoked,
 }
 
 pub(crate) struct Store {
@@ -261,16 +271,21 @@ impl Store {
 
     // --- Roles --------------------------------------------------------------
 
-    /// Every role, name-ordered, for the admin form's Selects + policy editor.
-    pub async fn list_roles(&self) -> Result<Vec<RoleSummary>, sqlx::Error> {
-        let rows: Vec<(String, String, i64)> = sqlx::query_as(
-            "SELECT name, policy, revision FROM apikeys.roles ORDER BY name",
+    /// Every role, name-ordered, with its key count (revoked keys included).
+    #[cfg_attr(not(test), expect(dead_code, reason = "admin.rs reads them in the next part of step 21a1"))]
+    pub async fn roles_with_counts(&self) -> Result<Vec<RoleRow>, sqlx::Error> {
+        let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
+            "SELECT r.name, r.policy, r.revision, count(k.name) \
+               FROM apikeys.roles r \
+               LEFT JOIN apikeys.keys k ON k.role = r.name \
+              GROUP BY r.name, r.policy, r.revision \
+              ORDER BY r.name",
         )
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(name, policy, revision)| RoleSummary { name, policy, revision })
+            .map(|(name, policy, revision, keys)| RoleRow { name, policy, revision, keys })
             .collect())
     }
 
@@ -349,27 +364,65 @@ impl Store {
 
     // --- Keys ---------------------------------------------------------------
 
-    /// Every key, newest first, for the admin table — WITHOUT the secret or its hash.
-    pub async fn list_keys(&self) -> Result<Vec<KeySummary>, sqlx::Error> {
-        let rows: Vec<(String, String, String, i64, bool, String)> = sqlx::query_as(
-            "SELECT name, role, prefix, revision, (revoked_at IS NOT NULL) AS revoked, \
-                    to_char(created_at, 'Mon DD, HH24:MI') \
+    /// One page of keys, newest first, keyset on `(created_at, name)` DESC: `after` is the
+    /// last row's `(created_us, name)`. The needle matches name or prefix as a
+    /// case-insensitive substring; `strpos` takes it literally, so `%` and `_` need no
+    /// escaping.
+    #[cfg_attr(not(test), expect(dead_code, reason = "admin.rs reads them in the next part of step 21a1"))]
+    pub async fn keys_page(
+        &self,
+        needle: Option<&str>,
+        status: Option<KeyStatus>,
+        role: Option<&str>,
+        after: Option<(i64, &str)>,
+        limit: i64,
+    ) -> Result<Vec<KeyRow>, sqlx::Error> {
+        let rows: Vec<(String, String, String, i64, bool, String, i64)> = sqlx::query_as(
+            "SELECT name, prefix, role, revision, (revoked_at IS NOT NULL), \
+                    to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'), \
+                    (EXTRACT(EPOCH FROM created_at) * 1000000)::int8 \
                FROM apikeys.keys \
-              ORDER BY created_at DESC",
+              WHERE ($1::text IS NULL \
+                     OR strpos(lower(name), lower($1)) > 0 \
+                     OR strpos(lower(prefix), lower($1)) > 0) \
+                AND ($2::bool IS NULL OR (revoked_at IS NOT NULL) = $2) \
+                AND ($3::text IS NULL OR role = $3) \
+                AND ($4::int8 IS NULL \
+                     OR (created_at, name) < (to_timestamp(0) + $4 * interval '1 microsecond', $5::text)) \
+              ORDER BY created_at DESC, name DESC \
+              LIMIT $6",
         )
+        .bind(needle)
+        .bind(status.map(|s| s == KeyStatus::Revoked))
+        .bind(role)
+        .bind(after.map(|(us, _)| us))
+        .bind(after.map(|(_, name)| name))
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(name, role, prefix, revision, revoked, created_at)| KeySummary {
+            .map(|(name, prefix, role, revision, revoked, created, created_us)| KeyRow {
                 name,
-                role,
                 prefix,
+                role,
                 revision,
                 revoked,
-                created_at,
+                created,
+                created_us,
             })
             .collect())
+    }
+
+    /// `(total, active)` over every key. Exact `count(*)`: there is no index on
+    /// `created_at` or `role`.
+    #[cfg_attr(not(test), expect(dead_code, reason = "admin.rs reads them in the next part of step 21a1"))]
+    pub async fn key_counts(&self) -> Result<(i64, i64), sqlx::Error> {
+        sqlx::query_as(
+            "SELECT count(*), count(*) FILTER (WHERE revoked_at IS NULL) FROM apikeys.keys",
+        )
+        .fetch_one(&self.pool)
+        .await
     }
 
     /// Mints a new key under an existing `role` and returns `(secret, prefix)` — the
