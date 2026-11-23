@@ -182,11 +182,13 @@ pub(crate) fn fake_creator(name: &str) -> &'static str {
     FAKE_CREATORS[(controlplane::fake_hash("apikeys.created_by", name) % FAKE_CREATORS.len() as u64) as usize]
 }
 
-/// The FAKE last-used cell: a "now" badge or a dim relative time.
-pub(crate) fn fake_last_used(name: &str) -> Cell {
+/// The FAKE last-used cell: a "now" badge or a dim relative time. A revoked key cannot be in
+/// use, so it never draws "now": the pick that would is drawn as the oldest relative time.
+pub(crate) fn fake_last_used(name: &str, revoked: bool) -> Cell {
     // FAKE: the gateway records no key use.
     let pick = (controlplane::fake_hash("apikeys.last_used", name) % (FAKE_LAST_USED.len() as u64 + 1)) as usize;
     match pick {
+        0 if revoked => cell(CellKind::Dim, FAKE_LAST_USED[FAKE_LAST_USED.len() - 1]),
         0 => Cell { tone: Some(Tone::Ok), ..cell(CellKind::Badge, "now") },
         n => cell(CellKind::Dim, FAKE_LAST_USED[n - 1]),
     }
@@ -205,7 +207,7 @@ fn key_row(row: &KeyRow) -> Row {
             cell(CellKind::MonoMuted, format!("{}…", row.prefix)),
             cell(CellKind::Ref, row.role.clone()),
             created,
-            fake_last_used(&row.name),
+            fake_last_used(&row.name, row.revoked),
             cell(CellKind::Badge, status_text(row.revoked)),
         ],
         highlight: false,

@@ -144,8 +144,9 @@ fn a_key_row_draws_name_prefix_role_created_last_used_and_status() {
     assert_eq!((c[3].kind, c[3].value.as_str(), c[3].row), (CellKind::Dim, "2026-11-23", true));
     assert_eq!(c[3].more.len(), 1);
     assert_eq!((c[3].more[0].kind, c[3].more[0].value.as_str()), (CellKind::User, fake_creator("key-01")));
-    assert_eq!(c[4], fake_last_used("key-01"));
+    assert_eq!(c[4], fake_last_used("key-01", false));
     assert_eq!((c[5].kind, c[5].value.as_str(), c[5].tone), (CellKind::Badge, "active", None));
+    assert_eq!(t.rows[1].cells[4], fake_last_used("key-02", true));
     assert_eq!(t.rows[1].cells[5].value, "revoked");
     assert_eq!(body.meta.as_deref(), Some("1 active"));
     assert_eq!(t.search_placeholder.as_deref(), Some("Name or key prefix"));
@@ -168,8 +169,8 @@ fn fake_cells_are_stable_per_name_and_drawn_from_their_lists() {
         let name = format!("key-{i}");
         assert_eq!(fake_creator(&name), fake_creator(&name));
         assert!(FAKE_CREATORS.contains(&fake_creator(&name)));
-        let last = fake_last_used(&name);
-        assert_eq!(last, fake_last_used(&name));
+        let last = fake_last_used(&name, false);
+        assert_eq!(last, fake_last_used(&name, false));
         match last.kind {
             CellKind::Badge => {
                 assert_eq!((last.value.as_str(), last.tone), ("now", Some(Tone::Ok)));
@@ -184,6 +185,23 @@ fn fake_cells_are_stable_per_name_and_drawn_from_their_lists() {
         }
     }
     assert!(seen_now && seen_dim, "64 names draw both shapes");
+}
+
+#[test]
+fn a_revoked_key_never_draws_now_as_its_last_use() {
+    let mut now_names = 0;
+    for i in 0..64 {
+        let name = format!("key-{i}");
+        let revoked = fake_last_used(&name, true);
+        assert_eq!(revoked, fake_last_used(&name, true));
+        assert_eq!((revoked.kind, revoked.tone), (CellKind::Dim, None), "{name} revoked draws {revoked:?}");
+        assert!(FAKE_LAST_USED.contains(&revoked.value.as_str()));
+        if fake_last_used(&name, false).value == "now" {
+            assert_eq!(revoked.value, FAKE_LAST_USED[FAKE_LAST_USED.len() - 1]);
+            now_names += 1;
+        }
+    }
+    assert!(now_names > 0, "64 names include one whose active key draws now");
 }
 
 #[test]
