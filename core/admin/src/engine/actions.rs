@@ -381,17 +381,18 @@ pub(crate) fn check_click_keys(body: &[(String, String)]) -> Result<(), String> 
 }
 
 /// A form instance posts the portal keys, its spec's field keys but a request id's (drawn with
-/// no `name`), each Money field's currency key and, when the spec has modes, [`FIELD_MODE`];
-/// only a Multi field's key repeats.
+/// no `name`), each Money field's currency key, [`FIELD_MODE`] when the spec has modes and
+/// [`FIELD_REASON`] when it draws a change note; only a Multi field's key repeats.
 pub(crate) fn check_form_keys(spec: &StoredSpec, body: &[(String, String)]) -> Result<(), String> {
-    let (fields, moded): (&[Field], bool) = match spec {
-        StoredSpec::Form { form, .. } => (&form.fields, !form.modes.is_empty()),
-        StoredSpec::Confirm(_) | StoredSpec::Click => (&[], false),
+    let (fields, moded, reasoned): (&[Field], bool, bool) = match spec {
+        StoredSpec::Form { form, .. } => (&form.fields, !form.modes.is_empty(), form.reason != ReasonReq::None),
+        StoredSpec::Confirm(_) | StoredSpec::Click => (&[], false, true),
     };
-    let portal = [FIELD_CSRF, FIELD_FORM, FIELD_REASON, FIELD_CONFIRM, FIELD_RETURN];
+    let portal = [FIELD_CSRF, FIELD_FORM, FIELD_CONFIRM, FIELD_RETURN];
     let allowed = |key: &str| {
         portal.contains(&key)
             || (moded && key == FIELD_MODE)
+            || (reasoned && key == FIELD_REASON)
             || fields.iter().any(|f| {
                 (f.key == key && f.kind != FieldKind::RequestId)
                     || (matches!(f.kind, FieldKind::Money(_)) && money_currency_key(&f.key) == key)

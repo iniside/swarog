@@ -2824,6 +2824,32 @@ async fn a_panel_form_s_required_reason_is_refused_when_missing_and_sent_when_gi
     cleanup_user(&pool, &user).await;
 }
 
+/// A panel form drawing no change note refuses a posted `_reason` as an unexpected field, and
+/// the provider is never invoked.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_panel_form_without_a_change_note_refuses_a_posted_reason() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-panel-no-reason");
+    let cookie = operator_cookie(&pool, &user).await;
+    let actions = vec![action_decl("grant", ActionPoint::PanelForm("funds".to_string()), true)];
+    let manifest = player_owner(module("ledger", vec![player_tab("funds", "funds")], actions, true));
+    let spec = reason_spec(controlplane::ReasonReq::None);
+    let ledger = Recording::new(manifest, &[("funds", answer(Primitive::Form(spec)))]);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/ledger/funds?entity=player:p-1").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert!(!raw.contains(r#"name="_reason""#), "no change note is drawn: {raw}");
+    let body = format!("_csrf=csrf&_form={}&note=hi&_reason=sneaked", form_id_of(&raw));
+    let (status, raw) = portal_post(&engine, &st, &cookie, "/admin/_action/ledger/grant", &body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{raw}");
+    assert!(raw.contains("unexpected field"), "{raw}");
+    assert!(ledger.invoked_actions().is_empty(), "a refused body never invokes");
+
+    cleanup_user(&pool, &user).await;
+}
+
 /// A modal `Then::Form` with an optional change note draws it as `_reason`, submits without
 /// one, and sends a given one as `InvokeCall::reason`.
 #[tokio::test(flavor = "multi_thread")]
