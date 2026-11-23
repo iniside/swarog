@@ -24,8 +24,8 @@ _None._
   docs/status/2026-09-05-1416-leaderboard-shared-table-pollution-status.md:89.
 - [ ] **Rotate secret**
   APIKEYS-09 (part of APIKEYS-03). The key row menu draws "Rotate secret…" disabled: `key.rotate` is declared
-  `implemented: false` (modules/apikeys/src/admin.rs:408) and answers "not implemented yet"
-  (:453). The store has no rotate operation that replaces a key's digest and prefix under
+  `implemented: false` (modules/apikeys/src/admin.rs:643) and answers "not implemented yet"
+  (:706). The store has no rotate operation that replaces a key's digest and prefix under
   its revision. Replaced by: a revision-checked rotate that shows the new plaintext once.
 - [ ] **Key expiry**
   APIKEYS-10 (part of APIKEYS-03). Keys never expire: `apikeys.keys` has no expiry column, so the create form's

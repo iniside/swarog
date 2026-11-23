@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use controlplane::{
-    order, ActionPoint, Align, CellKind, DataTable, InvokeCall, Layout, Link, PanelBody, PanelQuery, Point, Primitive,
-    Provider, Role, SearchQuery, Then, Tone,
+    order, ActionPoint, Align, CellKind, ConfirmTone, DataTable, Emphasis, FieldKind, InvokeCall, InvokeOutcome, Layout,
+    Link, PanelBody, PanelQuery, Point, PrepareCall, Primitive, Provider, ReasonReq, Role, SearchQuery, Then, Tone,
 };
 use opsapi::Status;
 use sqlx::PgPool;
@@ -63,6 +63,33 @@ fn query(contribution: &str, search: Option<&str>, cursor: Option<&str>, params:
     }
 }
 
+fn prepare_call(action: &str, key: Option<&str>) -> PrepareCall {
+    PrepareCall {
+        module: "apikeys".into(),
+        action: action.into(),
+        entity: key.map(|id| EntityRef { kind: KEY_KIND.into(), id: id.into() }),
+        item: None,
+        operator: "tester".into(),
+    }
+}
+
+fn create_input(name: &str, role: &str, expires: Option<&str>) -> BTreeMap<String, String> {
+    let mut input = BTreeMap::from([("name".to_string(), name.to_string()), ("role".to_string(), role.to_string())]);
+    if let Some(expires) = expires {
+        input.insert("expires".to_string(), expires.to_string());
+    }
+    input
+}
+
+/// A call bound to the key `name`.
+fn key_call(action: &str, name: &str, input: BTreeMap<String, String>, revision: Option<i64>) -> InvokeCall {
+    InvokeCall {
+        entity: Some(EntityRef { kind: KEY_KIND.into(), id: name.into() }),
+        expected_revision: revision.map(|r| r as u64),
+        ..call(action, input)
+    }
+}
+
 fn call(action: &str, input: BTreeMap<String, String>) -> InvokeCall {
     InvokeCall {
         module: "apikeys".into(),
@@ -92,7 +119,7 @@ fn manifest_declares_the_page_its_two_panels_kinds_search_and_row_actions() {
     let page = &m.pages[0];
     assert_eq!((page.id.as_str(), page.title.as_str()), ("keys", "API keys"));
     assert_eq!(page.subtitle, "Machine credentials for game servers, CI and integrations.");
-    assert!(page.head_actions.is_empty());
+    assert_eq!(page.head_actions, vec!["key.create".to_string()]);
     assert_eq!(page.layout, Layout::Stack(vec!["keys".into(), "roles".into()]));
     assert_eq!(page.params, vec!["status".to_string(), "role".to_string()]);
 
@@ -126,7 +153,107 @@ fn manifest_declares_the_page_its_two_panels_kinds_search_and_row_actions() {
         requests.then,
         Then::Link(Link::Page { module: "audit".into(), page: "log".into(), params: BTreeMap::new() })
     );
-    assert_eq!(m.actions.len(), 2);
+
+    let create = m.actions.iter().find(|a| a.id == "key.create").expect("key.create");
+    assert_eq!(create.point, ActionPoint::PageHead("keys".into()));
+    assert_eq!((create.label.as_str(), create.icon.as_str(), create.order), ("Create key", "plus", 10));
+    assert_eq!(create.emphasis, Emphasis::Primary);
+    assert!(create.prepare && create.implemented && !create.danger);
+    assert!(matches!(create.then, Then::Form(_)));
+
+    let change = m.actions.iter().find(|a| a.id == "key.change-role").expect("key.change-role");
+    assert_eq!(change.point, ActionPoint::RowAction("apikey".into()));
+    assert_eq!((change.label.as_str(), change.icon.as_str(), change.order), ("Change role…", "shield", 20));
+    assert!(change.prepare && change.implemented && !change.danger);
+    assert!(matches!(change.then, Then::Form(_)));
+
+    let revoke = m.actions.iter().find(|a| a.id == "key.revoke").expect("key.revoke");
+    assert_eq!(revoke.point, ActionPoint::RowAction("apikey".into()));
+    assert_eq!((revoke.label.as_str(), revoke.icon.as_str(), revoke.order), ("Revoke…", "ban", 30));
+    assert!(revoke.prepare && revoke.implemented && revoke.danger);
+    assert!(matches!(revoke.then, Then::Confirm(_)));
+    for a in [create, change, revoke] {
+        assert_eq!(a.min_role, Role::Operator, "{}", a.id);
+    }
+    assert_eq!(m.actions.len(), 5);
+}
+
+fn role_row(name: &str, policy: &str) -> RoleRow {
+    RoleRow { name: name.into(), policy: policy.into(), revision: 1, keys: 0 }
+}
+
+#[test]
+fn the_create_form_offers_the_stored_roles_and_only_never_as_expiry() {
+    let form = create_form(&[role_row("ci", "match.report, accounts.login"), role_row("ops", "full")]);
+    assert_eq!(form.title.as_deref(), Some("Create API key"));
+    assert_eq!(form.note.as_deref(), Some("The secret is shown once after creation."));
+    assert_eq!(form.submit_label, "Create key");
+    assert_eq!(form.revision, None);
+    let keys: Vec<_> = form.fields.iter().map(|f| f.key.as_str()).collect();
+    assert_eq!(keys, vec!["name", "role", "expires"]);
+    let name = &form.fields[0];
+    assert_eq!(name.kind, FieldKind::String);
+    assert!(name.required && name.mono);
+    assert_eq!(name.placeholder.as_deref(), Some("horde-agents-2"));
+    assert_eq!(name.help.as_deref(), Some("Used in audit entries."));
+    let role = &form.fields[1];
+    assert_eq!(role.kind, FieldKind::Enum(vec!["ci".into(), "ops".into()]));
+    assert_eq!(role.default.as_deref(), Some("ci"));
+    assert_eq!(role.help.as_deref(), Some("match.report, accounts.login"));
+    let expires = &form.fields[2];
+    assert_eq!(expires.kind, FieldKind::Enum(vec!["Never".into()]));
+    assert_eq!(expires.default.as_deref(), Some("Never"));
+    assert!(controlplane::form_spec_errors(&form).is_empty());
+}
+
+#[test]
+fn the_change_role_form_defaults_to_the_current_role_at_the_key_revision() {
+    let k = KeyRow { revision: 7, ..key(1, false) };
+    let form = change_role_form(&[role_row("ci", "full"), role_row("ops", "full")], Some(&k));
+    assert_eq!(form.revision, Some(7));
+    assert_eq!(form.submit_label, "Change role");
+    assert_eq!(form.fields.len(), 1);
+    assert_eq!(form.fields[0].key, "role");
+    assert_eq!(form.fields[0].kind, FieldKind::Enum(vec!["ci".into(), "ops".into()]));
+    assert_eq!(form.fields[0].default.as_deref(), Some("ops"));
+    assert!(controlplane::form_spec_errors(&form).is_empty());
+}
+
+#[test]
+fn the_revoke_confirm_names_the_key_its_impact_and_asks_for_its_name() {
+    let k = key(3, false);
+    let c = revoke_confirm_for(&k);
+    assert_eq!(c.title, "Revoke key-03?");
+    assert_eq!(c.body, "Requests signed with this key fail immediately on every process.");
+    assert_eq!(c.tone, ConfirmTone::Danger);
+    assert_eq!(c.reason, ReasonReq::Optional);
+    assert_eq!(c.reason_hint.as_deref(), Some("e.g. leaked in CI log"));
+    assert_eq!(c.type_to_confirm.as_deref(), Some("key-03"));
+    assert_eq!(c.confirm_label, "Revoke key");
+    let labels: Vec<_> = c.impact.iter().map(|(l, _)| l.as_str()).collect();
+    assert_eq!(labels, vec!["Key", "Last used", "Requests (24 h)"]);
+    let id = &c.impact[0].1;
+    assert_eq!((id.kind, id.value.as_str(), id.row), (CellKind::Mono, "ak_0003…", true));
+    assert_eq!(id.more.len(), 1);
+    assert_eq!((id.more[0].kind, id.more[0].value.as_str()), (CellKind::Text, "· ops"));
+    assert_eq!(c.impact[1].1, fake_last_used("key-03", false));
+    assert_eq!((c.impact[2].1.kind, c.impact[2].1.value.clone()), (CellKind::Number, fake_requests("key-03")));
+}
+
+#[test]
+fn fake_requests_are_stable_below_the_cap_and_grouped_by_thousands() {
+    for i in 0..200 {
+        let name = format!("key-{i}");
+        let drawn = fake_requests(&name);
+        assert_eq!(drawn, fake_requests(&name));
+        let n: u64 = drawn.replace(',', "").parse().unwrap();
+        assert!(n < FAKE_REQUESTS_CAP);
+        let digits = n.to_string();
+        let groups: Vec<_> = drawn.split(',').collect();
+        assert!(groups[0].len() <= 3 && !groups[0].is_empty(), "{drawn}");
+        assert!(groups[1..].iter().all(|g| g.len() == 3), "{drawn}");
+        assert_eq!(groups.concat(), digits);
+    }
 }
 
 #[test]
@@ -280,6 +407,13 @@ fn a_search_hit_is_the_name_the_prefix_and_role_and_the_status() {
     assert_eq!(hit.link, Link::Page { module: "apikeys".into(), page: "keys".into(), params: BTreeMap::new() });
 }
 
+#[test]
+fn the_conformance_probe_refuses_one_byte_over_the_input_cap_and_no_less() {
+    let cap = crate::conformance::CP_INVOKE_INPUT_VALUE_BYTES;
+    assert!(!crate::conformance::conformance_cp_invoke_input_rejected(cap), "at the cap the create reaches the store");
+    assert!(crate::conformance::conformance_cp_invoke_input_rejected(cap + 1));
+}
+
 #[tokio::test]
 async fn refusals_are_decided_before_the_store() {
     let p = dead_provider();
@@ -287,6 +421,32 @@ async fn refusals_are_decided_before_the_store() {
     assert_eq!(e.status, Status::Forbidden);
     let e = p.invoke(call("key.nope", BTreeMap::new())).await.unwrap_err();
     assert_eq!(e.status, Status::NotFound);
+    let e = p.invoke(InvokeCall { entity: None, ..call("key.revoke", BTreeMap::new()) }).await.unwrap_err();
+    assert_eq!(e.status, Status::Invalid);
+    let role_entity = Some(EntityRef { kind: ROLE_KIND.into(), id: "k".into() });
+    let e = p.invoke(InvokeCall { entity: role_entity, ..call("key.change-role", BTreeMap::new()) }).await.unwrap_err();
+    assert_eq!(e.status, Status::Invalid);
+    let e = p.prepare(prepare_call("key.nope", None)).await.unwrap_err();
+    assert_eq!(e.status, Status::NotFound);
+    let e = p.prepare(prepare_call("key.revoke", None)).await.unwrap_err();
+    assert_eq!(e.status, Status::Invalid);
+    for (name, expires, field) in [
+        ("", "Never", "name"),
+        (" padded", "Never", "name"),
+        (&*"n".repeat(MAX_NAME_BYTES + 1), "Never", "name"),
+        ("fine", "30 days", "expires"),
+    ] {
+        let input = create_input(name, "ops", Some(expires));
+        match p.invoke(call("key.create", input)).await {
+            Ok(InvokeOutcome::FieldErrors(errors)) => assert!(errors.contains_key(field), "{name:?}: {errors:?}"),
+            other => panic!("{name:?} {expires:?}: FieldErrors on {field}, got {other:?}"),
+        }
+    }
+    match p.invoke(call("key.create", create_input("fine", "ops", None))).await {
+        Ok(InvokeOutcome::FieldErrors(errors)) => assert!(errors.contains_key("expires")),
+        other => panic!("no expiry: FieldErrors on expires, got {other:?}"),
+    }
+
     let big = BTreeMap::from([("x".to_string(), "v".repeat(controlplane::MAX_INPUT_VALUE_BYTES + 1))]);
     let e = p.invoke(call("key.rotate", big)).await.unwrap_err();
     assert_eq!(e.status, Status::Invalid);
@@ -379,6 +539,85 @@ async fn keys_page_by_25_narrow_by_filters_and_drop_the_total_and_roles_count_ke
         .await
         .unwrap();
     assert_eq!(capped.len(), 25);
+
+    cleanup(&pool, &base).await;
+}
+
+#[tokio::test]
+async fn create_change_role_and_revoke_a_key_through_the_provider() {
+    let _guard = db_test_lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let base = unique_name(&pool).await;
+    let store = Store { pool: pool.clone() };
+    let (role_a, role_b) = (format!("{base}-a"), format!("{base}-b"));
+    store.create_role(&role_a, "full").await.unwrap();
+    store.create_role(&role_b, "match.report").await.unwrap();
+    let p = provider(pool.clone());
+    let name = format!("{base}-k");
+
+    let Then::Form(form) = p.prepare(prepare_call("key.create", None)).await.unwrap() else { panic!("a form") };
+    let FieldKind::Enum(roles) = &form.fields[1].kind else { panic!("a role enum") };
+    assert!(roles.contains(&role_a) && roles.contains(&role_b));
+
+    let created = p.invoke(call("key.create", create_input(&name, &role_a, Some("Never")))).await.unwrap();
+    let InvokeOutcome::Ok { message, reveal: Some(reveal), redirect: None } = created else { panic!("{created:?}") };
+    assert_eq!(message, "");
+    assert_eq!(reveal.label, format!("Key created — {name}"));
+    assert!(reveal.value.starts_with("ak_"));
+    assert_eq!(reveal.hint, None);
+    assert_eq!(
+        reveal.extra.as_deref(),
+        Some(&*format!("Send it as the X-Api-Key header (HTTP) or the api_key field (socket). Role {role_a}."))
+    );
+    assert_eq!(store.lookup(&reveal.value).await.unwrap().unwrap().name, name);
+
+    let again = p.invoke(call("key.create", create_input(&name, &role_b, Some("Never")))).await.unwrap();
+    let InvokeOutcome::FieldErrors(errors) = again else { panic!("{again:?}") };
+    assert_eq!(errors.get("name").map(String::as_str), Some("a key with this name exists"));
+    let other = format!("{base}-k2");
+    let e = p.invoke(call("key.create", create_input(&other, &format!("{base}-none"), Some("Never")))).await.unwrap_err();
+    assert_eq!(e.status, Status::Conflict);
+    assert!(store.key(&other).await.unwrap().is_none(), "no key written");
+
+    let Then::Form(form) = p.prepare(prepare_call("key.change-role", Some(&name))).await.unwrap() else {
+        panic!("a form")
+    };
+    let rev = store.key(&name).await.unwrap().unwrap().revision;
+    assert_eq!(form.revision, Some(rev as u64));
+    assert_eq!(form.fields[0].default.as_deref(), Some(role_a.as_str()));
+    let to_b = || BTreeMap::from([("role".to_string(), role_b.clone())]);
+    let to_a = || BTreeMap::from([("role".to_string(), role_a.clone())]);
+    let gone_role = BTreeMap::from([("role".to_string(), format!("{base}-none"))]);
+    let e = p.invoke(key_call("key.change-role", &name, gone_role, Some(rev))).await.unwrap_err();
+    assert_eq!(e.status, Status::Conflict, "a role deleted after the form opened: {e:?}");
+    let changed = p.invoke(key_call("key.change-role", &name, to_b(), Some(rev))).await.unwrap();
+    assert!(matches!(changed, InvokeOutcome::Ok { .. }), "{changed:?}");
+    let now = store.key(&name).await.unwrap().unwrap();
+    assert_eq!(now.role, role_b);
+    let stale = p.invoke(key_call("key.change-role", &name, to_a(), Some(rev))).await.unwrap();
+    assert_eq!(stale, InvokeOutcome::Conflict { current_revision: now.revision as u64 });
+    let same = p.invoke(key_call("key.change-role", &name, to_b(), Some(now.revision))).await.unwrap();
+    assert_eq!(same, InvokeOutcome::NoOp { message: format!("Key {name} already has role {role_b}") });
+    let missing = format!("{base}-missing");
+    let e = p.invoke(key_call("key.change-role", &missing, to_a(), Some(1))).await.unwrap_err();
+    assert_eq!(e.status, Status::NotFound);
+    let e = p.prepare(prepare_call("key.change-role", Some(&missing))).await.unwrap_err();
+    assert_eq!(e.status, Status::NotFound);
+
+    let Then::Confirm(confirm) = p.prepare(prepare_call("key.revoke", Some(&name))).await.unwrap() else {
+        panic!("a confirm")
+    };
+    assert_eq!(confirm.title, format!("Revoke {name}?"));
+    assert_eq!(confirm.type_to_confirm.as_deref(), Some(name.as_str()));
+    let revoked = p.invoke(key_call("key.revoke", &name, BTreeMap::new(), None)).await.unwrap();
+    assert_eq!(revoked, InvokeOutcome::Ok { message: "Key revoked".into(), reveal: None, redirect: None });
+    assert!(store.lookup(&reveal.value).await.unwrap().is_none(), "a revoked key no longer authenticates");
+    let repeat = p.invoke(key_call("key.revoke", &name, BTreeMap::new(), None)).await.unwrap();
+    assert_eq!(repeat, InvokeOutcome::NoOp { message: format!("Key {name} is already revoked") });
+    let e = p.invoke(key_call("key.revoke", &missing, BTreeMap::new(), None)).await.unwrap_err();
+    assert_eq!(e.status, Status::NotFound);
+    let e = p.prepare(prepare_call("key.revoke", Some(&missing))).await.unwrap_err();
+    assert_eq!(e.status, Status::NotFound);
 
     cleanup(&pool, &base).await;
 }

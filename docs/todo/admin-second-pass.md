@@ -235,22 +235,22 @@ The four downloads and Delete are drawn disabled; storage's manifest declares `w
 
 ### Fake data and actions of the apikeys port
 
-modules/apikeys/src/admin.rs, as committed in admin-control-plane-redesign step 21 part a1.
+modules/apikeys/src/admin.rs, as committed in admin-control-plane-redesign step 21 part a2.
 
 - [ ] **API key created by**
   ADMIN2-58. Mockup: the Keys panel's "Created by" operator login. Fake:
-  modules/apikeys/src/admin.rs:180 (`fake_creator`, a login from `FAKE_CREATORS` picked by
+  modules/apikeys/src/admin.rs:290 (`fake_creator`, a login from `FAKE_CREATORS` picked by
   `controlplane::fake_hash("apikeys.created_by", name)`): keys record no creator. Replaced by:
   a creator column written from the admin session on create.
 - [ ] **API key last used**
   ADMIN2-59. Mockup: the Keys panel's "Last used" column. Fake:
-  modules/apikeys/src/admin.rs:186 (`fake_last_used`, a "now" badge or a `FAKE_LAST_USED`
+  modules/apikeys/src/admin.rs:297 (`fake_last_used`, a "now" badge or a `FAKE_LAST_USED`
   time picked by `controlplane::fake_hash("apikeys.last_used", name)`): the gateway records
   no key use. Replaced by: a last-use timestamp the verifier records, bounded in write rate.
 - [ ] **Row-bound "Requests by this key" link**
   ADMIN2-60. Mockup: the apikey row menu's "Requests by this key". Action `key.requests`
-  (modules/apikeys/src/admin.rs:409) is a static `Link::Page` to the unfiltered audit log
-  (:367), contract gap P2-1: a `Link::Page` cannot `bind` the row's key. Replaced by: a
+  (modules/apikeys/src/admin.rs:661) is a static `Link::Page` to the unfiltered audit log
+  (:594), contract gap P2-1: a `Link::Page` cannot `bind` the row's key. Replaced by: a
   row-bound link param and an audit log filter by key.
 
 ### Pages without a mockup

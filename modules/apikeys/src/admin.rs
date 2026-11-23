@@ -1,6 +1,7 @@
 //! The `apikeys` control-plane provider: the API keys page (the Keys table with its status and
 //! role filters, search and keyset pager, and the Roles table with each policy's methods and
-//! key count) and the `apikey` search scope.
+//! key count), the key actions (create with a show-once secret, change role, revoke) and the
+//! `apikey` search scope.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -8,14 +9,15 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use controlplane::order;
 use controlplane::{
-    ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ContributionDecl, DataTable, Emphasis, EntityKindDecl,
-    EntityRef, FilterDef, FilterKind, InvokeCall, InvokeOutcome, Layout, Link, Manifest, NavEntry, Noun, PageDecl,
-    PageInfo, PanelBody, PanelQuery, Point, Primitive, Provider, Role, Row, SearchDecl, SearchHit, SearchQuery, Then,
-    Tone, DEFAULT_PANEL_DEADLINE_MS, DEFAULT_SEARCH_DEADLINE_MS,
+    ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ConfirmSpec, ConfirmTone, ContributionDecl, DataTable,
+    Emphasis, EntityKindDecl, EntityRef, Field, FieldKind, FilterDef, FilterKind, FormSpec, InvokeCall, InvokeOutcome,
+    Layout, Link, Manifest, NavEntry, Noun, PageDecl, PageInfo, PanelBody, PanelQuery, Point, PrepareCall, Primitive,
+    Provider, ReasonReq, Role, Row, SearchDecl, SearchHit, SearchQuery, SecretReveal, Then, Tone,
+    DEFAULT_PANEL_DEADLINE_MS, DEFAULT_SEARCH_DEADLINE_MS,
 };
 use opsapi::Error;
 
-use crate::store::{KeyRow, KeyStatus, RoleRow, MAX_NAME_BYTES};
+use crate::store::{validate_name, KeyRow, KeyStatus, Revoke, RoleRow, WriteError, KEY_NAME, MAX_NAME_BYTES};
 use crate::{internal, Service};
 
 const MODULE: &str = "apikeys";
@@ -26,8 +28,17 @@ pub(crate) const ROLE_KIND: &str = "apirole";
 pub(crate) const KEYS: &str = "keys";
 pub(crate) const ROLES: &str = "roles";
 
+pub(crate) const KEY_CREATE: &str = "key.create";
 pub(crate) const KEY_ROTATE: &str = "key.rotate";
+pub(crate) const KEY_CHANGE_ROLE: &str = "key.change-role";
+pub(crate) const KEY_REVOKE: &str = "key.revoke";
 pub(crate) const KEY_REQUESTS: &str = "key.requests";
+
+pub(crate) const FIELD_NAME: &str = "name";
+pub(crate) const FIELD_ROLE: &str = "role";
+pub(crate) const FIELD_EXPIRES: &str = "expires";
+/// The one expiry a key can have: the store records none.
+pub(crate) const NEVER: &str = "Never";
 
 pub(crate) const FILTER_STATUS: &str = "status";
 pub(crate) const FILTER_ROLE: &str = "role";
@@ -50,6 +61,10 @@ pub(crate) const ROLES_FOOT: &str = "Policies list the op methods modules serve 
 pub(crate) const FAKE_CREATORS: [&str; 4] = ["marta.k", "jonas.l", "priya.n", "sam.o"];
 /// The FAKE "last used" values after "now".
 pub(crate) const FAKE_LAST_USED: [&str; 4] = ["4 min ago", "2 h ago", "9 h ago", "1 d ago"];
+/// The FAKE "requests (24 h)" values are below this.
+pub(crate) const FAKE_REQUESTS_CAP: u64 = 50_000;
+
+pub(crate) const REVOKE_BODY: &str = "Requests signed with this key fail immediately on every process.";
 
 pub(crate) struct ApiKeysAdmin {
     svc: Arc<Service>,
@@ -92,6 +107,101 @@ impl ApiKeysAdmin {
     async fn roles(&self) -> Result<PanelBody, Error> {
         let rows = self.svc.store.roles_with_counts().await.map_err(internal)?;
         Ok(roles_body(&rows))
+    }
+
+    /// The bound key as it is now, or `NotFound`.
+    async fn bound_key(&self, entity: Option<&EntityRef>) -> Result<KeyRow, Error> {
+        let name = key_name(entity)?;
+        let key = self.svc.key(name).await.map_err(internal)?;
+        key.ok_or_else(|| Error::not_found(format!("{MODULE}: key {name:?} does not exist")))
+    }
+
+    async fn create_key(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let name = req.input.get(FIELD_NAME).map(String::as_str).unwrap_or_default();
+        if let Err(e) = validate_name(&KEY_NAME, name) {
+            return Ok(field_error(FIELD_NAME, e.to_string()));
+        }
+        if req.input.get(FIELD_EXPIRES).map(String::as_str) != Some(NEVER) {
+            return Ok(field_error(FIELD_EXPIRES, format!("must be {NEVER}")));
+        }
+        let role = req.input.get(FIELD_ROLE).map(String::as_str).unwrap_or_default();
+        match self.svc.create_key(name, role).await {
+            Ok((secret, _prefix)) => Ok(InvokeOutcome::Ok {
+                message: String::new(),
+                reveal: Some(SecretReveal {
+                    label: format!("Key created — {name}"),
+                    value: secret,
+                    hint: None,
+                    expires_at: None,
+                    extra: Some(format!(
+                        "Send it as the X-Api-Key header (HTTP) or the api_key field (socket). Role {role}."
+                    )),
+                }),
+                redirect: None,
+            }),
+            Err(WriteError::Taken) => Ok(field_error(FIELD_NAME, "a key with this name exists".to_string())),
+            Err(e) => Err(write_error(e)),
+        }
+    }
+
+    /// A CAS on the revision the form was prepared with. A miss is told apart by a re-read:
+    /// a gone key is `NotFound`, a moved revision a `Conflict`, and an unmoved one means the
+    /// role was the conflict.
+    async fn change_role(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let key = self.bound_key(req.entity.as_ref()).await?;
+        let role = req.input.get(FIELD_ROLE).map(String::as_str).unwrap_or_default();
+        if role.is_empty() {
+            return Ok(field_error(FIELD_ROLE, "required".to_string()));
+        }
+        let expected = req
+            .expected_revision
+            .and_then(|r| i64::try_from(r).ok())
+            .ok_or_else(|| Error::invalid(format!("{MODULE}: changing a role needs the form's revision")))?;
+        if key.role == role {
+            return Ok(InvokeOutcome::NoOp { message: format!("Key {} already has role {role}", key.name) });
+        }
+        match self.svc.set_key_role(&key.name, expected, role).await {
+            Ok(()) => Ok(InvokeOutcome::Ok { message: "Role changed".to_string(), reveal: None, redirect: None }),
+            Err(WriteError::Conflict(msg)) => {
+                let now = self.bound_key(req.entity.as_ref()).await?;
+                if now.revision == expected {
+                    return Err(Error::conflict(msg));
+                }
+                Ok(InvokeOutcome::Conflict { current_revision: now.revision.max(0) as u64 })
+            }
+            Err(e) => Err(write_error(e)),
+        }
+    }
+
+    async fn revoke(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let name = key_name(req.entity.as_ref())?;
+        match self.svc.revoke_key(name).await.map_err(write_error)? {
+            Revoke::Revoked => Ok(InvokeOutcome::Ok { message: "Key revoked".to_string(), reveal: None, redirect: None }),
+            Revoke::AlreadyRevoked => Ok(InvokeOutcome::NoOp { message: format!("Key {name} is already revoked") }),
+            Revoke::Absent => Err(Error::not_found(format!("{MODULE}: key {name:?} does not exist"))),
+        }
+    }
+}
+
+/// The key a row action is bound to.
+fn key_name(entity: Option<&EntityRef>) -> Result<&str, Error> {
+    match entity {
+        Some(entity) if entity.kind == KEY_KIND => Ok(&entity.id),
+        _ => Err(Error::invalid(format!("{MODULE}: this needs an API key"))),
+    }
+}
+
+fn field_error(key: &str, msg: String) -> InvokeOutcome {
+    InvokeOutcome::FieldErrors(BTreeMap::from([(key.to_string(), msg)]))
+}
+
+/// A taken name is the caller's to word; it is never a NotFound (finding #2).
+fn write_error(e: WriteError) -> Error {
+    match e {
+        WriteError::Conflict(msg) => Error::conflict(msg),
+        WriteError::Taken => Error::conflict(e.to_string()),
+        WriteError::Invalid(msg) => Error::invalid(msg),
+        WriteError::Db(e) => internal(e),
     }
 }
 
@@ -192,6 +302,20 @@ pub(crate) fn fake_last_used(name: &str, revoked: bool) -> Cell {
         0 => Cell { tone: Some(Tone::Ok), ..cell(CellKind::Badge, "now") },
         n => cell(CellKind::Dim, FAKE_LAST_USED[n - 1]),
     }
+}
+
+/// The FAKE requests in the last 24 hours, with thousands separators.
+pub(crate) fn fake_requests(name: &str) -> String {
+    // FAKE: the gateway counts no requests per key.
+    let n = (controlplane::fake_hash("apikeys.requests_24h", name) % FAKE_REQUESTS_CAP).to_string();
+    let mut out = String::new();
+    for (i, digit) in n.chars().enumerate() {
+        if i > 0 && (n.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
 }
 
 fn key_row(row: &KeyRow) -> Row {
@@ -365,6 +489,107 @@ fn key_action(id: &str, label: &str, icon: &str, order: i32, min_role: Role, the
     }
 }
 
+fn field(key: &str, label: &str, kind: FieldKind) -> Field {
+    Field {
+        key: key.to_string(),
+        label: label.to_string(),
+        kind,
+        required: true,
+        help: None,
+        default: None,
+        readonly: false,
+        mono: false,
+        placeholder: None,
+    }
+}
+
+fn role_names(roles: &[RoleRow]) -> Vec<String> {
+    roles.iter().map(|r| r.name.clone()).collect()
+}
+
+/// A policy as plain text: `full`, or its methods joined by commas.
+fn policy_text(policy: &str) -> String {
+    policy.split(',').map(str::trim).filter(|m| !m.is_empty()).collect::<Vec<_>>().join(", ")
+}
+
+/// The create form over the stored roles: the first is the default and its policy the help.
+pub(crate) fn create_form(roles: &[RoleRow]) -> FormSpec {
+    let first = roles.first();
+    let name = Field {
+        help: Some("Used in audit entries.".to_string()),
+        mono: true,
+        placeholder: Some("horde-agents-2".to_string()),
+        ..field(FIELD_NAME, "Name", FieldKind::String)
+    };
+    let role = Field {
+        help: first.map(|r| policy_text(&r.policy)),
+        default: first.map(|r| r.name.clone()),
+        ..field(FIELD_ROLE, "Role", FieldKind::Enum(role_names(roles)))
+    };
+    let expires = Field {
+        default: Some(NEVER.to_string()),
+        ..field(FIELD_EXPIRES, "Expires", FieldKind::Enum(vec![NEVER.to_string()]))
+    };
+    FormSpec {
+        fields: vec![name, role, expires],
+        hidden: BTreeMap::new(),
+        submit_label: "Create key".to_string(),
+        note: Some("The secret is shown once after creation.".to_string()),
+        revision: None,
+        title: Some("Create API key".to_string()),
+        modes: Vec::new(),
+    }
+}
+
+/// The change-role form over the stored roles, defaulting to `key`'s role at `key`'s revision.
+pub(crate) fn change_role_form(roles: &[RoleRow], key: Option<&KeyRow>) -> FormSpec {
+    let role = Field {
+        default: key.map(|k| k.role.clone()),
+        ..field(FIELD_ROLE, "Role", FieldKind::Enum(role_names(roles)))
+    };
+    FormSpec {
+        fields: vec![role],
+        hidden: BTreeMap::new(),
+        submit_label: "Change role".to_string(),
+        note: None,
+        revision: key.map(|k| k.revision.max(0) as u64),
+        title: None,
+        modes: Vec::new(),
+    }
+}
+
+fn revoke_confirm() -> ConfirmSpec {
+    ConfirmSpec {
+        title: "Revoke key?".to_string(),
+        body: REVOKE_BODY.to_string(),
+        tone: ConfirmTone::Danger,
+        impact: Vec::new(),
+        reason: ReasonReq::Optional,
+        reason_hint: Some("e.g. leaked in CI log".to_string()),
+        type_to_confirm: None,
+        confirm_label: "Revoke key".to_string(),
+    }
+}
+
+/// The revoke confirm bound to `key`; the name is the type-to-confirm token.
+pub(crate) fn revoke_confirm_for(key: &KeyRow) -> ConfirmSpec {
+    let id = Cell {
+        row: true,
+        more: vec![cell(CellKind::Text, format!("· {}", key.role))],
+        ..cell(CellKind::Mono, format!("{}…", key.prefix))
+    };
+    ConfirmSpec {
+        title: format!("Revoke {}?", key.name),
+        impact: vec![
+            ("Key".to_string(), id),
+            ("Last used".to_string(), fake_last_used(&key.name, key.revoked)),
+            ("Requests (24 h)".to_string(), cell(CellKind::Number, fake_requests(&key.name))),
+        ],
+        type_to_confirm: Some(key.name.clone()),
+        ..revoke_confirm()
+    }
+}
+
 pub(crate) fn manifest() -> Manifest {
     let requests = Link::Page {
         module: "audit".to_string(),
@@ -387,7 +612,7 @@ pub(crate) fn manifest() -> Manifest {
             id: PAGE.to_string(),
             title: "API keys".to_string(),
             subtitle: "Machine credentials for game servers, CI and integrations.".to_string(),
-            head_actions: Vec::new(),
+            head_actions: vec![KEY_CREATE.to_string()],
             tiles: Vec::new(),
             layout: Layout::Stack(vec![KEYS.to_string(), ROLES.to_string()]),
             params: vec![FILTER_STATUS.to_string(), FILTER_ROLE.to_string()],
@@ -405,9 +630,34 @@ pub(crate) fn manifest() -> Manifest {
             },
         ],
         contributions: vec![contribution(KEYS, 10, "Keys"), contribution(ROLES, 20, "Roles")],
+        // Every form and confirm is `prepare: true`: its options are the stored roles and its
+        // text the bound key; the declared spec fixes only the variant.
         actions: vec![
+            ActionDecl {
+                point: ActionPoint::PageHead(PAGE.to_string()),
+                emphasis: Emphasis::Primary,
+                prepare: true,
+                ..key_action(KEY_CREATE, "Create key", "plus", 10, Role::Operator, Then::Form(create_form(&[])), true)
+            },
             // NEW: no secret rotation exists.
             key_action(KEY_ROTATE, "Rotate secret…", "refresh", 10, Role::Operator, Then::Invoke, false),
+            ActionDecl {
+                prepare: true,
+                ..key_action(
+                    KEY_CHANGE_ROLE,
+                    "Change role…",
+                    "shield",
+                    20,
+                    Role::Operator,
+                    Then::Form(change_role_form(&[], None)),
+                    true,
+                )
+            },
+            ActionDecl {
+                danger: true,
+                prepare: true,
+                ..key_action(KEY_REVOKE, "Revoke…", "ban", 30, Role::Operator, Then::Confirm(revoke_confirm()), true)
+            },
             key_action(KEY_REQUESTS, "Requests by this key", "list", 40, Role::Viewer, Then::Link(requests), true),
         ],
         search: vec![SearchDecl {
@@ -452,8 +702,30 @@ impl Provider for ApiKeysAdmin {
             )));
         }
         match req.action.as_str() {
+            KEY_CREATE => self.create_key(&req).await,
             KEY_ROTATE => Err(Error::forbidden("not implemented yet")),
+            KEY_CHANGE_ROLE => self.change_role(&req).await,
+            KEY_REVOKE => self.revoke(&req).await,
             other => Err(Error::not_found(format!("{MODULE} has no action {other:?}"))),
+        }
+    }
+
+    async fn prepare(&self, req: PrepareCall) -> Result<Then, Error> {
+        match req.action.as_str() {
+            KEY_CREATE => {
+                let roles = self.svc.store.roles_with_counts().await.map_err(internal)?;
+                if roles.is_empty() {
+                    return Err(Error::conflict(format!("{MODULE}: no role exists; create a role first")));
+                }
+                Ok(Then::Form(create_form(&roles)))
+            }
+            KEY_CHANGE_ROLE => {
+                let key = self.bound_key(req.entity.as_ref()).await?;
+                let roles = self.svc.store.roles_with_counts().await.map_err(internal)?;
+                Ok(Then::Form(change_role_form(&roles, Some(&key))))
+            }
+            KEY_REVOKE => Ok(Then::Confirm(revoke_confirm_for(&self.bound_key(req.entity.as_ref()).await?))),
+            other => Err(Error::not_found(format!("{MODULE} prepares no action {other:?}"))),
         }
     }
 }

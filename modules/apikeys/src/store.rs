@@ -105,7 +105,7 @@ pub(crate) const ROLE_NAME: ColumnCap = ColumnCap {
     max_bytes: MAX_NAME_BYTES,
     constraint: "roles_name_len_check",
 };
-const KEY_NAME: ColumnCap = ColumnCap {
+pub(crate) const KEY_NAME: ColumnCap = ColumnCap {
     what: "key name",
     max_bytes: MAX_NAME_BYTES,
     constraint: "keys_name_len_check",
@@ -117,6 +117,10 @@ const ROLE_POLICY: ColumnCap = ColumnCap {
 };
 
 pub(crate) const COLUMN_CAPS: &[&ColumnCap] = &[&ROLE_NAME, &KEY_NAME, &ROLE_POLICY];
+
+/// The implicit primary-key constraint names [`WriteError::from_db`] reads as a taken name.
+const KEYS_PKEY: &str = "keys_pkey";
+const ROLES_PKEY: &str = "roles_pkey";
 
 impl ColumnCap {
     /// The one over-cap verdict, worded identically whether Rust caught it or the column
@@ -175,17 +179,21 @@ pub(crate) fn validate_name(cap: &ColumnCap, name: &str) -> Result<(), WriteErro
     Ok(())
 }
 
-/// A write outcome that distinguishes a DOMAIN conflict (CAS miss, duplicate name, or an
-/// FK violation — a referenced role missing, or a role still referenced by a key) from a
-/// validation error and from raw store trouble. This is the authority for finding #2:
+/// A write outcome that distinguishes a taken name, a DOMAIN conflict (CAS miss or an FK
+/// violation — a referenced role missing, or a role still referenced by a key), a
+/// validation error and raw store trouble. This is the authority for finding #2:
 /// none of these map to `NotFound` — a domain conflict is a [`opsapi::Status::Conflict`]
 /// (409) and never masquerades as the edge's UnknownMethod → NotFound → "read-only".
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum WriteError {
-    /// CAS miss / duplicate / FK violation — the operator's evidence no longer holds, or
-    /// the write conflicts with existing durable state.
+    /// CAS miss / FK violation — the operator's evidence no longer holds, or the write
+    /// conflicts with existing durable state.
     #[error("conflict: {0}")]
     Conflict(String),
+    /// The insert's name is already a key's or role's primary key (`23505` on
+    /// [`KEYS_PKEY`] or [`ROLES_PKEY`]).
+    #[error("taken: a row with this name already exists")]
+    Taken,
     /// Malformed input (blank/invalid policy, blank name).
     #[error("invalid: {0}")]
     Invalid(String),
@@ -195,9 +203,10 @@ pub(crate) enum WriteError {
 }
 
 impl WriteError {
-    /// Reclassifies a raw sqlx error by Postgres SQLSTATE: `23505` (unique_violation) and
-    /// `23503` (foreign_key_violation) are DOMAIN conflicts (duplicate name / missing or
-    /// still-referenced role), everything else is store trouble. The FK is the real
+    /// Reclassifies a raw sqlx error by Postgres SQLSTATE: `23505` (unique_violation) on a
+    /// name primary key is [`WriteError::Taken`]; any other `23505` and `23503`
+    /// (foreign_key_violation) are DOMAIN conflicts (digest collision / missing or
+    /// still-referenced role); everything else is store trouble. The FK is the real
     /// authority against a create_key↔delete_role race — an `EXISTS` pre-check only buys a
     /// nicer message.
     ///
@@ -213,6 +222,7 @@ impl WriteError {
                         return cap.rejected();
                     }
                 }
+                Some("23505") if matches!(db.constraint(), Some(KEYS_PKEY | ROLES_PKEY)) => return WriteError::Taken,
                 Some("23505") | Some("23503") => return WriteError::Conflict(conflict_msg.into()),
                 _ => {}
             }
@@ -319,7 +329,7 @@ impl Store {
         Ok(row.map(|(name, policy, revision, keys)| RoleRow { name, policy, revision, keys }))
     }
 
-    /// Creates a role. A duplicate name (PK) is a [`WriteError::Conflict`].
+    /// Creates a role. A duplicate name (PK) is [`WriteError::Taken`].
     pub async fn create_role(&self, name: &str, policy: &str) -> Result<(), WriteError> {
         validate_name(&ROLE_NAME, name)?;
         validate_policy(policy)?;
@@ -495,8 +505,9 @@ impl Store {
 
     /// Mints a new key under an existing `role` and returns `(secret, prefix)` — the
     /// secret is the ONLY time the plaintext exists outside the caller. A duplicate name
-    /// (PK) or a missing `role` (FK `23503`) is a [`WriteError::Conflict`] (finding #2:
-    /// never a not-found); a digest collision (unique, astronomically unlikely) likewise.
+    /// (PK) is [`WriteError::Taken`]; a missing `role` (FK `23503`) is a
+    /// [`WriteError::Conflict`] (finding #2: never a not-found), as is a digest collision
+    /// (unique, astronomically unlikely).
     pub async fn create_key(&self, name: &str, role: &str) -> Result<(String, String), WriteError> {
         validate_name(&KEY_NAME, name)?;
         validate_name(&ROLE_NAME, role)?;
@@ -510,12 +521,7 @@ impl Store {
         .bind(role)
         .execute(&self.pool)
         .await
-        .map_err(|e| {
-            WriteError::from_db(
-                e,
-                format!("apikeys: key {name:?} already exists or role {role:?} does not exist"),
-            )
-        })?;
+        .map_err(|e| WriteError::from_db(e, format!("apikeys: role {role:?} does not exist")))?;
         Ok((secret, prefix))
     }
 

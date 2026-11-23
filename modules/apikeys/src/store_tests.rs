@@ -76,6 +76,10 @@ async fn revoked_at(pool: &PgPool, name: &str) -> Option<String> {
         .unwrap()
 }
 
+fn assert_taken<T: std::fmt::Debug>(result: Result<T, WriteError>) {
+    assert!(matches!(result, Err(WriteError::Taken)), "expected WriteError::Taken, got {result:?}");
+}
+
 fn assert_conflict<T: std::fmt::Debug>(result: Result<T, WriteError>) {
     assert!(
         matches!(result, Err(WriteError::Conflict(_))),
@@ -372,15 +376,20 @@ async fn set_key_role_missing_role_conflicts() {
 }
 
 #[tokio::test]
-async fn create_role_duplicate_conflicts() {
+async fn a_duplicate_role_or_key_name_is_taken() {
     let _guard = db_test_lock().await;
     let Some(pool) = test_pool().await else { return };
     let store = Store { pool: pool.clone() };
     let base = unique_name(&pool).await;
     let role = format!("{base}-role");
     store.create_role(&role, "full").await.unwrap();
-    assert_conflict(store.create_role(&role, "accounts.login").await);
+    assert_taken(store.create_role(&role, "accounts.login").await);
     assert_eq!(role_policy(&store, &role).await.unwrap(), "full", "first policy kept");
+
+    let key = format!("{base}-key");
+    let (secret, _) = store.create_key(&key, &role).await.unwrap();
+    assert_taken(store.create_key(&key, &role).await);
+    assert_eq!(store.lookup(&secret).await.unwrap().unwrap().name, key, "first secret kept");
 
     cleanup(&pool, &base).await;
 }

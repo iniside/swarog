@@ -1,6 +1,7 @@
 # point | module | id | order, in drawn order; ADMIN_BLESS=1 cargo test -p admincheck drawn_orders
 nav players | accounts | players | 10
 nav economy | wallet | economy | 10
+nav platform | apikeys | apikeys | 10
 nav platform | mail | outbox | 20
 nav platform | core.events | events | 60
 dashboard_attention | portal | attention.services | 10
@@ -52,6 +53,10 @@ entity_tab_count player/inventory | inventory | tab.count | 0
 entity_tab_tile player/wallet | wallet | wallet.tiles | 0
 header_action player | notifications | notify | 20
 header_action player | accounts | suspend-header | 30
+row_action apikey | apikeys | key.rotate | 10
+row_action apikey | apikeys | key.change-role | 20
+row_action apikey | apikeys | key.revoke | 30
+row_action apikey | apikeys | key.requests | 40
 row_action friendship | friends | friendship.remove | 0
 row_action holding | inventory | holding.revoke | 0
 row_action player | accounts | suspend | 20
