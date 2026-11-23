@@ -371,6 +371,24 @@ pub const PAGE_MAP: &[Page] = &[
         modal: None,
         force: false,
     },
+    Page {
+        page: "player",
+        route: Route::FirstRow("players"),
+        search: "?u=aiko.tanaka",
+        tab: Some("inbox"),
+        menu: None,
+        modal: None,
+        force: false,
+    },
+    Page {
+        page: "player",
+        route: Route::FirstRow("players"),
+        search: "?u=aiko.tanaka",
+        tab: Some("inbox"),
+        menu: Some(USER_MENU),
+        modal: None,
+        force: false,
+    },
     Page { page: "apikeys", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
     Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "", tab: None, menu: None, modal: None, force: false },
     Page { page: "scheduler", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
@@ -407,7 +425,6 @@ pub const EXCLUDED: &[(&str, &str)] = &[
 /// Tabs the mockup draws on a `FirstRow` page that no `PAGE_MAP` tab entry diffs, as
 /// `<page>.<tab>` with the reason. [`validate_tabs`] holds it to the mockup render.
 pub const EXCLUDED_TABS: &[(&str, &str)] = &[
-    ("player.inbox", "not ported yet: the Inbox tab arrives with the notifications port (Step 20)"),
     ("player.lore", NO_LORE),
 ];
 
@@ -523,6 +540,106 @@ pub const EXCLUDED_MODALS: &[(&str, &str, ModalWhy)] = &[
         "player.saves.menu.user",
         "wallet/currency.revoke",
         ModalWhy { why: "the mockup's wallet row-menu items are drawn disabled under an \"unavailable\" note and have no onclick, so the mockup has no modal (registry.js:101-104)" },
+    ),
+    (
+        "player.inbox.menu.user",
+        "wallet/currency.grant",
+        ModalWhy { why: "the mockup's wallet row-menu items are drawn disabled under an \"unavailable\" note and have no onclick, so the mockup has no modal (registry.js:101-104)" },
+    ),
+    (
+        "player.inbox.menu.user",
+        "wallet/currency.revoke",
+        ModalWhy { why: "the mockup's wallet row-menu items are drawn disabled under an \"unavailable\" note and have no onclick, so the mockup has no modal (registry.js:101-104)" },
+    ),
+    (
+        "players.menu.user",
+        "notifications/send",
+        ModalWhy { why: "the mockup's Notify and Send notification items only toast \"Compose notification…\" (registry.js:90,106), so the mockup has no modal" },
+    ),
+    (
+        "player.menu.user",
+        "notifications/send",
+        ModalWhy { why: "the mockup's Notify and Send notification items only toast \"Compose notification…\" (registry.js:90,106), so the mockup has no modal" },
+    ),
+    (
+        "player.characters.menu.user",
+        "notifications/send",
+        ModalWhy { why: "the mockup's Notify and Send notification items only toast \"Compose notification…\" (registry.js:90,106), so the mockup has no modal" },
+    ),
+    (
+        "player.wallet.menu.user",
+        "notifications/send",
+        ModalWhy { why: "the mockup's Notify and Send notification items only toast \"Compose notification…\" (registry.js:90,106), so the mockup has no modal" },
+    ),
+    (
+        "player.inventory.menu.user",
+        "notifications/send",
+        ModalWhy { why: "the mockup's Notify and Send notification items only toast \"Compose notification…\" (registry.js:90,106), so the mockup has no modal" },
+    ),
+    (
+        "player.friends.menu.user",
+        "notifications/send",
+        ModalWhy { why: "the mockup's Notify and Send notification items only toast \"Compose notification…\" (registry.js:90,106), so the mockup has no modal" },
+    ),
+    (
+        "player.groups.menu.user",
+        "notifications/send",
+        ModalWhy { why: "the mockup's Notify and Send notification items only toast \"Compose notification…\" (registry.js:90,106), so the mockup has no modal" },
+    ),
+    (
+        "player.saves.menu.user",
+        "notifications/send",
+        ModalWhy { why: "the mockup's Notify and Send notification items only toast \"Compose notification…\" (registry.js:90,106), so the mockup has no modal" },
+    ),
+    (
+        "player.inbox.menu.user",
+        "notifications/send",
+        ModalWhy { why: "the mockup's Notify and Send notification items only toast \"Compose notification…\" (registry.js:90,106), so the mockup has no modal" },
+    ),
+    (
+        "player",
+        "notifications/notify",
+        ModalWhy { why: "the mockup's Notify and Send notification items only toast \"Compose notification…\" (registry.js:90,106), so the mockup has no modal" },
+    ),
+    (
+        "player.characters",
+        "notifications/notify",
+        ModalWhy { why: "the mockup's Notify and Send notification items only toast \"Compose notification…\" (registry.js:90,106), so the mockup has no modal" },
+    ),
+    (
+        "player.wallet",
+        "notifications/notify",
+        ModalWhy { why: "the mockup's Notify and Send notification items only toast \"Compose notification…\" (registry.js:90,106), so the mockup has no modal" },
+    ),
+    (
+        "player.inventory",
+        "notifications/notify",
+        ModalWhy { why: "the mockup's Notify and Send notification items only toast \"Compose notification…\" (registry.js:90,106), so the mockup has no modal" },
+    ),
+    (
+        "player.friends",
+        "notifications/notify",
+        ModalWhy { why: "the mockup's Notify and Send notification items only toast \"Compose notification…\" (registry.js:90,106), so the mockup has no modal" },
+    ),
+    (
+        "player.groups",
+        "notifications/notify",
+        ModalWhy { why: "the mockup's Notify and Send notification items only toast \"Compose notification…\" (registry.js:90,106), so the mockup has no modal" },
+    ),
+    (
+        "player.saves",
+        "notifications/notify",
+        ModalWhy { why: "the mockup's Notify and Send notification items only toast \"Compose notification…\" (registry.js:90,106), so the mockup has no modal" },
+    ),
+    (
+        "player.inbox",
+        "notifications/notify",
+        ModalWhy { why: "the mockup's Notify and Send notification items only toast \"Compose notification…\" (registry.js:90,106), so the mockup has no modal" },
+    ),
+    (
+        "player.inbox",
+        "notifications/inbox.send",
+        ModalWhy { why: "the mockup's Inbox Send notification tool button has no onclick, so the mockup has no modal (pages-core.js:142)" },
     ),
     (
         "player.groups",
@@ -723,6 +840,12 @@ pub const EXCLUDED_MOCK_MODALS: &[MockModalExclusion] = &[
     mock_modal("player.saves.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
     mock_modal("player.saves.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent(LORE), NO_LORE),
     mock_modal("player.saves.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent(LORE), NO_LORE),
+    mock_modal("player.inbox", MockOpener::Pages("changeRole"), PortalModal::Absent(LORE), NO_LORE),
+    mock_modal("player.inbox", MockOpener::Pages("suspend"), PortalModal::Disabled("accounts/suspend-header"), NO_SUSPEND),
+    mock_modal("player.inbox.menu.user", MockOpener::Pages("suspend"), SUSPEND, NO_SUSPEND),
+    mock_modal("player.inbox.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
+    mock_modal("player.inbox.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent(LORE), NO_LORE),
+    mock_modal("player.inbox.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent(LORE), NO_LORE),
     mock_modal(
         "mail",
         MockOpener::Pages("cancelMail"),

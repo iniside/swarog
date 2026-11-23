@@ -1849,14 +1849,21 @@ fn items_site(extra: &str) -> Site {
     healthy.clone().with(&items_route(), add_to_page(&healthy, &follower_route("player"), &tab))
 }
 
-/// The production `EXCLUDED_MODALS` and, hosted by [`items_menu`], a copy of each entry
-/// `player.menu.user` hosts: [`items_site`]'s tab page opens the same user menu, which draws
-/// those openers on the tab too.
+/// The production `EXCLUDED_MODALS` and, hosted by [`items_menu`] and the `player.items` tab, a
+/// copy of each entry `player.menu.user` and `player` host: [`items_site`]'s tab page is the
+/// player page with its header actions, and opens the same user menu, so it draws those openers
+/// on the tab too.
 fn items_modals() -> Vec<(&'static str, &'static str, ModalWhy<'static>)> {
     let host = items_menu().id();
     assert_eq!(host, "player.items.menu.user");
     let user = EXCLUDED_MODALS.iter().filter(|(h, _, _)| *h == "player.menu.user");
-    EXCLUDED_MODALS.iter().copied().chain(user.map(|&(_, action, why)| ("player.items.menu.user", action, why))).collect()
+    let head = EXCLUDED_MODALS.iter().filter(|(h, _, _)| *h == "player");
+    EXCLUDED_MODALS
+        .iter()
+        .copied()
+        .chain(user.map(|&(_, action, why)| ("player.items.menu.user", action, why)))
+        .chain(head.map(|&(_, action, why)| ("player.items", action, why)))
+        .collect()
 }
 
 /// A modal entry hosted by the `player.items` tab entry, `player.items.modal.test`, opens from
