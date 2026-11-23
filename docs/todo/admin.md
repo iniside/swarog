@@ -24,6 +24,49 @@ _None._
   (`primitives.html.tmpl:416`, `hx-swap-oob`), so the first-render colour can differ from the
   swapped one, and a mixed-case id gives another colour (review of 2fdcfd93).
 
+### Known limits (admin-control-plane-redesign step 22)
+
+- [ ] **SH2 tells admission's refusal from the provider's only by letter case**
+  `tools/splitproof/src/scheduler_admin_checks.rs:154` looks for "Not implemented yet" (the
+  portal's admission) against the provider's "not implemented yet"
+  (`modules/scheduler/src/admin.rs:408`); `tools/splitproof/src/storage_admin_checks.rs:135`
+  uses the same idiom. Fix: a distinct provider message, or assert that no `admin.action`
+  audit row was written.
+- [ ] **SH3 checks only that the old portal attention id is gone**
+  `scheduler_admin_checks.rs:161-174` asserts that `attention.scheduler` is not slotted, not
+  that no other provider draws a Scheduler runs item. The title "Scheduler runs" (the
+  constant at `scheduler_admin_checks.rs:11`) is never drawn on the dashboard.
+- [ ] **Splitproof skips the Scheduler page's disabled banner and its schedules foot, and Recent fires has no cap note**
+  The page draws `DISABLED_BANNER` (`modules/scheduler/src/admin.rs:43`) and the foot "first
+  100 schedules" when more than `MAX_ROWS` exist (`admin.rs:246-247`); no splitproof check
+  covers either. Recent fires is read with `MAX_FIRES` = 100 (`admin.rs:38`, `:76`) and the
+  page does not say it is capped.
+- [ ] **The F1 ceiling bound is only loosely pinned**
+  `TIMESTAMP_MAX_EPOCH_SECONDS` (`modules/scheduler/src/lib.rs:141`, used in
+  `store.rs:43` of `SCHEDULES_SQL`) has no test at its edge. Add an anti-drift row at
+  `TIMESTAMP_MAX_EPOCH_SECONDS` minus the ceiling interval.
+- [ ] **`invoke_refuses_every_action` needs a DB pool it never uses**
+  `modules/scheduler/src/admin_tests.rs:171-175` skips the test without a pool and builds
+  `SchedulerAdmin::new(pool, true)`, but `invoke` and `panel("nope")` do not read the DB.
+- [ ] **Comment errors**
+  `modules/scheduler/src/lib.rs:137-140` (the `TIMESTAMP_MAX_EPOCH_SECONDS` doc);
+  `INTERVAL_SECONDS` doc in `scheduler_admin_checks.rs:14-19` carries the `fetch`/`patient`
+  paragraph that belongs to the pass, not the constant; rustdoc warns of an unclosed `<X>` at
+  `core/controlplane/src/lib.rs:390`; `tools/splitproof/src/apikeys_admin_checks.rs:39-52`
+  hop and break-run wording, and the long line at `:41`; `core/admin/src/golden_tests/view_tests.rs:98`
+  "its filter at `any`".
+- [ ] **The admindiff accept reasons give the wrong pairing**
+  `tools/admindiff/accept/scheduler.txt:6-7` blame the Lore/Economy pairing, but the cause is
+  the unported Platform Config & flags and Audit log. The `#ecbb9a` reason in 15 accept files
+  names a pairing that admindiff's LCS does not make. Admindiff ignores reasons, so the gate
+  result is the same.
+- [ ] **A 409 on deleting a role shows the generic portal banner, not the provider's message**
+  `core/admin/src/routes.rs:1326` maps `Invoked::Failed` with `Status::Conflict` to
+  `CONFLICT_BANNER` through the `conflict` closure (`:1303`), dropping `error`'s text.
+- [ ] **The filter chip "any" looks the same for a real value "any" and for no filter**
+  `core/admin/src/templates/primitives.html.tmpl:218` draws `"any"` when the value is none;
+  `routes.rs:681` treats a real "any" as a value.
+
 ### Known limits (admin-control-plane-redesign step 20)
 
 - [ ] **The admindiff tab follower picks the newest player, so tab accept entries pin one seed**
