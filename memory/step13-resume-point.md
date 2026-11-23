@@ -1,11 +1,11 @@
 ---
 name: step13-resume-point
-description: "Admin redesign resume point 2026-11-23: Step 21 (apikeys) complete; next Step 22 scheduler — ask owner first"
+description: "Admin redesign resume point 2026-11-23: Step 22 (scheduler) complete; next Step 23 config — ask owner first"
 metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-23T18:58:33.284Z
+  modified: 2026-11-23T20:55:27.470Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -98,3 +98,10 @@ a9094615 ("any" = no filter in core filter_views) review REJECT structural S1: "
 - Owner questions still open: (1) role-delete 409 generic banner routes.rs:1297/1326; (2) filter chip "any" for both real value and no filter; (3) comment nits (apikeys_admin_checks.rs:39-52,:41; view_tests.rs:99).
 - Accept nit, pre-existing: #ecbb9a reason files "Events" under Lore (registry.js:20-24 says Lore = Permissions, Server instance, Billing).
 - Next: Step 22 (scheduler) — ask owner before starting.
+
+## State 2026-11-23 (Step 22 complete)
+- Checklist docs/plans/2026-11-23-step22-scheduler-checklist.md (§11 owner: S1-S13 as recommended), plan e2743dd5.
+- 22a1 37b962b6 + F1 a2aed472 (near-ceiling interval renders "—", TIMESTAMP_MAX_EPOCH_SECONDS bound in store.rs SCHEDULES_SQL); 22a2 2bc920a3 (attention.runs moved to scheduler provider) + baseline 6f533ce4 + regenerated 1fef6de8 (public-api baseline was missing controlplane::ago since step 19 — gate is advisory/opt-in, drift went unseen); 22t 3a45e0ac splitproof SH0-SH3; 22b 1005629d accept files (scheduler.txt + nav #ecbb9a re-count in 14 files).
+- Crawls: monolith target/admindiff/crawl-1795466014, split crawl-1795466435 — scheduler clean both. Reds left = pre-existing seed/timing (owner: leave).
+- Open for owner: public-api gate opt-in (run --bless-public-api per step touching core/controlplane/api?), SH2 refusal told apart only by letter case "Not implemented yet" (scheduler admin.rs:408, same idiom storage_admin_checks.rs:135), Recent fires cap 100 unnoted, checklist template should list public-api baseline.
+- Next: Step 23 (config) — ask owner before starting.
