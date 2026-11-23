@@ -111,7 +111,10 @@ pub(crate) fn modal(
             view.confirm_label = spec.confirm_label.clone();
         }
     }
-    let shown: Vec<&str> = view.form.iter().flat_map(|f| f.fields.iter().map(|x| x.key.as_str())).collect();
+    let mut shown: Vec<&str> = view.form.iter().flat_map(|f| f.fields.iter().map(|x| x.key.as_str())).collect();
+    if view.form.as_ref().is_some_and(|f| f.reason != "none") {
+        shown.push(actions::FIELD_REASON);
+    }
     let stray: Vec<String> = errors
         .iter()
         .filter(|(k, _)| {

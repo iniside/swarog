@@ -669,6 +669,9 @@ pub(crate) fn create_form(roles: &[RoleRow]) -> FormSpec {
         revision: None,
         title: Some("Create API key".to_string()),
         modes: Vec::new(),
+        reason: ReasonReq::None,
+        reason_label: None,
+        reason_hint: None,
     }
 }
 
@@ -686,6 +689,9 @@ pub(crate) fn change_role_form(roles: &[RoleRow], key: Option<&KeyRow>) -> FormS
         revision: key.map(|k| k.revision.max(0) as u64),
         title: None,
         modes: Vec::new(),
+        reason: ReasonReq::None,
+        reason_label: None,
+        reason_hint: None,
     }
 }
 
@@ -770,6 +776,9 @@ pub(crate) fn role_form(roles: &[RoleRow], role: Option<&RoleRow>) -> FormSpec {
         revision: role.map(|r| r.revision.max(0) as u64),
         title: role.is_none().then(|| "Create role".to_string()),
         modes: Vec::new(),
+        reason: ReasonReq::None,
+        reason_label: None,
+        reason_hint: None,
     }
 }
 

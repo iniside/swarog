@@ -792,6 +792,13 @@ pub struct FormSpec {
     /// The modes the form switches between, drawn as `div.seg` above its fields; empty for a
     /// form of one action. The submit runs the action of the mode the body names.
     pub modes: Vec<FormMode>,
+    /// The change note the form asks for, posted as `_reason` and sent as
+    /// [`InvokeCall::reason`]; `ReasonReq::None` draws no input.
+    pub reason: ReasonReq,
+    /// The change note's label; "Reason" when absent.
+    pub reason_label: Option<String>,
+    /// The change note input's placeholder.
+    pub reason_hint: Option<String>,
 }
 
 /// One mode of a [`FormSpec`]: its segment's label, the submit button's label while it is

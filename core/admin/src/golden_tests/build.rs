@@ -388,6 +388,9 @@ pub(super) fn profile_form() -> FormSpec {
         revision: Some(3),
         title: None,
         modes: Vec::new(),
+        reason: ReasonReq::None,
+        reason_label: None,
+        reason_hint: None,
     }
 }
 
@@ -413,6 +416,9 @@ pub(super) fn moded_form() -> FormSpec {
         revision: None,
         title: None,
         modes: vec![mode("grant", "Grant"), mode("revoke", "Revoke")],
+        reason: ReasonReq::None,
+        reason_label: None,
+        reason_hint: None,
     }
 }
 

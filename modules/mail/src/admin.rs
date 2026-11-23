@@ -262,6 +262,9 @@ fn manifest() -> Manifest {
         revision: None,
         title: None,
         modes: Vec::new(),
+        reason: ReasonReq::None,
+        reason_label: None,
+        reason_hint: None,
     };
     // Fixes only the variant: the shown spec comes from `prepare` for the bound message.
     let cancel = ConfirmSpec {

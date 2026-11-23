@@ -2593,6 +2593,9 @@ fn moded_spec(modes: Vec<controlplane::FormMode>) -> controlplane::FormSpec {
         revision: None,
         title: None,
         modes,
+        reason: controlplane::ReasonReq::None,
+        reason_label: None,
+        reason_hint: None,
     }
 }
 
@@ -2769,6 +2772,86 @@ async fn a_modal_form_s_request_id_is_its_instance_id_and_never_its_input() {
     assert_eq!(calls[0].request_id.as_deref(), Some(form_id.as_str()), "the drawn id is the one sent");
     let want = BTreeMap::from([("note".to_string(), "hi".to_string())]);
     assert_eq!(calls[0].input, want, "the request id never enters the input");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// The note-and-request-id form asking for a change note of `reason`.
+fn reason_spec(reason: controlplane::ReasonReq) -> controlplane::FormSpec {
+    controlplane::FormSpec {
+        reason,
+        reason_label: Some("Change note".to_string()),
+        reason_hint: Some("Why? (recorded in the audit log)".to_string()),
+        ..request_id_spec(Vec::new())
+    }
+}
+
+/// A panel form with a required change note draws it as `_reason`; a submit without one is
+/// a 422 naming the note and never reaches the provider, and one with it sends the trimmed
+/// note as `InvokeCall::reason`, outside the input.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_panel_form_s_required_reason_is_refused_when_missing_and_sent_when_given() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-panel-reason");
+    let cookie = operator_cookie(&pool, &user).await;
+    let actions = vec![action_decl("grant", ActionPoint::PanelForm("funds".to_string()), true)];
+    let manifest = player_owner(module("ledger", vec![player_tab("funds", "funds")], actions, true));
+    let spec = reason_spec(controlplane::ReasonReq::Required);
+    let ledger = Recording::new(manifest, &[("funds", answer(Primitive::Form(spec)))]);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/ledger/funds?entity=player:p-1").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert!(raw.contains(r#"<input name="_reason" class="input""#), "the change note is drawn: {raw}");
+    assert!(raw.contains(r#"placeholder="Why? (recorded in the audit log)""#), "{raw}");
+    assert!(raw.contains("Change note"), "{raw}");
+    let form_id = form_id_of(&raw);
+    let body = format!("_csrf=csrf&_form={form_id}&note=hi&_reason=+++");
+    let (status, raw) = portal_post(&engine, &st, &cookie, "/admin/_action/ledger/grant", &body).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{raw}");
+    assert!(raw.contains("a reason is required"), "the note's error is drawn: {raw}");
+    assert!(ledger.invoked_actions().is_empty(), "a submit without the required note never invokes");
+
+    let body = format!("_csrf=csrf&_form={form_id}&note=hi&_reason=+fix+typo+");
+    let _ = portal_post(&engine, &st, &cookie, "/admin/_action/ledger/grant", &body).await;
+    let calls = ledger.invoked.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1, "one invoke");
+    assert_eq!(calls[0].reason.as_deref(), Some("fix typo"), "the trimmed note is the call's reason");
+    let want = BTreeMap::from([("note".to_string(), "hi".to_string())]);
+    assert_eq!(calls[0].input, want, "the note never enters the input");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A modal `Then::Form` with an optional change note draws it as `_reason`, submits without
+/// one, and sends a given one as `InvokeCall::reason`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_modal_form_s_optional_reason_is_sent_when_given() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-modal-reason");
+    let cookie = operator_cookie(&pool, &user).await;
+    let spec = reason_spec(controlplane::ReasonReq::Optional);
+    let row = ActionPoint::RowAction("player".to_string());
+    let adjust = ActionDecl { then: Then::Form(spec), ..action_decl("adjust", row, true) };
+    let ledger = Recording::new(player_owner(module("ledger", Vec::new(), vec![adjust], true)), &[]);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+    let open = "/admin/_action/ledger/adjust?entity=player:p-1";
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, open).await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert!(raw.contains(r#"<input name="_reason" class="input""#), "the change note is drawn: {raw}");
+    assert!(!raw.contains(r#"autocomplete="off" required"#), "an optional note is not required: {raw}");
+    let body = format!("_csrf=csrf&_form={}&note=hi", form_id_of(&raw));
+    let _ = portal_post(&engine, &st, &cookie, "/admin/_action/ledger/adjust", &body).await;
+    let (_, raw) = portal_get(&engine, &st, &cookie, open).await;
+    let body = format!("_csrf=csrf&_form={}&note=hi&_reason=player+asked", form_id_of(&raw));
+    let _ = portal_post(&engine, &st, &cookie, "/admin/_action/ledger/adjust", &body).await;
+    let calls = ledger.invoked.lock().unwrap().clone();
+    assert_eq!(calls.len(), 2, "both submits invoke: {calls:?}");
+    assert_eq!(calls[0].reason, None, "no note, no reason");
+    assert_eq!(calls[1].reason.as_deref(), Some("player asked"), "the note is the call's reason");
 
     cleanup_user(&pool, &user).await;
 }

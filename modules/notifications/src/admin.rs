@@ -196,6 +196,9 @@ pub(crate) fn send_form() -> FormSpec {
         revision: None,
         title: Some("Send notification".to_string()),
         modes: Vec::new(),
+        reason: controlplane::ReasonReq::None,
+        reason_label: None,
+        reason_hint: None,
     }
 }
 

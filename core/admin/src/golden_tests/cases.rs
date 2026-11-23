@@ -697,6 +697,21 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     );
     panel!("panel_form_readonly", PanelCase::new(PanelState::Readonly, Some(body(Primitive::Form(profile_form())))));
     // The seg above the form, the first mode on and its submit label (pages-platform.js:172).
+    // An optional change note with the default label, after the fields and before the actions.
+    panel!(
+        "panel_form_reason",
+        PanelCase {
+            form: true,
+            ..PanelCase::new(
+                PanelState::Ok,
+                Some(body(Primitive::Form(FormSpec {
+                    reason: ReasonReq::Optional,
+                    reason_hint: Some("Why? (recorded in the audit log)".to_string()),
+                    ..moded_form()
+                }))),
+            )
+        },
+    );
     panel!(
         "panel_form_modes",
         PanelCase { form: true, ..PanelCase::new(PanelState::Ok, Some(body(Primitive::Form(moded_form())))) },
@@ -905,6 +920,9 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
         revision: None,
         title: None,
         modes: Vec::new(),
+        reason: ReasonReq::None,
+        reason_label: None,
+        reason_hint: None,
     };
     let grant = decl("grant", "Grant item", "gift", Then::Form(grant_spec.clone()));
     push!(plain("modal_form", modal(&grant, ModalSpec::Form(&grant_spec))));
@@ -934,6 +952,9 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
         revision: None,
         title: Some("Rotate the signing key".to_string()),
         modes: Vec::new(),
+        reason: ReasonReq::None,
+        reason_label: None,
+        reason_hint: None,
     };
     let rotate = decl("rotate", "Rotate key", "key", Then::Form(rotate_spec.clone()));
     push!(plain("modal_form_title_mono_placeholder", modal(&rotate, ModalSpec::Form(&rotate_spec))));
@@ -986,6 +1007,25 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     push!(plain(
         "modal_rerender_confirm_reason_error",
         reshow(&ban, ModalSpec::Confirm(&ban_spec), &posted(&[("_reason", "")]), &reason_errors, None, false),
+    ));
+    // A form's required change note, drawn after its fields with the error the empty one got.
+    let noted_spec = FormSpec {
+        reason: ReasonReq::Required,
+        reason_label: Some("Change note".to_string()),
+        reason_hint: Some("Why? (recorded in the audit log)".to_string()),
+        ..grant_spec.clone()
+    };
+    let noted = decl("grant", "Grant item", "gift", Then::Form(noted_spec.clone()));
+    push!(plain(
+        "modal_rerender_form_reason_error",
+        reshow(
+            &noted,
+            ModalSpec::Form(&noted_spec),
+            &posted(&[("item_id", "sword-7"), ("qty", "2"), ("_reason", "")]),
+            &reason_errors,
+            None,
+            false,
+        ),
     ));
     let result = ActionResultView { modal: None, toast: Some("Queue paused".to_string()), tone: "info" };
     push!(plain("modal_result_toast", render::fragment(env, "modal.html", "result", &result)));

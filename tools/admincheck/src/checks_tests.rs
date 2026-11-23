@@ -286,6 +286,9 @@ fn moded(modes: Vec<FormMode>) -> Manifest {
         revision: None,
         title: None,
         modes,
+        reason: controlplane::ReasonReq::None,
+        reason_label: None,
+        reason_hint: None,
     };
     let tool = ActionPoint::PanelTool("queue".into());
     m.actions.push(ActionDecl { then: Then::Form(spec), ..action("adjust", tool.clone()) });

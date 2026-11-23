@@ -470,6 +470,9 @@ pub(crate) fn row_form(dir: Direction, codes: &[String]) -> FormSpec {
         revision: None,
         title: Some(title.to_string()),
         modes: Vec::new(),
+        reason: controlplane::ReasonReq::None,
+        reason_label: None,
+        reason_hint: None,
     }
 }
 
@@ -499,6 +502,9 @@ pub(crate) fn panel_form(codes: &[String]) -> FormSpec {
         revision: None,
         title: None,
         modes: vec![mode(Direction::Grant, LEDGER_GRANT), mode(Direction::Revoke, LEDGER_REVOKE)],
+        reason: controlplane::ReasonReq::None,
+        reason_label: None,
+        reason_hint: None,
     }
 }
 
@@ -517,6 +523,9 @@ pub(crate) fn create_form() -> FormSpec {
         revision: None,
         title: Some("New currency".to_string()),
         modes: Vec::new(),
+        reason: controlplane::ReasonReq::None,
+        reason_label: None,
+        reason_hint: None,
     }
 }
 

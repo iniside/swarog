@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use controlplane::{decode_field, EntityRef, Field, FieldKind, FieldValue, FormSpec, Primitive};
+use controlplane::{decode_field, EntityRef, Field, FieldKind, FieldValue, FormSpec, Primitive, ReasonReq};
 use serde::Serialize;
 use crate::engine::actions::{self, money_currency_key, Chrome};
 use crate::engine::labels::Labels;
@@ -49,6 +49,13 @@ pub(crate) struct FormView {
     pub(crate) modes: Vec<ModeView>,
     /// The picked mode's id, posted as `_mode`; empty for a form without modes.
     pub(crate) mode: String,
+    /// The change note posted as `_reason`: `required`, `optional` or `none` (no input).
+    pub(crate) reason: &'static str,
+    pub(crate) reason_label: String,
+    /// The change note input's placeholder.
+    pub(crate) reason_hint: Option<String>,
+    pub(crate) reason_value: String,
+    pub(crate) reason_error: Option<String>,
 }
 
 /// A `Primitive::Form` in a panel; `form_id` and `post_url` are set when it has a form
@@ -155,6 +162,12 @@ pub(crate) fn form(
             on: picked.is_some_and(|p| p.id == m.id),
         })
         .collect();
+    seen::record(&spec.reason);
+    let reason = match spec.reason {
+        ReasonReq::Required => "required",
+        ReasonReq::Optional => "optional",
+        ReasonReq::None => "none",
+    };
     FormView {
         fields: spec
             .fields
@@ -171,6 +184,11 @@ pub(crate) fn form(
         note: spec.note.clone(),
         modes,
         mode: picked.map(|m| m.id.clone()).unwrap_or_default(),
+        reason,
+        reason_label: spec.reason_label.clone().unwrap_or_else(|| "Reason".to_string()),
+        reason_hint: spec.reason_hint.clone(),
+        reason_value: posted.and_then(|b| actions::first(b, actions::FIELD_REASON)).unwrap_or_default().to_string(),
+        reason_error: errors.get(actions::FIELD_REASON).cloned(),
     }
 }
 

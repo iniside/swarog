@@ -1445,6 +1445,9 @@ pub controlplane::FormSpec::fields: alloc::vec::Vec<controlplane::Field>
 pub controlplane::FormSpec::hidden: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub controlplane::FormSpec::modes: alloc::vec::Vec<controlplane::FormMode>
 pub controlplane::FormSpec::note: core::option::Option<alloc::string::String>
+pub controlplane::FormSpec::reason: controlplane::ReasonReq
+pub controlplane::FormSpec::reason_hint: core::option::Option<alloc::string::String>
+pub controlplane::FormSpec::reason_label: core::option::Option<alloc::string::String>
 pub controlplane::FormSpec::revision: core::option::Option<u64>
 pub controlplane::FormSpec::submit_label: alloc::string::String
 pub controlplane::FormSpec::title: core::option::Option<alloc::string::String>

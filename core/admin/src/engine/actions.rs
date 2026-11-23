@@ -211,7 +211,7 @@ pub(crate) fn prepared_spec(declared: &Then, prepared: Prepared) -> Result<Store
         (Then::Form(_), Prepared::Then(Then::Form(form))) => {
             let errors = controlplane::form_spec_errors(&form);
             if errors.is_empty() {
-                Ok(StoredSpec::Form { form, chrome: Chrome::default() })
+                Ok(StoredSpec::Form { form: Box::new(form), chrome: Chrome::default() })
             } else {
                 Err(unusable(errors.join("; ")))
             }
@@ -228,7 +228,7 @@ pub(crate) fn prepared_spec(declared: &Then, prepared: Prepared) -> Result<Store
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub(crate) enum StoredSpec {
-    Form { form: FormSpec, chrome: Chrome },
+    Form { form: Box<FormSpec>, chrome: Chrome },
     Confirm(ConfirmSpec),
     Click,
 }
@@ -502,6 +502,9 @@ pub(crate) fn build_submission(
             }
             input.extend(form.hidden.iter().map(|(k, v)| (k.clone(), v.clone())));
             expected_revision = form.revision;
+            if form.reason == ReasonReq::Required && reason.is_none() {
+                errors.insert(FIELD_REASON.to_string(), "a reason is required".to_string());
+            }
         }
         StoredSpec::Confirm(confirm) => {
             if confirm.reason == ReasonReq::Required && reason.is_none() {

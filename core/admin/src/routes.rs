@@ -853,7 +853,7 @@ async fn panel_form_instance(
     };
     let post_url = action_url(module, &action.id);
     let form = spec.clone();
-    let stored = StoredSpec::Form { form, chrome: Chrome::of(body) };
+    let stored = StoredSpec::Form { form: Box::new(form), chrome: Chrome::of(body) };
     let mint = forms::Mint {
         login: &ctx.operator.login,
         module,
@@ -954,7 +954,7 @@ async fn action_modal(
     }
     let declared = match &found.decl.then {
         _ if matches!(found.decl.point, ActionPoint::PanelForm(_)) => None,
-        Then::Form(form) => Some(StoredSpec::Form { form: form.clone(), chrome: Chrome::default() }),
+        Then::Form(form) => Some(StoredSpec::Form { form: Box::new(form.clone()), chrome: Chrome::default() }),
         Then::Confirm(confirm) => Some(StoredSpec::Confirm(confirm.clone())),
         Then::Invoke | Then::Link(_) => None,
     };
