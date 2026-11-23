@@ -1002,6 +1002,7 @@ dependencies = [
  "bus",
  "characters",
  "checkmodules",
+ "config",
  "friends",
  "friendsapi",
  "gateway",

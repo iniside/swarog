@@ -172,7 +172,7 @@ pub(crate) async fn cleanup(pool: &PgPool, ns: &str) {
 }
 
 /// Counts durable `config.changed` log events for a namespace.
-async fn changed_event_count(pool: &PgPool, ns: &str) -> i64 {
+pub(crate) async fn changed_event_count(pool: &PgPool, ns: &str) -> i64 {
     asyncevents::testing::events_count(pool, "config.changed", "namespace", ns)
         .await
         .unwrap()

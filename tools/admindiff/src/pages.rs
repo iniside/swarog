@@ -526,6 +526,7 @@ pub const EXCLUDED_MODALS: &[(&str, &str, ModalWhy)] = &[
         "apikeys/key.change-role",
         ModalWhy { why: "the mockup's Change role… only toasts 'Role picker…', so the mockup has no modal (pages-platform.js:13)" },
     ),
+    ("config", "config/setting.create", ModalWhy { why: "the mockup's + Key head button has no onclick, so the mockup has no modal (pages-platform.js:107)" }),
     (
         "players.menu.user",
         "wallet/currency.grant",

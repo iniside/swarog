@@ -40,6 +40,7 @@ use lifecycle::{Context, Ddl, Module};
 use sqlx::{PgConnection, PgPool};
 
 mod admin;
+pub mod conformance;
 mod store;
 
 /// Fallback DSN — same default as the shared pool. Test-only now that the module owns

@@ -1,6 +1,7 @@
 //! The Config & flags page reads: the keys a key prefix matches, each with its revision and
-//! update time, and the one key the page selects. Every time is computed in SQL from `now()`;
-//! nothing here reads a Rust clock.
+//! update time, and the one key the page selects; and its two single-row writes. Every time is
+//! computed in SQL from `now()`; nothing here reads a Rust clock. Each write goes through the
+//! `config.settings` triggers, which stamp the row and emit `config.changed`.
 
 use sqlx::PgPool;
 
@@ -99,6 +100,43 @@ pub(crate) async fn keys(pool: &PgPool, prefix: Option<&str>, limit: i64) -> Res
         })
         .collect();
     Ok(KeyPage { rows, total, first })
+}
+
+/// Writes `value` to the key `(namespace, key)` if its revision is still `expected`; the
+/// revision the write stamped, or `None` when no row matched.
+pub(crate) async fn update(
+    pool: &PgPool,
+    namespace: &str,
+    key: &str,
+    value: &str,
+    expected: i64,
+) -> anyhow::Result<Option<i64>> {
+    crate::validate_ident(namespace, key)?;
+    let stamped: Option<(i64,)> = sqlx::query_as(
+        "UPDATE config.settings SET value = $3 WHERE namespace = $1 AND key = $2 AND revision = $4 RETURNING revision",
+    )
+    .bind(namespace)
+    .bind(key)
+    .bind(value)
+    .bind(expected)
+    .fetch_optional(pool)
+    .await?;
+    Ok(stamped.map(|(revision,)| revision))
+}
+
+/// Inserts the key `(namespace, key)`; `false` when it exists, which it leaves as it is.
+pub(crate) async fn create(pool: &PgPool, namespace: &str, key: &str, value: &str) -> anyhow::Result<bool> {
+    crate::validate_ident(namespace, key)?;
+    let done = sqlx::query(
+        "INSERT INTO config.settings (namespace, key, value) VALUES ($1, $2, $3) \
+         ON CONFLICT (namespace, key) DO NOTHING",
+    )
+    .bind(namespace)
+    .bind(key)
+    .bind(value)
+    .execute(pool)
+    .await?;
+    Ok(done.rows_affected() == 1)
 }
 
 type SelectedTuple = (String, String, String, i64, String, Vec<String>);

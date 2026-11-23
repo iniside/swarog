@@ -1,11 +1,12 @@
 //! The config provider: the manifest, the type rule, the Keys, Edit and Revisions bodies and
-//! their FAKE writers and prior revisions; and, over a live Postgres, the store reads through
-//! `Provider::panel` (prefix search, type filter, selection, the SQL-computed times).
+//! their FAKE writers and prior revisions, the value normalisation; and, over a live Postgres,
+//! the store reads through `Provider::panel` (prefix search, type filter, selection, the
+//! SQL-computed times) and the writes through `Provider::invoke`.
 
 use controlplane::{form_spec_errors, order, CellKind, DataTable, FormSpec, Layout, Point, Primitive, Role, Timeline};
 
 use super::*;
-use crate::tests::{cleanup, test_pool, unique_ns, CONFIG_DB_TEST_GUARD};
+use crate::tests::{changed_event_count, cleanup, test_pool, unique_ns, CONFIG_DB_TEST_GUARD};
 use crate::Service;
 
 fn table(body: &PanelBody) -> &DataTable {
@@ -68,8 +69,11 @@ fn link_params(cell: &Cell) -> BTreeMap<String, String> {
     }
 }
 
+/// A field's key, kind, required, mono, default and placeholder.
+type FieldShape<'a> = (&'a str, &'a FieldKind, bool, bool, Option<&'a str>, Option<&'a str>);
+
 #[test]
-fn manifest_declares_the_read_only_page() {
+fn manifest_declares_the_page_and_its_writes() {
     let m = manifest();
     assert_eq!(m.module, "config");
     assert_eq!(m.entries.len(), 1);
@@ -82,7 +86,7 @@ fn manifest_declares_the_read_only_page() {
     assert_eq!((page.id.as_str(), page.title.as_str(), page.subtitle.as_str()), (PAGE, TITLE, SUBTITLE));
     assert_eq!(page.layout, Layout::Grid21(vec!["keys".into()], vec!["edit".into(), "revisions".into()]));
     assert_eq!(page.params, vec!["key".to_string(), "type".to_string()]);
-    assert!(page.head_actions.is_empty());
+    assert_eq!(page.head_actions, vec![CREATE.to_string()]);
     let got: Vec<(&str, i32, &str)> =
         m.contributions.iter().map(|c| (c.id.as_str(), c.order, c.title.as_str())).collect();
     assert_eq!(got, vec![("keys", 10, "Keys"), ("edit", 20, "Edit"), ("revisions", 30, "Revisions")]);
@@ -91,8 +95,46 @@ fn manifest_declares_the_read_only_page() {
         assert_eq!(c.min_role, Role::Viewer);
         assert!(c.cache_ttl_s.is_none() && c.readonly.is_none());
     }
-    assert!(m.actions.is_empty() && m.entity_kinds.is_empty() && m.search.is_empty());
-    assert!(!m.writes);
+    assert!(m.entity_kinds.is_empty() && m.search.is_empty());
+    assert!(m.writes);
+    let got: Vec<(&str, &ActionPoint, &str, &str, i32, Emphasis)> = m
+        .actions
+        .iter()
+        .map(|a| (a.id.as_str(), &a.point, a.label.as_str(), a.icon.as_str(), a.order, a.emphasis))
+        .collect();
+    let head = ActionPoint::PageHead(PAGE.into());
+    let edit = ActionPoint::PanelForm(EDIT.into());
+    assert_eq!(
+        got,
+        vec![
+            ("setting.create", &head, "Key", "plus", 10, Emphasis::Primary),
+            ("setting.edit", &edit, "Save revision", "", 10, Emphasis::Default),
+        ]
+    );
+    for a in &m.actions {
+        assert_eq!(a.min_role, Role::Operator);
+        assert!(a.implemented && !a.danger && !a.prepare && !a.multi);
+        assert!(m.write_refusal(&a.id).is_none(), "{}", a.id);
+    }
+    assert_eq!(m.actions[1].then, Then::Invoke);
+    let Then::Form(create) = &m.actions[0].then else { panic!("the create is a form") };
+    assert!(form_spec_errors(create).is_empty(), "{:?}", form_spec_errors(create));
+    let fields: Vec<FieldShape<'_>> = create
+        .fields
+        .iter()
+        .map(|f| (f.key.as_str(), &f.kind, f.required, f.mono, f.default.as_deref(), f.placeholder.as_deref()))
+        .collect();
+    let types = FieldKind::Enum(["bool", "int", "float", "string", "json"].map(String::from).to_vec());
+    assert_eq!(
+        fields,
+        vec![
+            ("key", &FieldKind::String, true, true, None, Some("namespace.key")),
+            ("type", &types, true, false, Some("string"), None),
+            ("value", &FieldKind::Text, true, true, None, None),
+        ]
+    );
+    assert_eq!((create.submit_label.as_str(), create.title.as_deref()), ("Create key", Some("New key")));
+    assert_eq!(create.reason, ReasonReq::Optional);
 }
 
 #[test]
@@ -229,6 +271,7 @@ fn edit_body_serves_the_value_under_its_type() {
         ("1e3", FieldKind::Float),
         ("arena", FieldKind::String),
         ("[\"a\", \"b\"]", FieldKind::Json),
+        ("", FieldKind::String),
     ];
     for (value, kind) in cases {
         let body = edit_body(&row("game", "k", value, 7));
@@ -241,7 +284,9 @@ fn edit_body_serves_the_value_under_its_type() {
         assert_eq!((field.key.as_str(), field.label.as_str()), ("value", "Value"));
         assert_eq!(field.kind, kind, "{value:?}");
         assert_eq!(field.default.as_deref(), Some(value));
-        assert!(field.required && field.mono && !field.readonly);
+        // A blank post of a required field is refused, so only a string value may be saved blank.
+        assert_eq!(field.required, kind != FieldKind::String, "{value:?}");
+        assert!(field.mono && !field.readonly);
         assert_eq!(f.hidden, BTreeMap::from([("key".to_string(), "game.k".to_string())]));
         assert_eq!(f.revision, Some(7));
         assert_eq!(f.submit_label, "Save revision");
@@ -447,5 +492,205 @@ async fn the_type_filter_sees_past_the_drawn_rows() {
     let ints = admin.panel(query(KEYS, Some(&prefix), &[("type", "int")])).await.unwrap();
     let names: Vec<&str> = table(&ints).rows.iter().map(|r| r.cells[0].value.as_str()).collect();
     assert_eq!(names, [int_key.as_str()], "the filter reads up to MAX_READ keys, not the drawn MAX_ROWS");
+    cleanup(&pool, &ns).await;
+}
+
+#[test]
+fn stored_value_normalises_and_keeps_the_type() {
+    let ok = [
+        (ValueType::Float, "2", "2.0"),
+        (ValueType::Float, "2.5", "2.5"),
+        (ValueType::Float, "1e3", "1000.0"),
+        (ValueType::Int, "007", "7"),
+        (ValueType::Bool, "false", "false"),
+        (ValueType::Json, " [1, 2] ", "[1, 2]"),
+        (ValueType::String, "arena", "arena"),
+        (ValueType::String, "", ""),
+        (ValueType::String, " 5 ", " 5 "),
+    ];
+    for (t, raw, want) in ok {
+        assert_eq!(stored_value(t, raw).as_deref(), Ok(want), "{t:?} {raw:?}");
+    }
+    let refused = [
+        (ValueType::Json, "5", "reads as int, not json"),
+        (ValueType::String, "5", "reads as int, not string"),
+        (ValueType::String, "true", "reads as bool, not string"),
+        (ValueType::Bool, "yes", "must be true or false"),
+        (ValueType::Float, "NaN", "must be a finite number"),
+        (ValueType::Json, "{", "must be valid JSON"),
+    ];
+    for (t, raw, want) in refused {
+        assert_eq!(stored_value(t, raw), Err(want.to_string()), "{t:?} {raw:?}");
+    }
+}
+
+fn call(action: &str, input: &[(&str, &str)], expected_revision: Option<u64>) -> InvokeCall {
+    InvokeCall {
+        module: MODULE.into(),
+        action: action.into(),
+        entity: None,
+        input: input.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        expected_revision,
+        reason: None,
+        operator: "tester".into(),
+        item: None,
+        request_id: None,
+    }
+}
+
+fn field_errors(outcome: InvokeOutcome) -> BTreeMap<String, String> {
+    match outcome {
+        InvokeOutcome::FieldErrors(errors) => errors,
+        other => panic!("field errors, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_input_cap_is_the_first_check() {
+    let cap = crate::conformance::CP_INVOKE_INPUT_VALUE_BYTES;
+    assert_eq!(cap, controlplane::MAX_INPUT_VALUE_BYTES);
+    assert!(!crate::conformance::conformance_cp_invoke_input_rejected(cap), "at the cap the save reaches the store");
+    assert!(crate::conformance::conformance_cp_invoke_input_rejected(cap + 1));
+}
+
+/// Refusals that answer before any statement: the lazy pool never connects.
+#[tokio::test]
+async fn invoke_refuses_bad_input_before_the_store() {
+    let pool = sqlx::postgres::PgPoolOptions::new().connect_lazy("postgres://x@127.0.0.1:1/x").unwrap();
+    let admin = ConfigAdmin::new(pool);
+    for bad in ["nodot", "a.b.c", "A.b", ".b", "a."] {
+        let errors = field_errors(admin.invoke(call(SAVE, &[("key", bad), ("value", "1")], Some(1))).await.unwrap());
+        assert_eq!(errors.keys().collect::<Vec<_>>(), ["key"], "{bad:?}");
+    }
+    let no_rev = admin.invoke(call(SAVE, &[("key", "a.b"), ("value", "1")], None)).await.unwrap_err();
+    assert_eq!(no_rev.status, opsapi::Status::Invalid);
+    let errors =
+        field_errors(admin.invoke(call(CREATE, &[("key", "a"), ("type", "text"), ("value", "1")], None)).await.unwrap());
+    assert_eq!(
+        errors,
+        BTreeMap::from([
+            ("key".to_string(), "must be namespace.key, each of a-z, 0-9 and _".to_string()),
+            ("type".to_string(), "is not one of the types".to_string()),
+        ])
+    );
+    let errors =
+        field_errors(admin.invoke(call(CREATE, &[("key", "a.b"), ("type", "json"), ("value", "5")], None)).await.unwrap());
+    assert_eq!(errors, BTreeMap::from([("value".to_string(), "reads as int, not json".to_string())]));
+    let unknown = admin.invoke(call("setting.delete", &[], None)).await.unwrap_err();
+    assert_eq!(unknown.status, opsapi::Status::NotFound);
+}
+
+async fn stored(pool: &PgPool, ns: &str, key: &str) -> Option<(String, i64)> {
+    sqlx::query_as("SELECT value, revision FROM config.settings WHERE namespace = $1 AND key = $2")
+        .bind(ns)
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn save_compares_and_swaps_on_the_revision() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    let svc = Service::new(pool.clone());
+    svc.set(&ns, "limit", "42").await.unwrap();
+    let admin = ConfigAdmin::new(pool.clone());
+    let id = format!("{ns}.limit");
+    let (_, rev) = stored(&pool, &ns, "limit").await.unwrap();
+    let events = changed_event_count(&pool, &ns).await;
+
+    let saved = admin.invoke(call(SAVE, &[("key", &id), ("value", "43")], Some(rev as u64))).await.unwrap();
+    let (value, now) = stored(&pool, &ns, "limit").await.unwrap();
+    assert_eq!(value, "43");
+    assert!(now > rev);
+    assert_eq!(saved, InvokeOutcome::Ok { message: format!("Saved {id} at rev {now}"), reveal: None, redirect: None });
+    assert_eq!(changed_event_count(&pool, &ns).await, events + 1, "the save goes through the trigger");
+
+    let stale = admin.invoke(call(SAVE, &[("key", &id), ("value", "44")], Some(rev as u64))).await.unwrap();
+    assert_eq!(stale, InvokeOutcome::Conflict { current_revision: now as u64 });
+    assert_eq!(stored(&pool, &ns, "limit").await, Some(("43".to_string(), now)));
+
+    let missing = format!("{ns}.missing");
+    let gone = admin.invoke(call(SAVE, &[("key", &missing), ("value", "1")], Some(now as u64))).await.unwrap_err();
+    assert_eq!(gone.status, opsapi::Status::Conflict);
+    assert_eq!(stored(&pool, &ns, "missing").await, None);
+    cleanup(&pool, &ns).await;
+}
+
+/// The statement itself compares the revision: a stale write matches no row.
+#[tokio::test]
+async fn the_update_statement_matches_only_the_expected_revision() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    Service::new(pool.clone()).set(&ns, "k", "1").await.unwrap();
+    let (_, rev) = stored(&pool, &ns, "k").await.unwrap();
+    assert_eq!(store::update(&pool, &ns, "k", "2", rev - 1).await.unwrap(), None);
+    assert_eq!(stored(&pool, &ns, "k").await, Some(("1".to_string(), rev)));
+    let stamped = store::update(&pool, &ns, "k", "2", rev).await.unwrap();
+    assert_eq!(stored(&pool, &ns, "k").await, Some(("2".to_string(), stamped.unwrap())));
+    assert_eq!(store::update(&pool, &ns, "nope", "2", rev).await.unwrap(), None);
+    cleanup(&pool, &ns).await;
+}
+
+#[tokio::test]
+async fn save_keeps_the_type_and_normalises_the_value() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    let svc = Service::new(pool.clone());
+    svc.set(&ns, "rot", "[\"a\"]").await.unwrap();
+    svc.set(&ns, "ratio", "2.5").await.unwrap();
+    svc.set(&ns, "motd", "").await.unwrap();
+    let admin = ConfigAdmin::new(pool.clone());
+
+    let (rot, rot_rev) = stored(&pool, &ns, "rot").await.unwrap();
+    let id = format!("{ns}.rot");
+    let errors = field_errors(admin.invoke(call(SAVE, &[("key", &id), ("value", "5")], Some(rot_rev as u64))).await.unwrap());
+    assert_eq!(errors, BTreeMap::from([("value".to_string(), "reads as int, not json".to_string())]));
+    assert_eq!(stored(&pool, &ns, "rot").await, Some((rot, rot_rev)));
+
+    // The portal posts a float as f64's Display text: 2.0 arrives as "2".
+    let (_, ratio_rev) = stored(&pool, &ns, "ratio").await.unwrap();
+    let id = format!("{ns}.ratio");
+    let saved = admin.invoke(call(SAVE, &[("key", &id), ("value", "2")], Some(ratio_rev as u64))).await.unwrap();
+    assert!(matches!(saved, InvokeOutcome::Ok { .. }), "{saved:?}");
+    let (value, _) = stored(&pool, &ns, "ratio").await.unwrap();
+    assert_eq!(value, "2.0");
+    assert_eq!(ValueType::of(&value), ValueType::Float);
+
+    let (_, motd_rev) = stored(&pool, &ns, "motd").await.unwrap();
+    let id = format!("{ns}.motd");
+    let edit = admin.panel(query(EDIT, None, &[("key", &id)])).await.unwrap();
+    assert!(!form(&edit).fields[0].required, "a blank string value can be posted");
+    let saved = admin.invoke(call(SAVE, &[("key", &id), ("value", "")], Some(motd_rev as u64))).await.unwrap();
+    assert!(matches!(saved, InvokeOutcome::Ok { .. }), "{saved:?}");
+    let (value, now) = stored(&pool, &ns, "motd").await.unwrap();
+    assert_eq!(value, "");
+    assert!(now > motd_rev);
+    cleanup(&pool, &ns).await;
+}
+
+#[tokio::test]
+async fn create_inserts_only_a_new_key() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    let admin = ConfigAdmin::new(pool.clone());
+    let id = format!("{ns}.fresh");
+
+    let created = admin.invoke(call(CREATE, &[("key", &id), ("type", "float"), ("value", "3")], None)).await.unwrap();
+    assert_eq!(created, InvokeOutcome::Ok { message: format!("Key {id} created"), reveal: None, redirect: None });
+    let (value, rev) = stored(&pool, &ns, "fresh").await.unwrap();
+    assert_eq!(value, "3.0");
+    let events = changed_event_count(&pool, &ns).await;
+    assert_eq!(events, 1, "the create goes through the trigger");
+
+    let again = admin.invoke(call(CREATE, &[("key", &id), ("type", "float"), ("value", "9")], None)).await.unwrap();
+    assert_eq!(again, InvokeOutcome::FieldErrors(BTreeMap::from([("key".to_string(), "already exists".to_string())])));
+    assert_eq!(stored(&pool, &ns, "fresh").await, Some(("3.0".to_string(), rev)), "nothing is written");
+    assert_eq!(changed_event_count(&pool, &ns).await, events);
     cleanup(&pool, &ns).await;
 }

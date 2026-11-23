@@ -1,16 +1,17 @@
 //! The `config` control-plane provider: the Config & flags page (the Keys table with each key's
 //! derived type, value, revision and update time, the Edit form of the selected key and its
-//! Revisions timeline). It declares no action yet, so the Edit form draws read-only.
+//! Revisions timeline), and its two writes: the Edit form's compare-and-swap save and the
+//! "+ Key" create.
 
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use controlplane::order;
 use controlplane::{
-    Align, Cell, CellKind, Column, ContributionDecl, DataTable, Field, FieldKind, FilterDef, FilterKind, FormSpec,
-    InvokeCall, InvokeOutcome, Layout, Link, Manifest, NavEntry, Noun, PageDecl, PageInfo, PanelBody, PanelQuery,
-    Point, Primitive, Provider, ReasonReq, Role, Row, SearchHit, SearchQuery, Timeline, TimelineEntry, Tone,
-    DEFAULT_PANEL_DEADLINE_MS, PAGE_PARAM_SEARCH,
+    decode_field, encode_field, ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ContributionDecl, DataTable,
+    Emphasis, Field, FieldKind, FilterDef, FilterKind, FormSpec, InvokeCall, InvokeOutcome, Layout, Link, Manifest,
+    NavEntry, Noun, PageDecl, PageInfo, PanelBody, PanelQuery, Point, Primitive, Provider, ReasonReq, Role, Row,
+    SearchHit, SearchQuery, Then, Timeline, TimelineEntry, Tone, DEFAULT_PANEL_DEADLINE_MS, PAGE_PARAM_SEARCH,
 };
 use opsapi::Error;
 use sqlx::PgPool;
@@ -24,6 +25,15 @@ pub(crate) const PAGE: &str = "settings";
 pub(crate) const KEYS: &str = "keys";
 pub(crate) const EDIT: &str = "edit";
 pub(crate) const REVISIONS: &str = "revisions";
+
+pub(crate) const CREATE: &str = "setting.create";
+pub(crate) const SAVE: &str = "setting.edit";
+
+/// The form field naming a key as `namespace.key`: the Edit form's hidden field, the create
+/// form's Key.
+pub(crate) const FIELD_KEY: &str = "key";
+pub(crate) const FIELD_TYPE: &str = "type";
+pub(crate) const FIELD_VALUE: &str = "value";
 
 /// The page param naming the selected key as `namespace.key`.
 pub(crate) const PARAM_KEY: &str = "key";
@@ -149,6 +159,70 @@ impl ConfigAdmin {
         Ok(keys_body(&page, filter, needle, selected.as_deref()))
     }
 
+    /// A compare-and-swap of the value of an existing key at the revision the form was drawn
+    /// at. The value keeps the key's current type.
+    async fn save(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let (ns, key) = match posted_key(&req.input) {
+            Ok(id) => id,
+            Err(msg) => return Ok(field_error(FIELD_KEY, msg)),
+        };
+        let expected = req
+            .expected_revision
+            .and_then(|r| i64::try_from(r).ok())
+            .ok_or_else(|| Error::invalid(format!("{MODULE}: saving a value needs the form's revision")))?;
+        let gone = || Error::conflict(format!("{MODULE}: key {ns}.{key} no longer exists"));
+        let current = store::selected(&self.pool, Some((ns, key))).await.map_err(internal)?.ok_or_else(gone)?;
+        if current.row.revision != expected {
+            return Ok(InvokeOutcome::Conflict { current_revision: current.row.revision.max(0) as u64 });
+        }
+        let Some(raw) = req.input.get(FIELD_VALUE) else {
+            return Ok(field_error(FIELD_VALUE, "required".to_string()));
+        };
+        let value = match stored_value(ValueType::of(&current.row.value), raw) {
+            Ok(value) => value,
+            Err(msg) => return Ok(field_error(FIELD_VALUE, msg)),
+        };
+        match store::update(&self.pool, ns, key, &value, expected).await.map_err(internal)? {
+            Some(revision) => Ok(InvokeOutcome::Ok {
+                message: format!("Saved {ns}.{key} at rev {revision}"),
+                reveal: None,
+                redirect: None,
+            }),
+            None => {
+                let now = store::selected(&self.pool, Some((ns, key))).await.map_err(internal)?.ok_or_else(gone)?;
+                Ok(InvokeOutcome::Conflict { current_revision: now.row.revision.max(0) as u64 })
+            }
+        }
+    }
+
+    /// Inserts a new key; an existing key is the key field's error and is left as it is.
+    async fn create(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let mut errors = BTreeMap::new();
+        let id = posted_key(&req.input).map_err(|msg| errors.insert(FIELD_KEY.to_string(), msg)).ok();
+        let picked = req.input.get(FIELD_TYPE).map(String::as_str).unwrap_or_default();
+        let value = match (ValueType::parse(picked), req.input.get(FIELD_VALUE)) {
+            (None, _) => {
+                errors.insert(FIELD_TYPE.to_string(), "is not one of the types".to_string());
+                None
+            }
+            (Some(_), None) => {
+                errors.insert(FIELD_VALUE.to_string(), "required".to_string());
+                None
+            }
+            (Some(t), Some(raw)) => {
+                stored_value(t, raw).map_err(|msg| errors.insert(FIELD_VALUE.to_string(), msg)).ok()
+            }
+        };
+        let (Some((ns, key)), Some(value)) = (id, value) else {
+            return Ok(InvokeOutcome::FieldErrors(errors));
+        };
+        if store::create(&self.pool, ns, key, &value).await.map_err(internal)? {
+            Ok(InvokeOutcome::Ok { message: format!("Key {ns}.{key} created"), reveal: None, redirect: None })
+        } else {
+            Ok(field_error(FIELD_KEY, "already exists".to_string()))
+        }
+    }
+
     async fn selected(&self, req: &PanelQuery) -> Result<Option<Selected>, Error> {
         let id = match pick(&req.params) {
             Pick::First => None,
@@ -157,6 +231,37 @@ impl ConfigAdmin {
         };
         store::selected(&self.pool, id).await.map_err(internal)
     }
+}
+
+/// The posted `namespace.key`, split at its one '.', or the key field's error.
+fn posted_key(input: &BTreeMap<String, String>) -> Result<(&str, &str), String> {
+    let raw = input.get(FIELD_KEY).map(String::as_str).unwrap_or_default();
+    match raw.split_once('.') {
+        Some((ns, key)) if valid_ident(ns) && valid_ident(key) => Ok((ns, key)),
+        _ => Err("must be namespace.key, each of a-z, 0-9 and _".to_string()),
+    }
+}
+
+/// The text a value of type `t` is stored as, from the posted `raw`, or the value field's
+/// error. It must read back (`ValueType::of`) as `t`.
+pub(crate) fn stored_value(t: ValueType, raw: &str) -> Result<String, String> {
+    let kind = t.field_kind();
+    let decoded = decode_field(&kind, raw).map_err(|e| e.reason)?;
+    let mut text = encode_field(&kind, &decoded);
+    match t {
+        // The portal re-encodes a posted float, and f64's Display writes 2.0 as "2", an int.
+        ValueType::Float if !text.contains(['.', 'e', 'E']) => text.push_str(".0"),
+        ValueType::Json => text = text.trim().to_string(),
+        _ => {}
+    }
+    match ValueType::of(&text) {
+        got if got == t => Ok(text),
+        got => Err(format!("reads as {}, not {}", got.name(), t.name())),
+    }
+}
+
+fn field_error(key: &str, msg: String) -> InvokeOutcome {
+    InvokeOutcome::FieldErrors(BTreeMap::from([(key.to_string(), msg)]))
 }
 
 fn internal<E: std::fmt::Display>(e: E) -> Error {
@@ -297,11 +402,13 @@ fn no_key() -> PanelBody {
 /// The Edit body: the selected key's value under its type's field, at its revision.
 pub(crate) fn edit_body(row: &KeyRow) -> PanelBody {
     let display = row.display();
+    let kind = ValueType::of(&row.value);
     let value = Field {
-        key: "value".to_string(),
+        key: FIELD_VALUE.to_string(),
         label: "Value".to_string(),
-        kind: ValueType::of(&row.value).field_kind(),
-        required: true,
+        kind: kind.field_kind(),
+        // A required string field refuses a blank post, and "" is a string value.
+        required: kind != ValueType::String,
         help: None,
         default: Some(row.value.clone()),
         readonly: false,
@@ -310,7 +417,7 @@ pub(crate) fn edit_body(row: &KeyRow) -> PanelBody {
     };
     let mut body = PanelBody::new(Primitive::Form(FormSpec {
         fields: vec![value],
-        hidden: BTreeMap::from([(PARAM_KEY.to_string(), display.clone())]),
+        hidden: BTreeMap::from([(FIELD_KEY.to_string(), display.clone())]),
         submit_label: "Save revision".to_string(),
         note: Some(format!("Compare-and-swap: saves only if still rev {}.", row.revision)),
         revision: u64::try_from(row.revision).ok(),
@@ -362,6 +469,67 @@ pub(crate) fn revisions_body(sel: &Selected) -> PanelBody {
     }))
 }
 
+fn field(key: &str, label: &str, kind: FieldKind) -> Field {
+    Field {
+        key: key.to_string(),
+        label: label.to_string(),
+        kind,
+        required: true,
+        help: None,
+        default: None,
+        readonly: false,
+        mono: false,
+        placeholder: None,
+    }
+}
+
+/// The "+ Key" form: the value is posted as text and decoded under the picked type.
+pub(crate) fn create_form() -> FormSpec {
+    FormSpec {
+        fields: vec![
+            Field {
+                mono: true,
+                placeholder: Some("namespace.key".to_string()),
+                ..field(FIELD_KEY, "Key", FieldKind::String)
+            },
+            Field {
+                default: Some(ValueType::String.name().to_string()),
+                ..field(FIELD_TYPE, "Type", FieldKind::Enum(ValueType::ALL.iter().map(|t| t.name().to_string()).collect()))
+            },
+            Field { mono: true, ..field(FIELD_VALUE, "Value", FieldKind::Text) },
+        ],
+        hidden: BTreeMap::new(),
+        submit_label: "Create key".to_string(),
+        note: None,
+        revision: None,
+        title: Some("New key".to_string()),
+        modes: Vec::new(),
+        reason: ReasonReq::Optional,
+        reason_label: None,
+        reason_hint: None,
+    }
+}
+
+fn action(id: &str, point: ActionPoint, label: &str, icon: &str, emphasis: Emphasis, then: Then) -> ActionDecl {
+    ActionDecl {
+        id: id.to_string(),
+        point,
+        label: label.to_string(),
+        icon: icon.to_string(),
+        order: 10,
+        danger: false,
+        multi: false,
+        min_role: Role::Operator,
+        then,
+        implemented: true,
+        emphasis,
+        trailing_icon: false,
+        icon_only: false,
+        when_empty: false,
+        prepare: false,
+    }
+}
+
 fn contribution(id: &str, order: i32, title: &str) -> ContributionDecl {
     ContributionDecl {
         id: id.to_string(),
@@ -393,7 +561,7 @@ pub(crate) fn manifest() -> Manifest {
             id: PAGE.to_string(),
             title: TITLE.to_string(),
             subtitle: SUBTITLE.to_string(),
-            head_actions: Vec::new(),
+            head_actions: vec![CREATE.to_string()],
             tiles: Vec::new(),
             layout: Layout::Grid21(vec![KEYS.to_string()], vec![EDIT.to_string(), REVISIONS.to_string()]),
             params: vec![PARAM_KEY.to_string(), PARAM_TYPE.to_string()],
@@ -404,9 +572,19 @@ pub(crate) fn manifest() -> Manifest {
             contribution(EDIT, 20, "Edit"),
             contribution(REVISIONS, 30, "Revisions"),
         ],
-        actions: Vec::new(),
+        actions: vec![
+            action(
+                CREATE,
+                ActionPoint::PageHead(PAGE.to_string()),
+                "Key",
+                "plus",
+                Emphasis::Primary,
+                Then::Form(create_form()),
+            ),
+            action(SAVE, ActionPoint::PanelForm(EDIT.to_string()), "Save revision", "", Emphasis::Default, Then::Invoke),
+        ],
         search: Vec::new(),
-        writes: false,
+        writes: true,
     }
 }
 
@@ -430,7 +608,17 @@ impl Provider for ConfigAdmin {
     }
 
     async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, Error> {
-        Err(Error::not_found(format!("{MODULE} has no action {:?}", req.action)))
+        if req.input.values().any(|v| v.len() > controlplane::MAX_INPUT_VALUE_BYTES) {
+            return Err(Error::invalid(format!(
+                "{MODULE}: an input value is longer than {} bytes",
+                controlplane::MAX_INPUT_VALUE_BYTES
+            )));
+        }
+        match req.action.as_str() {
+            SAVE => self.save(&req).await,
+            CREATE => self.create(&req).await,
+            other => Err(Error::not_found(format!("{MODULE} has no action {other:?}"))),
+        }
     }
 }
 

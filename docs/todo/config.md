@@ -49,6 +49,11 @@ _None._
   `the_type_filter_sees_past_the_drawn_rows` proves the store read goes past 100 rows, not
   that it reaches `MAX_READ` (500); a SQL limit of 101 passes it. The unit test pins the
   in-memory side only.
+- [ ] **Values over the portal input cap cannot be edited from the portal**
+  `ConfigAdmin::invoke` (`modules/config/src/admin.rs`) refuses every input value over
+  `controlplane::MAX_INPUT_VALUE_BYTES` (4096) as its first check, so a key whose value is
+  longer (a raw-SQL or `Service::set` write can store one) cannot be saved or re-created from
+  the Config & flags page. Checklist C8 (docs/plans/2026-11-23-step23-config-checklist.md).
 - [ ] **Config admin writes are not proven in the split**
   The config page's edit and create go through `cp.invoke` from admin-svc to config-svc
   (part 23a2), but no splitproof drives them: part 23t was dropped (owner 2026-11-24). Not
