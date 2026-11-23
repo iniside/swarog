@@ -2343,11 +2343,23 @@ The ports:
   - **19b** `[sonnet]` mockup-implementer: the monolith and split crawls and the accept files
     of checklist §7.
 - **Step 20 — notifications.** Inbox tab, Notify header action, Send notification row action. Writer.
-  - **20a1** (Na1 with Na3): the Inbox tab (order 80), Purges pending at 67. The 20a1 port decides whether `notifications::Store::player_stats` (`modules/notifications/src/store.rs`) is reused or deleted.
-  - **20a2** (Na2): the Notify header action (20), the Send notification row action (row-menu
-    group 60), the probe.
-  - **Owner decision before dispatch (20a2):** the Notify form's fields; the audit calls it
-    undesigned and gives no recommendation.
+  - Checklist `docs/plans/2026-11-22-step20-notifications-checklist.md`, owner decisions in its
+    §11 (2026-11-22: the Notify form's fields are title and message; 2026-11-23: every other §6
+    decision as recommended). Parts:
+  - **20a1** `[opus]` core-implementer: `modules/notifications/src/admin.rs` read side (checklist
+    §1, §2, §4, N1-N4, N9, N10): the manifest, the Inbox tab (order 80) as a Timeline paged by
+    `page_by_player`, its count and meta from `player_stats`, Purges pending at 67, the
+    `PROVIDER_SLOT` wiring and `Cargo.toml`, `recent`/`InboxRow` deleted, unit tests, the
+    "Today" item in `docs/todo/admin-second-pass.md`.
+  - **20a2** `[opus]` core-implementer: the one Send notification form (checklist §3, N5-N8,
+    N11) behind the Notify header action (20), the row action (row-menu group 60) and the Inbox
+    panel tool; the dedup key from `request_id`; the outcomes; the `cp.invoke` conformance
+    probe and its CapCase row; unit tests.
+  - **20a3** `[opus]` core-implementer: `tools/admindiff/src/pages.rs` (checklist §7).
+  - **20t** `[opus]` test-author: `notifications_admin_checks.rs` NA1-NA3 in both topologies
+    (checklist §9), each with a recorded break run.
+  - **20b** `[sonnet]` mockup-implementer: the monolith and split crawls and the accept files
+    of checklist §7.
 - **Step 21 — apikeys.**
   - API keys page (`pages-platform.js:31-44`); search provider `apikey`; reveal.
   - Rotate/expiry disabled.
