@@ -2420,6 +2420,7 @@ impl controlplane::Variants for controlplane::Tone
 pub const controlplane::Tone::NAME: &'static str
 pub const controlplane::Tone::VARIANTS: &'static [&'static str]
 pub fn controlplane::Tone::variant(&self) -> &'static str
+pub fn controlplane::ago(i64) -> alloc::string::String
 pub fn controlplane::declared_enums() -> &'static [controlplane::DeclaredEnum]
 pub fn controlplane::decode_field(&controlplane::FieldKind, &str) -> core::result::Result<controlplane::FieldValue, controlplane::FieldError>
 pub fn controlplane::decode_money(&str) -> core::result::Result<(alloc::string::String, alloc::string::String), controlplane::MoneyShapeError>
