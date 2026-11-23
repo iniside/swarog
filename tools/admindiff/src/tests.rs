@@ -103,8 +103,8 @@ fn run_diff_refuses_a_crawl_without_its_clean_marker() {
 fn run_diff_refuses_a_pending_page() {
     let repo = FakeRepo::new("diff-pending", &mock_html(&body(true)));
     let dir = crawl_dir("diff-pending-crawl", &portal_html(&body(true)), true);
-    let e = format!("{:#}", run_diff(repo.path(), &LISTS, "apikeys", dir.path(), false).expect_err("pending"));
-    assert!(e.contains("page apikeys is pending"), "{e}");
+    let e = format!("{:#}", run_diff(repo.path(), &LISTS, "config", dir.path(), false).expect_err("pending"));
+    assert!(e.contains("page config is pending"), "{e}");
 }
 
 #[test]
@@ -591,12 +591,12 @@ fn unproven_claims(host: &str, opener: &str) -> String {
 fn a_stale_mock_modal_exclusion_fails() {
     let repo = opener_repo("modal-stale", &[("index", "PAGES.extraModal('x')")]);
     renders(repo.path(), &Lists { excluded_mock_modals: &mock_modals(&[pages_modal("index", "extraModal", "why")]), ..LISTS }).expect("drawn");
-    let stale = mock_modals(&[pages_modal("index", "extraModal", "why"), pages_modal("index", "ghost", "why"), pages_modal("apikeys", "createKey", "why")]);
+    let stale = mock_modals(&[pages_modal("index", "extraModal", "why"), pages_modal("index", "ghost", "why"), pages_modal("config", "createKey", "why")]);
     let e = format!("{:#}", renders(repo.path(), &Lists { excluded_mock_modals: &stale, ..LISTS }).expect_err("stale"));
     let want = concat!(
         "modal drift:\n",
         "  EXCLUDED_MOCK_MODALS lists index PAGES.ghost, which no compared index mockup render draws as a modal\n",
-        "  EXCLUDED_MOCK_MODALS lists apikeys PAGES.createKey, which no compared apikeys mockup render draws as a modal",
+        "  EXCLUDED_MOCK_MODALS lists config PAGES.createKey, which no compared config mockup render draws as a modal",
     );
     assert_eq!(e, want);
 }

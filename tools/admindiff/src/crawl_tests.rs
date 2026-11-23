@@ -2102,8 +2102,8 @@ async fn an_action_claim_is_fetched_where_drawn_and_fails_where_not() {
 /// With `--allow-empty` and players listing no row, the player page, its tabs and the user
 /// menus on them and on the players rows ([`player_hosts`]) are not fetched: the crawl writes
 /// the CLEAN marker, and reports each
-/// `EXCLUDED_MOCK_MODALS` claim of those hosts UNCHECKED, in list order; mail's claim, on a
-/// fetched host, is checked.
+/// `EXCLUDED_MOCK_MODALS` claim of those hosts UNCHECKED, in list order; the mail and apikeys
+/// claims, on fetched hosts, are not.
 #[tokio::test]
 async fn a_claim_on_an_unfetched_host_is_reported_unchecked() {
     let empty = Site::healthy().with(&panel_url("players"), ok(fragment(Some("ok"), "players panel", "")));
@@ -2115,7 +2115,8 @@ async fn a_claim_on_an_unfetched_host_is_reported_unchecked() {
         .filter(|x| skipped.iter().any(|h| h == x.host))
         .map(|x| format!("EXCLUDED_MOCK_MODALS {} {}", x.host, x.opener))
         .collect();
-    assert_eq!(want.len() + 1, EXCLUDED_MOCK_MODALS.len(), "every claim but mail's is on a skipped host");
+    let fetched: Vec<&str> = EXCLUDED_MOCK_MODALS.iter().map(|x| x.host).filter(|h| !skipped.iter().any(|s| s == h)).collect();
+    assert_eq!(fetched, ["mail", "apikeys.menu.apikey", "apikeys", "apikeys.menu.apikey"], "every other claim is on a skipped host");
     assert_eq!(c.unchecked, want);
 }
 

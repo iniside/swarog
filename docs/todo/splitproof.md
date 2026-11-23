@@ -29,7 +29,7 @@ _None._
   that route was razed by b8435c9a and no code outside splitproof references the path, so the
   block can only fail `[M3a]` ("no _csrf field on apikeys page") and never reaches `[M3b]`.
   The other `/admin/api-keys` assertions (`[AD3b]`, `[AD4]` and the later posts,
-  main.rs:5131-5416) target the same route. Re-point them with the apikeys step of the
+  main.rs:5177-5499) target the same route. Re-point them with the apikeys step of the
   admin control-plane redesign (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md,
   step 21).
 

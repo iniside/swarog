@@ -389,7 +389,16 @@ pub const PAGE_MAP: &[Page] = &[
         modal: None,
         force: false,
     },
-    Page { page: "apikeys", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
+    Page { page: "apikeys", route: Route::Mapped("/admin/p/apikeys/keys"), search: "", tab: None, menu: None, modal: None, force: false },
+    Page {
+        page: "apikeys",
+        route: Route::Mapped("/admin/p/apikeys/keys"),
+        search: "",
+        tab: None,
+        menu: Some(Menu { mock: "apikey", kind: "apikey" }),
+        modal: None,
+        force: false,
+    },
     Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "", tab: None, menu: None, modal: None, force: false },
     Page { page: "scheduler", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
     Page { page: "config", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
@@ -673,7 +682,6 @@ pub fn excluded_menu_id(host: &str, kind: &str) -> String {
 /// Menus the mockup registry defines (`UI.defineMenu`) that no `PAGE_MAP` menu entry diffs,
 /// with the reason. [`validate_menus`] holds it to the registry.
 pub const EXCLUDED_MOCK_MENUS: &[(&str, &str)] = &[
-    ("apikey", "drawn only on apikeys, which is pending"),
     ("repo", NO_LORE),
     ("lock", NO_LORE),
 ];
@@ -852,6 +860,14 @@ pub const EXCLUDED_MOCK_MODALS: &[MockModalExclusion] = &[
         PortalModal::Unseeded("mail/cancel"),
         "mail.modal.cancel left PAGE_MAP: the portal draws the cancel opener only on pending or retrying mail, which the dev fleet does not seed; Step 24b3 adds it back",
     ),
+    mock_modal(
+        "apikeys.menu.apikey",
+        MockOpener::Pages("reveal"),
+        PortalModal::Disabled("apikeys/key.rotate"),
+        "no rotation exists: the portal draws Rotate secret… disabled as not implemented",
+    ),
+    mock_modal("apikeys", MockOpener::Pages("createKey"), PortalModal::Absent("apikeys"), "apikeys/key.create lands in Step 21a2"),
+    mock_modal("apikeys.menu.apikey", MockOpener::Pages("revokeKey"), PortalModal::Absent("apikeys"), "apikeys/key.revoke lands in Step 21a2"),
 ];
 
 /// Accounts' row menu suspend and delete-account actions (`modules/accounts/src/admin.rs`).
