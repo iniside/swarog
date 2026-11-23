@@ -1,11 +1,11 @@
 ---
 name: step13-resume-point
-description: "Admin redesign resume point 2026-11-23: Step 22 (scheduler) complete; next Step 23 config — ask owner first"
+description: "Admin redesign resume point 2026-11-24: Step 23 config — 23a2 last dispatched, owner said stop after it; 23t dropped; next 23b"
 metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-23T20:55:27.470Z
+  modified: 2026-11-23T23:39:09.167Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -105,3 +105,10 @@ a9094615 ("any" = no filter in core filter_views) review REJECT structural S1: "
 - Crawls: monolith target/admindiff/crawl-1795466014, split crawl-1795466435 — scheduler clean both. Reds left = pre-existing seed/timing (owner: leave).
 - Open for owner: public-api gate opt-in (run --bless-public-api per step touching core/controlplane/api?), SH2 refusal told apart only by letter case "Not implemented yet" (scheduler admin.rs:408, same idiom storage_admin_checks.rs:135), Recent fires cap 100 unnoted, checklist template should list public-api baseline.
 - Next: Step 23 (config) — ask owner before starting.
+
+## State 2026-11-24 (Step 23 in progress — owner: stop after 23a2)
+- Checklist docs/plans/2026-11-23-step23-config-checklist.md (D1-D7, C1-C9 as recommended). Landed: 23s a425c936 + d3de6666 (per-key revision, lock order), 23r0 6856ea04 (FormSpec reason) + 9e8577eb (_reason only on forms with a note), 23a1 b0e8e377 + review-fix 0007e9e5 (timeline "rev N by" via summary+badge) + todo 2466be7f/e6e0328a. All reviews ACCEPT.
+- Owner: 23t splitproof DROPPED (9ded4d66; split writes a known limit in docs/todo/config.md). Value field not required for String; multi-key writes lock in (namespace,key) order.
+- 23a2 (config edit/create invoke, conformance probe, EXCLUDED_MODALS) dispatched 2026-11-24; owner said stop after it — do NOT start reviews/23b without the owner.
+- Owner open: Confirm still accepts _reason on a None ConfirmSpec (actions.rs:389) — recommend same rule as forms; 8 admindiff PAGE_MAP failures from redesign mockup commits 4fa3b2e0/0390ec07/b4303e23 (todo admin.md).
+- Next: core-reviewer + proof-auditor on 23a2 (conformance touched), then 23b (accept files, nav #ecbb9a re-count) — ask owner.
