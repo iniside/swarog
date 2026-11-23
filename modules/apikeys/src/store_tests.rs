@@ -193,6 +193,30 @@ async fn stale_revision_set_key_role_conflicts_without_writing() {
     cleanup(&pool, &base).await;
 }
 
+/// A revoked key keeps its role: even a CAS at its current revision writes nothing.
+#[tokio::test]
+async fn set_key_role_on_a_revoked_key_conflicts_without_writing() {
+    let _guard = db_test_lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let store = Store { pool: pool.clone() };
+    let base = unique_name(&pool).await;
+    let r1 = format!("{base}-r1");
+    let r2 = format!("{base}-r2");
+    let key = format!("{base}-key");
+    store.create_role(&r1, "full").await.unwrap();
+    store.create_role(&r2, "accounts.login").await.unwrap();
+    store.create_key(&key, &r1).await.unwrap();
+    assert_eq!(store.revoke_key(&key).await.unwrap(), Revoke::Revoked);
+    let before = key_summary(&store, &key).await.unwrap();
+
+    assert_conflict(store.set_key_role(&key, before.revision, &r2).await);
+    let after = key_summary(&store, &key).await.unwrap();
+    assert_eq!(after.role, r1, "a revoked key keeps its role");
+    assert_eq!(after.revision, before.revision, "no write on a revoked key");
+
+    cleanup(&pool, &base).await;
+}
+
 // ---- Revoke and delete role: no CAS (owner D1) ------------------------------
 
 /// A second revoke writes nothing and says the key was already revoked.

@@ -156,9 +156,10 @@ impl ApiKeysAdmin {
         }
     }
 
-    /// A CAS on the revision the form was prepared with. A miss is told apart by a re-read:
-    /// a gone key is `NotFound`, a moved revision a `Conflict`, and an unmoved one means the
-    /// role was the conflict.
+    /// A CAS on the revision the form was prepared with; a revoked key is refused before it.
+    /// A miss is told apart by a re-read: a gone key is `NotFound`, a key revoked meanwhile the
+    /// revoked refusal, a moved revision a `Conflict`, and an unmoved one means the role was
+    /// the conflict.
     async fn change_role(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
         key_name(req.entity.as_ref())?;
         let role = req.input.get(FIELD_ROLE).map(String::as_str).unwrap_or_default();
@@ -167,6 +168,9 @@ impl ApiKeysAdmin {
         }
         let expected = form_revision(req, "changing a role")?;
         let key = self.bound_key(req.entity.as_ref()).await?;
+        if key.revoked {
+            return Err(revoked_key(&key.name));
+        }
         if key.role == role {
             return Ok(InvokeOutcome::NoOp { message: format!("Key {} already has role {role}", key.name) });
         }
@@ -174,6 +178,9 @@ impl ApiKeysAdmin {
             Ok(()) => Ok(InvokeOutcome::Ok { message: "Role changed".to_string(), reveal: None, redirect: None }),
             Err(WriteError::Conflict(msg)) => {
                 let now = self.bound_key(req.entity.as_ref()).await?;
+                if now.revoked {
+                    return Err(revoked_key(&now.name));
+                }
                 if now.revision == expected {
                     return Err(Error::conflict(msg));
                 }
@@ -395,6 +402,11 @@ fn keys_page_link() -> Link {
         page: PAGE.to_string(),
         params: BTreeMap::new(),
     }
+}
+
+/// The refusal to re-role a revoked key: it stays on the role it was revoked under.
+fn revoked_key(name: &str) -> Error {
+    Error::conflict(format!("key {name} is revoked"))
 }
 
 fn status_text(revoked: bool) -> &'static str {
@@ -935,6 +947,9 @@ impl Provider for ApiKeysAdmin {
             }
             KEY_CHANGE_ROLE => {
                 let key = self.bound_key(req.entity.as_ref()).await?;
+                if key.revoked {
+                    return Err(revoked_key(&key.name));
+                }
                 let roles = self.svc.store.roles_with_counts().await.map_err(internal)?;
                 Ok(Then::Form(change_role_form(&roles, Some(&key))))
             }

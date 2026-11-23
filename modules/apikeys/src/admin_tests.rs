@@ -755,6 +755,14 @@ async fn create_change_role_and_revoke_a_key_through_the_provider() {
     let e = p.prepare(prepare_call("key.revoke", Some(&missing))).await.unwrap_err();
     assert_eq!(e.status, Status::NotFound);
 
+    let dead = store.key(&name).await.unwrap().unwrap();
+    let e = p.prepare(prepare_call("key.change-role", Some(&name))).await.unwrap_err();
+    assert_eq!((e.status, e.msg.as_str()), (Status::Conflict, &*format!("key {name} is revoked")));
+    let e = p.invoke(key_call("key.change-role", &name, to_a(), Some(dead.revision))).await.unwrap_err();
+    assert_eq!((e.status, e.msg.as_str()), (Status::Conflict, &*format!("key {name} is revoked")));
+    let still = store.key(&name).await.unwrap().unwrap();
+    assert_eq!((still.role, still.revision), (role_b.clone(), dead.revision), "a revoked key is never re-roled");
+
     cleanup(&pool, &base).await;
 }
 

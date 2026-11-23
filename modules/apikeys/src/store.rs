@@ -265,6 +265,23 @@ pub(crate) struct KeyRow {
     pub created_us: i64,
 }
 
+/// The `apikeys.keys` columns every [`KeyRow`] read selects, in [`KeyTuple`] order.
+const KEY_COLUMNS: &str = "name, prefix, role, revision, (revoked_at IS NOT NULL), \
+    to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'), \
+    (EXTRACT(EPOCH FROM created_at) * 1000000)::int8";
+
+type KeyTuple = (String, String, String, i64, bool, String, i64);
+
+fn key_row((name, prefix, role, revision, revoked, created, created_us): KeyTuple) -> KeyRow {
+    KeyRow { name, prefix, role, revision, revoked, created, created_us }
+}
+
+/// Every role with its key count (revoked keys included); a reader appends its WHERE and
+/// `GROUP BY r.name, r.policy, r.revision`.
+const ROLE_COUNTS: &str = "SELECT r.name, r.policy, r.revision, count(k.name) \
+    FROM apikeys.roles r \
+    LEFT JOIN apikeys.keys k ON k.role = r.name";
+
 /// What [`Store::revoke_key`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Revoke {
@@ -311,13 +328,9 @@ impl Store {
 
     /// Every role, name-ordered, with its key count (revoked keys included).
     pub async fn roles_with_counts(&self) -> Result<Vec<RoleRow>, sqlx::Error> {
-        let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
-            "SELECT r.name, r.policy, r.revision, count(k.name) \
-               FROM apikeys.roles r \
-               LEFT JOIN apikeys.keys k ON k.role = r.name \
-              GROUP BY r.name, r.policy, r.revision \
-              ORDER BY r.name",
-        )
+        let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(&format!(
+            "{ROLE_COUNTS} GROUP BY r.name, r.policy, r.revision ORDER BY r.name"
+        ))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
@@ -328,12 +341,9 @@ impl Store {
 
     /// One role with its key count (revoked keys included), or `None` when absent.
     pub async fn role(&self, name: &str) -> Result<Option<RoleRow>, sqlx::Error> {
-        let row: Option<(String, String, i64, i64)> = sqlx::query_as(
-            "SELECT r.name, r.policy, r.revision, \
-                    (SELECT count(*) FROM apikeys.keys k WHERE k.role = r.name) \
-               FROM apikeys.roles r \
-              WHERE r.name = $1",
-        )
+        let row: Option<(String, String, i64, i64)> = sqlx::query_as(&format!(
+            "{ROLE_COUNTS} WHERE r.name = $1 GROUP BY r.name, r.policy, r.revision"
+        ))
         .bind(name)
         .fetch_optional(&self.pool)
         .await?;
@@ -434,25 +444,12 @@ impl Store {
 
     /// One key, or `None` when absent. Never the secret or its hash.
     pub async fn key(&self, name: &str) -> Result<Option<KeyRow>, sqlx::Error> {
-        let row: Option<(String, String, String, i64, bool, String, i64)> = sqlx::query_as(
-            "SELECT name, prefix, role, revision, (revoked_at IS NOT NULL), \
-                    to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'), \
-                    (EXTRACT(EPOCH FROM created_at) * 1000000)::int8 \
-               FROM apikeys.keys \
-              WHERE name = $1",
-        )
-        .bind(name)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(|(name, prefix, role, revision, revoked, created, created_us)| KeyRow {
-            name,
-            prefix,
-            role,
-            revision,
-            revoked,
-            created,
-            created_us,
-        }))
+        let row: Option<KeyTuple> =
+            sqlx::query_as(&format!("SELECT {KEY_COLUMNS} FROM apikeys.keys WHERE name = $1"))
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(key_row))
     }
 
     /// One page of keys, newest first, keyset on `(created_at, name)` DESC: `after` is the
@@ -467,10 +464,8 @@ impl Store {
         after: Option<(i64, &str)>,
         limit: i64,
     ) -> Result<Vec<KeyRow>, sqlx::Error> {
-        let rows: Vec<(String, String, String, i64, bool, String, i64)> = sqlx::query_as(
-            "SELECT name, prefix, role, revision, (revoked_at IS NOT NULL), \
-                    to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'), \
-                    (EXTRACT(EPOCH FROM created_at) * 1000000)::int8 \
+        let rows: Vec<KeyTuple> = sqlx::query_as(&format!(
+            "SELECT {KEY_COLUMNS} \
                FROM apikeys.keys \
               WHERE ($1::text IS NULL \
                      OR strpos(lower(name), lower($1)) > 0 \
@@ -480,8 +475,8 @@ impl Store {
                 AND ($4::int8 IS NULL \
                      OR (created_at, name) < (to_timestamp(0) + $4 * interval '1 microsecond', $5::text)) \
               ORDER BY created_at DESC, name DESC \
-              LIMIT $6",
-        )
+              LIMIT $6"
+        ))
         .bind(needle)
         .bind(status.map(|s| s == KeyStatus::Revoked))
         .bind(role)
@@ -490,18 +485,7 @@ impl Store {
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(|(name, prefix, role, revision, revoked, created, created_us)| KeyRow {
-                name,
-                prefix,
-                role,
-                revision,
-                revoked,
-                created,
-                created_us,
-            })
-            .collect())
+        Ok(rows.into_iter().map(key_row).collect())
     }
 
     /// `(total, active)` over every key. Exact `count(*)`: there is no index on
@@ -536,8 +520,8 @@ impl Store {
         Ok((secret, prefix))
     }
 
-    /// CAS-repoints a key at a different `role`. A missing target role (FK `23503`) or a
-    /// stale/absent revision is a [`WriteError::Conflict`].
+    /// CAS-repoints a live key at a different `role`. A missing target role (FK `23503`),
+    /// a stale/absent revision or a revoked key is a [`WriteError::Conflict`].
     pub async fn set_key_role(
         &self,
         name: &str,
@@ -549,7 +533,7 @@ impl Store {
         let affected = sqlx::query(
             "UPDATE apikeys.keys \
                 SET role = $1, revision = revision + 1, updated_at = now() \
-              WHERE name = $2 AND revision = $3",
+              WHERE name = $2 AND revision = $3 AND revoked_at IS NULL",
         )
         .bind(role)
         .bind(name)
@@ -560,7 +544,7 @@ impl Store {
         .rows_affected();
         if affected != 1 {
             return Err(WriteError::Conflict(format!(
-                "apikeys: key {name:?} was changed or removed since the form was rendered"
+                "apikeys: key {name:?} was changed, revoked or removed since the form was rendered"
             )));
         }
         Ok(())
