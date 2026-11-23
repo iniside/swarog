@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lore Portal: ashfall-game locks</title>
+  <link rel="stylesheet" href="../design-system/tokens.css">
+  <link rel="stylesheet" href="../design-system/components/bundle.css">
+  <style>
+    html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-sans); }
+    .app { height: auto; min-height: 100vh; background: var(--bg); color: var(--text); }
+    .nav-item.sub { padding-left: 32px; }
+    .mr-id { font-family: var(--font-mono); color: var(--text-3); font-size: 12px; }
+    .ref { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); }
+    .small { font-size: 12px; }
+
+    .md h2 { font-size: 16px; margin: 0 0 8px; }
+    .md h3 { font-size: 13px; margin: 16px 0 6px; }
+    .md p, .md li { font-size: 13px; color: var(--text-2); line-height: 1.55; }
+    .md ul { padding-left: 18px; margin: 6px 0; }
+    .md code { font-family: var(--font-mono); font-size: 12px; background: var(--bg-sunken); padding: 1px 5px; border-radius: 4px; }
+    .clone { display: flex; align-items: center; gap: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+    .clone .mono { padding: 6px 10px; font-size: 12px; flex-grow: 1; background: var(--bg-sunken); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .clone .btn { border: 0; border-left: 1px solid var(--border); border-radius: 0; }
+    .stale-row td { background: color-mix(in srgb, var(--warn) 6%, transparent); }
+  </style>
+  <script src="assets/boot.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">L</div>
+      <div><div class="brand-name">Lore Portal</div><div class="brand-sub">emberline-prod</div></div>
+    </div>
+    <nav class="nav" aria-label="Main">
+      <div class="nav-section">
+        <a class="nav-item" href="index.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10l9-7 9 7v10a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"></path></svg>Home</a>
+        <a class="nav-item" href="repositories.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h12a2 2 0 0 1 2 2v16H7a2 2 0 0 1-2-2z"></path><path d="M5 19a2 2 0 0 1 2-2h12"></path></svg>Repositories</a>
+        <a class="nav-item sub active" href="repo-files.html"><span class="mono">ashfall-game</span></a>
+        <a class="nav-item sub" href="#"><span class="mono">ashfall-art</span></a>
+        <a class="nav-item sub" href="#"><span class="mono">tools-pipeline</span></a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-title">Merge requests</div>
+        <a class="nav-item" href="merge-requests.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"></circle><circle cx="6" cy="18" r="2"></circle><circle cx="18" cy="18" r="2"></circle><path d="M6 8v8"></path><path d="M18 16V9a3 3 0 0 0-3-3h-4"></path></svg>Review requested<span class="count alert">2</span></a>
+        <a class="nav-item" href="merge-requests.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path></svg>Mine<span class="count">2</span></a>
+      </div>
+      <div class="nav-section">
+        <a class="nav-item" href="my-locks.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>My locks<span class="count warn">3</span></a>
+        <a class="nav-item" href="notifications.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg>Notifications<span class="count alert">4</span></a>
+      </div>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="me">
+        <span class="avatar" style="background: #d9488a">AT</span>
+        <div class="grow"><div>Aiko Tanaka</div><div class="dim mono" style="font-size: 11px">aiko.tanaka</div></div>
+      </div>
+    </div>
+  </aside>
+  <header class="topbar">
+    <nav class="crumbs" aria-label="Breadcrumbs"><a href="repositories.html">Repositories</a><span class="sep">/</span><a class="mono" href="repo-files.html">ashfall-game</a><span class="sep">/</span><span class="cur">Locks</span></nav>
+    <button class="search-trigger" type="button"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg><span class="grow">Search repositories, files, merge requests, people</span><span class="kbd">Ctrl K</span></button>
+    <button class="top-btn" type="button" aria-label="Notifications, 4 unread"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg><span class="pip"></span></button>
+    <button class="top-btn" type="button" aria-label="Account menu"><span class="avatar" style="background: #d9488a">AT</span></button>
+  </header>
+  <main class="main">
+    <div class="page">
+<div class="page-head">
+        <div class="grow">
+          <h1 class="row" style="gap: 10px"><span class="mono">ashfall-game</span><span class="badge accent">write</span></h1>
+          <div class="muted">Ashfall game project: maps, blueprints, code, config</div>
+        </div>
+        <a class="btn" href="branches.html">23 branches</a>
+        <a class="btn primary" href="compare.html">New merge request</a>
+      </div>
+      <div class="tabs">
+        <a class="tab" href="repo-files.html">Files</a>
+        <a class="tab" href="history.html">History</a>
+        <a class="tab" href="branches.html">Branches <span class="count">23</span></a>
+        <a class="tab" href="repo-merge-requests.html">Merge requests <span class="count">4</span></a>
+        <a class="tab on" href="repo-locks.html">Locks <span class="count">14</span></a>
+      </div>
+
+      <div class="panel">
+        <div class="tbl-toolbar">
+          <div class="seg"><button type="button" class="on">All 14</button><button type="button">Mine 2</button><button type="button">Stale only 3</button></div>
+          <span class="filter-chip add">Holder</span>
+          <span class="filter-chip add">Path</span>
+          <span class="grow"></span>
+          <input class="input mono" style="width: 240px" placeholder="Path, for example Content/Maps" aria-label="Filter by path">
+          <button class="btn sm" type="button">Sort: oldest first<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px"><path d="M6 9l6 6 6-6"></path></svg></button>
+        </div>
+        <div class="panel-body flush">
+          <table class="tbl">
+            <thead><tr><th>File</th><th>Held by</th><th>Branch</th><th class="sorted">Since</th><th class="act"></th></tr></thead>
+            <tbody>
+              <tr class="stale-row"><td><span class="mono">Content/Maps/Hub/Hub_Ashgate.umap</span> <span class="badge warn">stale</span><div class="dim small mono">lock:L-2238</div></td><td><span class="user-cell"><span class="avatar" style="background: #65a30d; width: 20px; height: 20px; font-size: 9px">SO</span>sam.o</span></td><td><span class="ref">feature/hub-lighting</span></td><td>22 d ago</td><td class="act"><span class="dim small">Release request sent 1 d ago</span></td></tr>
+              <tr class="stale-row"><td><span class="mono">Content/Audio/Frostreach_Audio.umap</span> <span class="badge warn">stale</span><div class="dim small mono">lock:L-2252</div></td><td><span class="user-cell"><span class="avatar" style="background: #d9488a; width: 20px; height: 20px; font-size: 9px">AT</span>aiko (you)</span></td><td><span class="ref">feature/frostreach-audio</span></td><td>16 d ago</td><td class="act"><button class="btn sm" type="button">Release lock</button></td></tr>
+              <tr class="stale-row"><td><span class="mono">Content/Blueprints/BP_WardenSpawner.uasset</span> <span class="badge warn">stale</span><div class="dim small mono">lock:L-2261</div></td><td><span class="user-cell"><span class="avatar" style="background: #7c3aed; width: 20px; height: 20px; font-size: 9px">PN</span>priya.n</span></td><td><span class="ref">feature/warden-bt</span></td><td>15 d ago</td><td class="act"><button class="btn sm" type="button">Ask to release</button></td></tr>
+              <tr><td><span class="mono">Content/Maps/Frostreach/Frostreach_Geo.umap</span><div class="dim small mono">lock:L-2279</div></td><td><span class="user-cell"><span class="avatar" style="background: #4f5bd5; width: 20px; height: 20px; font-size: 9px">MK</span>marta.k</span></td><td><span class="ref">feature/frostreach-cliffs</span></td><td>5 d ago</td><td class="act"><button class="btn sm" type="button">Ask to release</button></td></tr>
+              <tr><td><span class="mono">Content/UI/WBP_InventoryGrid.uasset</span><div class="dim small mono">lock:L-2283</div></td><td><span class="user-cell"><span class="avatar" style="background: #2563eb; width: 20px; height: 20px; font-size: 9px">TW</span>tomasz.w</span></td><td><span class="ref">feature/inventory-drag</span></td><td>1 d ago</td><td class="act"><button class="btn sm" type="button">Ask to release</button></td></tr>
+              <tr><td><span class="mono">Content/Maps/Frostreach/Frostreach_Lighting.umap</span><div class="dim small mono">lock:L-2290</div></td><td><span class="user-cell"><span class="avatar" style="background: #d9488a; width: 20px; height: 20px; font-size: 9px">AT</span>aiko (you)</span></td><td><span class="ref">feature/frostreach-lighting</span></td><td>7 h ago</td><td class="act"><button class="btn sm" type="button">Release lock</button></td></tr>
+              <tr><td><span class="mono">Content/Maps/Frostreach/Frostreach_P.umap</span><div class="dim small mono">lock:L-2291</div></td><td><span class="user-cell"><span class="avatar" style="background: #c2630f; width: 20px; height: 20px; font-size: 9px">DR</span>diego.r</span></td><td><span class="ref">feature/frostreach-gate</span></td><td>6 h ago</td><td class="act"><button class="btn sm" type="button">Ask to release</button></td></tr>
+              <tr><td><span class="mono">Content/Characters/Warden/SK_Warden.uasset</span><div class="dim small mono">lock:L-2294</div></td><td><span class="user-cell"><span class="avatar" style="background: #0f9488; width: 20px; height: 20px; font-size: 9px">JL</span>jonas.l</span></td><td><span class="ref">main</span></td><td>2 h ago</td><td class="act"><button class="btn sm" type="button">Ask to release</button></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="tbl-foot">Showing 8 of 14 locks in <span class="mono">ashfall-game</span>. A lock is stale after 14 d. Only a lead can force-unlock it in Swarog Admin.<div class="pager"><button class="btn sm" type="button" disabled>Previous</button><button class="btn sm" type="button">Next</button></div></div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

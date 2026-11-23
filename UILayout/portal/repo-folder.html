@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lore Portal: ashfall-game / Content/Maps/Frostreach</title>
+  <link rel="stylesheet" href="../design-system/tokens.css">
+  <link rel="stylesheet" href="../design-system/components/bundle.css">
+  <style>
+    html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-sans); }
+    .app { height: auto; min-height: 100vh; background: var(--bg); color: var(--text); }
+    .nav-item.sub { padding-left: 32px; }
+    .mr-id { font-family: var(--font-mono); color: var(--text-3); font-size: 12px; }
+    .ref { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); }
+    .small { font-size: 12px; }
+
+    .md h2 { font-size: 16px; margin: 0 0 8px; }
+    .md h3 { font-size: 13px; margin: 16px 0 6px; }
+    .md p, .md li { font-size: 13px; color: var(--text-2); line-height: 1.55; }
+    .md ul { padding-left: 18px; margin: 6px 0; }
+    .md code { font-family: var(--font-mono); font-size: 12px; background: var(--bg-sunken); padding: 1px 5px; border-radius: 4px; }
+    .clone { display: flex; align-items: center; gap: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+    .clone .mono { padding: 6px 10px; font-size: 12px; flex-grow: 1; background: var(--bg-sunken); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .clone .btn { border: 0; border-left: 1px solid var(--border); border-radius: 0; }
+  </style>
+  <script src="assets/boot.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">L</div>
+      <div><div class="brand-name">Lore Portal</div><div class="brand-sub">emberline-prod</div></div>
+    </div>
+    <nav class="nav" aria-label="Main">
+      <div class="nav-section">
+        <a class="nav-item" href="index.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10l9-7 9 7v10a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"></path></svg>Home</a>
+        <a class="nav-item" href="repositories.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h12a2 2 0 0 1 2 2v16H7a2 2 0 0 1-2-2z"></path><path d="M5 19a2 2 0 0 1 2-2h12"></path></svg>Repositories</a>
+        <a class="nav-item sub active" href="repo-files.html"><span class="mono">ashfall-game</span></a>
+        <a class="nav-item sub" href="#"><span class="mono">ashfall-art</span></a>
+        <a class="nav-item sub" href="#"><span class="mono">tools-pipeline</span></a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-title">Merge requests</div>
+        <a class="nav-item" href="merge-requests.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"></circle><circle cx="6" cy="18" r="2"></circle><circle cx="18" cy="18" r="2"></circle><path d="M6 8v8"></path><path d="M18 16V9a3 3 0 0 0-3-3h-4"></path></svg>Review requested<span class="count alert">2</span></a>
+        <a class="nav-item" href="merge-requests.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path></svg>Mine<span class="count">2</span></a>
+      </div>
+      <div class="nav-section">
+        <a class="nav-item" href="my-locks.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>My locks<span class="count warn">3</span></a>
+        <a class="nav-item" href="notifications.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg>Notifications<span class="count alert">4</span></a>
+      </div>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="me">
+        <span class="avatar" style="background: #d9488a">AT</span>
+        <div class="grow"><div>Aiko Tanaka</div><div class="dim mono" style="font-size: 11px">aiko.tanaka</div></div>
+      </div>
+    </div>
+  </aside>
+  <header class="topbar">
+    <nav class="crumbs" aria-label="Breadcrumbs"><a href="repositories.html">Repositories</a><span class="sep">/</span><a class="mono" href="repo-files.html">ashfall-game</a><span class="sep">/</span><a class="mono" href="repo-files.html">main</a><span class="sep">/</span><a class="mono" href="repo-folder.html">Content</a><span class="sep">/</span><a class="mono" href="repo-folder.html">Maps</a><span class="sep">/</span><span class="cur mono">Frostreach</span></nav>
+    <button class="search-trigger" type="button"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg><span class="grow">Search repositories, files, merge requests, people</span><span class="kbd">Ctrl K</span></button>
+    <button class="top-btn" type="button" aria-label="Notifications, 4 unread"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg><span class="pip"></span></button>
+    <button class="top-btn" type="button" aria-label="Account menu"><span class="avatar" style="background: #d9488a">AT</span></button>
+  </header>
+  <main class="main">
+    <div class="page">
+<div class="page-head">
+        <div class="grow">
+          <h1 class="row" style="gap: 10px"><span class="mono">ashfall-game</span><span class="badge accent">write</span></h1>
+          <div class="muted">Ashfall game project: maps, blueprints, code, config</div>
+        </div>
+        <a class="btn" href="branches.html">23 branches</a>
+        <a class="btn primary" href="compare.html">New merge request</a>
+      </div>
+      <div class="tabs">
+        <a class="tab on" href="repo-files.html">Files</a>
+        <a class="tab" href="history.html">History</a>
+        <a class="tab" href="branches.html">Branches <span class="count">23</span></a>
+        <a class="tab" href="repo-merge-requests.html">Merge requests <span class="count">4</span></a>
+        <a class="tab" href="repo-locks.html">Locks <span class="count">14</span></a>
+      </div>
+
+      <div class="grid g-21">
+        <div class="stack">
+          <div class="row" style="gap: 10px">
+            <button class="refpicker" type="button" aria-label="Branch or revision"><span class="k">Branch</span>main<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px"><path d="M6 9l6 6 6-6"></path></svg></button>
+            <span class="ref" style="font-size: 13px"><a href="repo-files.html" style="color: var(--accent)">ashfall-game</a> / <a href="repo-files.html" style="color: var(--accent)">main</a> / <a href="repo-folder.html" style="color: var(--accent)">Content</a> / <a href="repo-folder.html" style="color: var(--accent)">Maps</a> / <a href="repo-folder.html" style="color: var(--text)"><b>Frostreach</b></a></span>
+            <span class="grow"></span>
+            <button class="btn sm" type="button">Go to file</button>
+            <a class="btn sm" href="history.html?path=Content/Maps/Frostreach">History of this folder</a>
+          </div>
+
+          <div class="panel">
+            <div class="ft-head">
+              <span class="avatar" style="background: #c2630f; width: 20px; height: 20px; font-size: 9px">DR</span>
+              <span>diego.r</span>
+              <span class="grow muted" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Frostreach: north gate blockout</span>
+              <a class="mono small" href="revision.html" style="color: var(--text-2)">rev:c41f9e2</a>
+              <span class="dim small">6 min ago</span>
+              <a class="btn sm ghost" href="history.html?path=Content/Maps/Frostreach">History</a>
+            </div>
+            <div class="ft" role="tree" aria-label="Content/Maps/Frostreach">
+              <div class="ft-row"><svg class="ft-ico dir" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg><a class="nm" href="repo-folder.html">..</a><span></span><span></span><span></span></div>
+              <div class="ft-row"><svg class="ft-ico dir" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg><a class="nm" href="repo-folder.html">Foliage</a><span class="msg">Frostreach: pine scatter density <span class="mono">rev:7d4e2a9</span> · diego.r</span><span class="sz">14 files</span><span class="when">3 d ago</span></div>
+              <div class="ft-row"><svg class="ft-ico dir" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg><a class="nm" href="repo-folder.html">Props</a><span class="msg">Frostreach: north gate blockout <span class="mono">rev:c41f9e2</span> · diego.r</span><span class="sz">18 files</span><span class="when">6 min ago</span></div>
+              <div class="ft-row"><svg class="ft-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"></path><path d="M14 3v5h5"></path></svg><span><a class="nm" href="file-asset.html">Frostreach_P.umap</a><span class="lockchip" title="Locked by diego.r"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>diego.r</span></span><span class="msg">Frostreach: north gate blockout <span class="mono">rev:c41f9e2</span> · diego.r</span><span class="sz">412 MB</span><span class="when">6 min ago</span></div>
+              <div class="ft-row"><svg class="ft-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"></path><path d="M14 3v5h5"></path></svg><span><a class="nm" href="file-asset.html">Frostreach_Lighting.umap</a><span class="lockchip" title="Locked by you"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>you</span></span><span class="msg">Frostreach: bake settings for night <span class="mono">rev:3fe88a1</span> · aiko.tanaka</span><span class="sz">96.4 MB</span><span class="when">2 d ago</span></div>
+              <div class="ft-row"><svg class="ft-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"></path><path d="M14 3v5h5"></path></svg><span><a class="nm" href="file-asset.html">Frostreach_Geo.umap</a><span class="lockchip" title="Locked by marta.k"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>marta.k</span></span><span class="msg">Frostreach: cliff pass rework <span class="mono">rev:f60a2d4</span> · marta.k</span><span class="sz">188 MB</span><span class="when">5 d ago</span></div>
+              <div class="ft-row"><svg class="ft-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"></path><path d="M14 3v5h5"></path></svg><a class="nm" href="file-asset.html">Frostreach_FX.umap</a><span class="msg">Frostreach: snow drift emitters <span class="mono">rev:91c07be</span> · tomasz.w</span><span class="sz">34.7 MB</span><span class="when">8 d ago</span></div>
+              <div class="ft-row"><svg class="ft-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"></path><path d="M14 3v5h5"></path></svg><a class="nm" href="file-asset.html">Frostreach_Gameplay.umap</a><span class="msg">Frostreach: warden patrol spawns <span class="mono">rev:d17b4c0</span> · priya.n</span><span class="sz">22.3 MB</span><span class="when">3 h ago</span></div>
+              <div class="ft-row"><svg class="ft-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"></path><path d="M14 3v5h5"></path></svg><a class="nm" href="file-asset.html">Frostreach_Nav.umap</a><span class="msg">Frostreach: nav bounds for the gate <span class="mono">rev:4b8e5f1</span> · jonas.l</span><span class="sz">9.6 MB</span><span class="when">6 d ago</span></div>
+            </div>
+            <div class="tbl-foot">2 folders, 6 files · 38 files in this folder and below. No README in this folder.</div>
+          </div>
+        </div>
+
+        <div class="stack">
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title">Clone</div></div>
+            <div class="panel-body stack" style="gap: 10px">
+              <div class="clone"><span class="mono">lore clone lore://lore.emberline.gg/ashfall-game</span><button class="btn sm" type="button">Copy</button></div>
+              <div class="dim small">Needs the <span class="mono">lore</span> CLI signed in on this device. <a href="device-approval.html" style="color: var(--accent)">Connect a device</a></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title">About</div></div>
+            <div class="panel-body">
+              <dl class="props">
+                <dt>Default branch</dt><dd class="mono">main</dd>
+                <dt>Size on main</dt><dd>184 GB · 61 204 files</dd>
+                <dt>Revisions</dt><dd>18 422</dd>
+                <dt>Your access</dt><dd><span class="badge accent">write</span></dd>
+                <dt>Lead</dt><dd>jonas.l</dd>
+                <dt>Protected branches</dt><dd class="mono">main, release/*</dd>
+              </dl>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title">Open merge requests</div><div class="panel-meta">4</div></div>
+            <div class="panel-body flush">
+              <table class="tbl">
+                <tbody>
+                  <tr><td class="wrap"><a href="merge-request.html" style="color: var(--text)">Frostreach lighting pass v3</a> <span class="mr-id">!42</span></td><td><span class="badge warn">1 of 2</span></td></tr>
+                  <tr><td class="wrap">Warden behaviour tree: patrol and alert states <span class="mr-id">!41</span></td><td><span class="badge err">Changes</span></td></tr>
+                  <tr><td class="wrap">Inventory grid: drag and stack <span class="mr-id">!40</span></td><td><span class="badge plain">Review</span></td></tr>
+                  <tr><td class="wrap">Nanite foliage spike <span class="mr-id">!39</span></td><td><span class="badge plain">Draft</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

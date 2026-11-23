@@ -58,7 +58,7 @@
     </div>
   </aside>
   <header class="topbar">
-    <nav class="crumbs" aria-label="Breadcrumbs"><a href="repositories.html">Repositories</a><span class="sep">/</span><a class="mono" href="repo-files.html">ashfall-game</a><span class="sep">/</span><span class="mono">main</span><span class="sep">/</span><span class="cur mono">Content/Maps</span></nav>
+    <nav class="crumbs" aria-label="Breadcrumbs"><a href="repositories.html">Repositories</a><span class="sep">/</span><a class="mono" href="repo-files.html">ashfall-game</a><span class="sep">/</span><span class="cur mono">main</span></nav>
     <button class="search-trigger" type="button"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg><span class="grow">Search repositories, files, merge requests, people</span><span class="kbd">Ctrl K</span></button>
     <button class="top-btn" type="button" aria-label="Notifications, 4 unread"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg><span class="pip"></span></button>
     <button class="top-btn" type="button" aria-label="Account menu"><span class="avatar" style="background: #d9488a">AT</span></button>
@@ -77,15 +77,15 @@
         <a class="tab on" href="repo-files.html">Files</a>
         <a class="tab" href="history.html">History</a>
         <a class="tab" href="branches.html">Branches <span class="count">23</span></a>
-        <a class="tab" href="merge-requests.html">Merge requests <span class="count">4</span></a>
-        <a class="tab" href="my-locks.html">Locks <span class="count">14</span></a>
+        <a class="tab" href="repo-merge-requests.html">Merge requests <span class="count">4</span></a>
+        <a class="tab" href="repo-locks.html">Locks <span class="count">14</span></a>
       </div>
 
       <div class="grid g-21">
         <div class="stack">
           <div class="row" style="gap: 10px">
             <button class="refpicker" type="button" aria-label="Branch or revision"><span class="k">Branch</span>main<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px"><path d="M6 9l6 6 6-6"></path></svg></button>
-            <span class="ref" style="font-size: 13px"><a href="#" style="color: var(--accent)">ashfall-game</a> / <a href="#" style="color: var(--accent)">Content</a> / Maps</span>
+            <span class="ref" style="font-size: 13px"><a href="repo-files.html" style="color: var(--accent)">ashfall-game</a></span>
             <span class="grow"></span>
             <button class="btn sm" type="button">Go to file</button>
           </div>
@@ -99,34 +99,32 @@
               <span class="dim small">6 min ago</span>
               <a class="btn sm ghost" href="history.html">History</a>
             </div>
-            <div class="ft" role="tree" aria-label="Content/Maps">
-              <div class="ft-row"><svg class="ft-ico dir" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg><a class="nm" href="#">..</a><span></span><span></span><span></span></div>
-              <div class="ft-row"><svg class="ft-ico dir" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg><a class="nm" href="#">Frostreach</a><span class="msg">Frostreach: north gate blockout <span class="mono">rev:c41f9e2</span> · diego.r</span><span class="sz">38 files</span><span class="when">6 min ago</span></div>
-              <div class="ft-row"><svg class="ft-ico dir" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg><a class="nm" href="#">Hub_Ashgate</a><span class="msg">Hub Ashgate: vendor stalls (!38) <span class="mono">rev:9b31e07</span> · marta.k</span><span class="sz">24 files</span><span class="when">yesterday</span></div>
-              <div class="ft-row"><svg class="ft-ico dir" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg><a class="nm" href="#">Cinderwood</a><span class="msg">Cinderwood: nav mesh rebuild <span class="mono">rev:4d0a9c3</span> · jonas.l</span><span class="sz">17 files</span><span class="when">6 d ago</span></div>
-              <div class="ft-row"><svg class="ft-ico dir" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg><a class="nm" href="#">Test</a><span class="msg">Add traversal test map <span class="mono">rev:71ac5e2</span> · priya.n</span><span class="sz">6 files</span><span class="when">19 d ago</span></div>
-              <div class="ft-row"><svg class="ft-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"></path><path d="M14 3v5h5"></path></svg><span><a class="nm" href="file-asset.html">Frostreach_P.umap</a><span class="lockchip" title="Locked by diego.r"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>diego.r</span></span><span class="msg">Frostreach: north gate blockout <span class="mono">rev:c41f9e2</span> · diego.r</span><span class="sz">412 MB</span><span class="when">6 min ago</span></div>
-              <div class="ft-row"><svg class="ft-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"></path><path d="M14 3v5h5"></path></svg><span><a class="nm" href="file-asset.html">Frostreach_Lighting.umap</a><span class="lockchip" title="Locked by you"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>you</span></span><span class="msg">Frostreach: bake settings for night <span class="mono">rev:3fe88a1</span> · aiko.tanaka</span><span class="sz">96.4 MB</span><span class="when">2 d ago</span></div>
-              <div class="ft-row"><svg class="ft-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"></path><path d="M14 3v5h5"></path></svg><span><a class="nm" href="file-asset.html">Frostreach_Audio.umap</a><span class="lockchip" title="Locked by you, stale"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>you, stale</span></span><span class="msg">Frostreach: ambience volumes <span class="mono">rev:b2207d4</span> · aiko.tanaka</span><span class="sz">12.8 MB</span><span class="when">16 d ago</span></div>
-              <div class="ft-row"><svg class="ft-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"></path><path d="M14 3v5h5"></path></svg><span><a class="nm" href="file-asset.html">Hub_Ashgate.umap</a><span class="lockchip" title="Locked by sam.o, stale"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>sam.o, stale</span></span><span class="msg">Hub Ashgate: vendor stalls (!38) <span class="mono">rev:9b31e07</span> · marta.k</span><span class="sz">231 MB</span><span class="when">yesterday</span></div>
-              <div class="ft-row"><svg class="ft-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"></path><path d="M14 3v5h5"></path></svg><a class="nm" href="file-text.html">MapList.ini</a><span class="msg">Register Frostreach sublevels <span class="mono">rev:e51c0b8</span> · jonas.l</span><span class="sz">2.1 KB</span><span class="when">4 d ago</span></div>
-              <div class="ft-row"><svg class="ft-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"></path><path d="M14 3v5h5"></path></svg><a class="nm" href="file-text.html">README.md</a><span class="msg">Document map naming and lock etiquette <span class="mono">rev:0c7a2f9</span> · jonas.l</span><span class="sz">1.4 KB</span><span class="when">11 d ago</span></div>
+            <div class="ft" role="tree" aria-label="ashfall-game">
+              <div class="ft-row"><svg class="ft-ico dir" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg><a class="nm" href="repo-folder.html">Config</a><span class="msg">Register Frostreach sublevels <span class="mono">rev:e51c0b8</span> · jonas.l</span><span class="sz">42 files</span><span class="when">4 d ago</span></div>
+              <div class="ft-row"><svg class="ft-ico dir" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg><a class="nm" href="repo-folder.html">Content</a><span class="msg">Frostreach: north gate blockout <span class="mono">rev:c41f9e2</span> · diego.r</span><span class="sz">58 911 files</span><span class="when">6 min ago</span></div>
+              <div class="ft-row"><svg class="ft-ico dir" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg><a class="nm" href="repo-folder.html">Plugins</a><span class="msg">Update LoreSource plugin to 0.14 <span class="mono">rev:5a91d3e</span> · tomasz.w</span><span class="sz">1 204 files</span><span class="when">9 d ago</span></div>
+              <div class="ft-row"><svg class="ft-ico dir" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg><a class="nm" href="repo-folder.html">Source</a><span class="msg">Warden: alert state timeout <span class="mono">rev:d17b4c0</span> · priya.n</span><span class="sz">1 041 files</span><span class="when">3 h ago</span></div>
+              <div class="ft-row"><svg class="ft-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"></path><path d="M14 3v5h5"></path></svg><a class="nm" href="file-text.html">.loreignore</a><span class="msg">Ignore DerivedDataCache and Saved <span class="mono">rev:2c8e113</span> · jonas.l</span><span class="sz">0.4 KB</span><span class="when">2 mo ago</span></div>
+              <div class="ft-row"><svg class="ft-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"></path><path d="M14 3v5h5"></path></svg><a class="nm" href="file-text.html">Ashfall.uproject</a><span class="msg">Enable the Nanite foliage plugin <span class="mono">rev:a07f6b2</span> · diego.r</span><span class="sz">1.9 KB</span><span class="when">8 d ago</span></div>
+              <div class="ft-row"><svg class="ft-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"></path><path d="M14 3v5h5"></path></svg><a class="nm" href="file-text.html">README.md</a><span class="msg">Describe repository layout and lock rules <span class="mono">rev:6e3d920</span> · jonas.l</span><span class="sz">2.6 KB</span><span class="when">1 mo ago</span></div>
             </div>
           </div>
 
           <div class="panel">
             <div class="panel-head"><div class="panel-title">README.md</div><div class="panel-tools"><a class="btn sm ghost" href="file-text.html">View file</a></div></div>
             <div class="panel-body md">
-              <h2>Content/Maps</h2>
-              <p>Persistent levels and sublevels for Ashfall. One folder per zone; the persistent level is <code>&lt;Zone&gt;_P.umap</code>.</p>
-              <h3>Locks</h3>
+              <h2>ashfall-game</h2>
+              <p>The Unreal project for Ashfall: maps, blueprints, C++ code and config. Art sources live in <code>ashfall-art</code>.</p>
+              <h3>Layout</h3>
               <ul>
-                <li>Lock a <code>.umap</code> before you open it in the editor: <code>lore lock Content/Maps/Frostreach/Frostreach_P.umap</code>.</li>
-                <li>Release when you push. Locks held longer than 14 d are marked stale.</li>
-                <li>Lighting sublevels belong to the lighting team; ask aiko.tanaka before you take one.</li>
+                <li><code>Content/</code>: maps, blueprints and imported assets. Binary files here need a lock.</li>
+                <li><code>Source/</code>: C++ game code, reviewed through merge requests.</li>
+                <li><code>Config/</code> and <code>Plugins/</code>: project settings and engine plugins.</li>
               </ul>
-              <h3>Naming</h3>
-              <p>Sublevels use <code>&lt;Zone&gt;_&lt;Layer&gt;.umap</code>, for example <code>Frostreach_Audio.umap</code>.</p>
+              <h3>Locks</h3>
+              <p>Lock a binary file before you edit it, for example <code>lore lock Content/Maps/Frostreach/Frostreach_P.umap</code>, and release it when you push. Locks held longer than 14 d are marked stale.</p>
+              <h3>Getting started</h3>
+              <p>Clone with <code>lore clone lore://lore.emberline.gg/ashfall-game</code>, then open <code>Ashfall.uproject</code>.</p>
             </div>
           </div>
         </div>

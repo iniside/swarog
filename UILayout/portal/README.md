@@ -31,7 +31,10 @@ switches it and the choice is saved; the first visit follows the OS setting.
 | Device approval for the desktop client | `device-approval.html` |
 | Home | `index.html` |
 | Repositories | `repositories.html` |
-| Repository files | `repo-files.html` |
+| Repository files (root, with the root README) | `repo-files.html` |
+| Repository folder (`Content/Maps/Frostreach`) | `repo-folder.html` |
+| Repository merge requests | `repo-merge-requests.html` |
+| Repository locks (every holder) | `repo-locks.html` |
 | Text file | `file-text.html` |
 | Binary asset with lock states | `file-asset.html` |
 | History | `history.html` |
