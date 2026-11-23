@@ -45,7 +45,11 @@ Per-module mechanics live in each `modules/<name>/src/lib.rs` header and the
   and the invalidation callback re-reads the whole snapshot anyway); the durable
   `config.changed` event still carries the full `value`. Local `Service` and remote
   `CachedConfig` (via `configrpc`) apply only newer revisions; `CachedConfig` keeps
-  boot-fill-or-fail-startup.
+  boot-fill-or-fail-startup. Each `config.settings` row carries `revision`, the
+  global revision of the write that last wrote it, stamped by the `settings_stamp`
+  BEFORE trigger (writers never supply it); the admin edit compares-and-swaps on it.
+  The column rolls out by `DROP SCHEMA config CASCADE` and a fresh boot, no data
+  migration: an old table boots but fails on its first write.
 - **admin** — GameOps portal at `/admin` (minijinja over the embedded Go-era theme),
   owning schema `admin`. CSRF is checked BEFORE the local/remote editability
   decision; one generic 401 for wrong-pass/unknown-user/locked (no username oracle);
