@@ -319,8 +319,7 @@ async fn keys_page_by_25_narrow_by_filters_and_drop_the_total_and_roles_count_ke
     }
     let revoked = format!("{base}-r");
     store.create_key(&revoked, &role_b).await.unwrap();
-    let revision = store.keys_page(Some(&revoked), None, None, None, 1).await.unwrap()[0].revision;
-    store.revoke_key(&revoked, revision).await.unwrap();
+    store.revoke_key(&revoked).await.unwrap();
     let p = provider(pool.clone());
 
     let first = p.panel(query("keys", Some(&base), None, &[])).await.unwrap();

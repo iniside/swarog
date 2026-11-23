@@ -11,12 +11,17 @@
 //! and never persisted, so no key read can expose it. Lookup hashes the presented
 //! key and matches the digest — an O(1) indexed read.
 //!
-//! Optimistic concurrency is CAS-by-`revision`: every mutating UPDATE/DELETE carries the
-//! `expected_revision` the operator's form was rendered against and touches the row only
-//! when it still matches, bumping `revision` on success. A miss (`rows_affected() == 0`)
-//! is a [`WriteError::Conflict`], NEVER a not-found — a stale form and a vanished target
-//! are the same "your evidence no longer holds" answer, and surfacing them as NotFound
-//! would be indistinguishable from the edge's UnknownMethod (see the module docs).
+//! Optimistic concurrency is CAS-by-`revision` for the edits that replace a value (a
+//! role's policy, a key's role): the UPDATE carries the `expected_revision` the operator's
+//! form was rendered against and touches the row only when it still matches, bumping
+//! `revision` on success. A miss (`rows_affected() == 0`) is a [`WriteError::Conflict`],
+//! NEVER a not-found — a stale form and a vanished target are the same "your evidence no
+//! longer holds" answer, and surfacing them as NotFound would be indistinguishable from
+//! the edge's UnknownMethod (see the module docs).
+//!
+//! Revoking a key and deleting a role carry no revision (owner decision D1): neither
+//! depends on what the operator saw, so each is one guarded statement whose outcome
+//! ([`Revoke`], or whether a row was deleted) tells the caller what happened.
 
 use apikeysapi::KeyRecord;
 use base64::Engine;
@@ -235,6 +240,17 @@ pub(crate) struct KeyRow {
     pub created_us: i64,
 }
 
+/// What [`Store::revoke_key`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Revoke {
+    /// This call revoked the key.
+    Revoked,
+    /// The key exists and was revoked before this call; nothing was written.
+    AlreadyRevoked,
+    /// No key has this name.
+    Absent,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum KeyStatus {
     Active,
@@ -283,6 +299,20 @@ impl Store {
             .into_iter()
             .map(|(name, policy, revision, keys)| RoleRow { name, policy, revision, keys })
             .collect())
+    }
+
+    /// One role with its key count (revoked keys included), or `None` when absent.
+    pub async fn role(&self, name: &str) -> Result<Option<RoleRow>, sqlx::Error> {
+        let row: Option<(String, String, i64, i64)> = sqlx::query_as(
+            "SELECT r.name, r.policy, r.revision, \
+                    (SELECT count(*) FROM apikeys.keys k WHERE k.role = r.name) \
+               FROM apikeys.roles r \
+              WHERE r.name = $1",
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(name, policy, revision, keys)| RoleRow { name, policy, revision, keys }))
     }
 
     /// Creates a role. A duplicate name (PK) is a [`WriteError::Conflict`].
@@ -335,30 +365,58 @@ impl Store {
         Ok(())
     }
 
-    /// CAS-deletes a role. A key still referencing it raises the FK (`23503`) → a
-    /// [`WriteError::Conflict`] ("role in use") — the FK, not the pre-check, is the
-    /// authority against a create_key↔delete_role race. A stale/absent revision is also a
-    /// conflict.
-    pub async fn delete_role(&self, name: &str, expected_revision: i64) -> Result<(), WriteError> {
+    /// Deletes a role; `Ok(false)` when no role has this name. A key still referencing it,
+    /// revoked or not, raises the FK (`23503`) → a [`WriteError::Conflict`] naming how many
+    /// keys use it. The FK, not a pre-check, is the authority against a
+    /// create_key↔delete_role race; revoked keys keep their role so their audit trail does.
+    pub async fn delete_role(&self, name: &str) -> Result<bool, WriteError> {
         validate_name(&ROLE_NAME, name)?;
-        let affected = sqlx::query("DELETE FROM apikeys.roles WHERE name = $1 AND revision = $2")
+        let result = sqlx::query("DELETE FROM apikeys.roles WHERE name = $1")
             .bind(name)
-            .bind(expected_revision)
             .execute(&self.pool)
-            .await
-            .map_err(|e| {
-                WriteError::from_db(e, format!("apikeys: role {name:?} is still referenced by a key"))
-            })?
-            .rows_affected();
-        if affected != 1 {
-            return Err(WriteError::Conflict(format!(
-                "apikeys: role {name:?} was changed or removed since the form was rendered"
-            )));
+            .await;
+        match result {
+            Ok(done) => Ok(done.rows_affected() == 1),
+            Err(sqlx::Error::Database(db)) if db.code().as_deref() == Some("23503") => {
+                let keys: i64 =
+                    sqlx::query_scalar("SELECT count(*) FROM apikeys.keys WHERE role = $1")
+                        .bind(name)
+                        .fetch_one(&self.pool)
+                        .await?;
+                Err(WriteError::Conflict(format!(
+                    "role {name} is still used by {keys} key(s), revoked keys included"
+                )))
+            }
+            Err(e) => {
+                Err(WriteError::from_db(e, format!("apikeys: role {name:?} could not be deleted")))
+            }
         }
-        Ok(())
     }
 
     // --- Keys ---------------------------------------------------------------
+
+    /// One key, or `None` when absent. Never the secret or its hash.
+    pub async fn key(&self, name: &str) -> Result<Option<KeyRow>, sqlx::Error> {
+        let row: Option<(String, String, String, i64, bool, String, i64)> = sqlx::query_as(
+            "SELECT name, prefix, role, revision, (revoked_at IS NOT NULL), \
+                    to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'), \
+                    (EXTRACT(EPOCH FROM created_at) * 1000000)::int8 \
+               FROM apikeys.keys \
+              WHERE name = $1",
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(name, prefix, role, revision, revoked, created, created_us)| KeyRow {
+            name,
+            prefix,
+            role,
+            revision,
+            revoked,
+            created,
+            created_us,
+        }))
+    }
 
     /// One page of keys, newest first, keyset on `(created_at, name)` DESC: `after` is the
     /// last row's `(created_us, name)`. The needle matches name or prefix as a
@@ -475,26 +533,29 @@ impl Store {
         Ok(())
     }
 
-    /// CAS-revokes a key (sets `revoked_at`), after which [`Store::lookup`] returns `None`.
-    /// A stale/absent revision is a [`WriteError::Conflict`].
-    pub async fn revoke_key(&self, name: &str, expected_revision: i64) -> Result<(), WriteError> {
+    /// Revokes a key (sets `revoked_at`), after which [`Store::lookup`] returns `None`.
+    /// The `revoked_at IS NULL` guard makes a repeat write nothing; when no row changed, one
+    /// existence read tells [`Revoke::AlreadyRevoked`] from [`Revoke::Absent`].
+    pub async fn revoke_key(&self, name: &str) -> Result<Revoke, WriteError> {
         validate_name(&KEY_NAME, name)?;
         let affected = sqlx::query(
             "UPDATE apikeys.keys \
                 SET revoked_at = now(), revision = revision + 1, updated_at = now() \
-              WHERE name = $1 AND revision = $2 AND revoked_at IS NULL",
+              WHERE name = $1 AND revoked_at IS NULL",
         )
         .bind(name)
-        .bind(expected_revision)
         .execute(&self.pool)
         .await?
         .rows_affected();
-        if affected != 1 {
-            return Err(WriteError::Conflict(format!(
-                "apikeys: key {name:?} was changed, removed, or already revoked since the form was rendered"
-            )));
+        if affected == 1 {
+            return Ok(Revoke::Revoked);
         }
-        Ok(())
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM apikeys.keys WHERE name = $1)")
+                .bind(name)
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(if exists { Revoke::AlreadyRevoked } else { Revoke::Absent })
     }
 
     // --- Dev seed (self-healing upsert) -------------------------------------

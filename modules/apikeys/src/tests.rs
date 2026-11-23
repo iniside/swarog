@@ -160,8 +160,7 @@ async fn capability_lookup_known_unknown_revoked() {
     // Unknown → Ok(None).
     assert_eq!(svc.lookup_key(format!("{base}-nope")).await.unwrap(), None);
     // Revoked → Ok(None).
-    let rev = svc.store.keys_page(Some(&key), None, None, None, 1000).await.unwrap()[0].revision;
-    svc.store.revoke_key(&key, rev).await.unwrap();
+    svc.store.revoke_key(&key).await.unwrap();
     assert_eq!(svc.lookup_key(secret).await.unwrap(), None);
 
     cleanup(&pool, &base).await;

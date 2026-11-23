@@ -36,7 +36,7 @@ use async_trait::async_trait;
 use lifecycle::{Context, Ddl, Module};
 use opsapi::Error;
 
-use crate::store::{Store, WriteError};
+use crate::store::{KeyRow, Revoke, RoleRow, Store, WriteError};
 
 /// Creates this module's OWN schema and nothing else — full logical isolation (#10).
 /// Idempotent DDL (`CREATE … IF NOT EXISTS`), fresh-boot only per the wipe policy: since
@@ -159,7 +159,7 @@ impl apikeysapi::Keys for Service {
 // and NEVER to NotFound (finding #2).
 #[expect(
     dead_code,
-    reason = "Step 21a2: the API keys page writes through them \
+    reason = "Step 21a2 parts 2-3: the API keys page reads and writes through them \
               (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2346)"
 )]
 impl Service {
@@ -176,8 +176,17 @@ impl Service {
         self.store.set_role_policy(name, expected_revision, policy).await
     }
 
-    pub(crate) async fn delete_role(&self, name: &str, expected_revision: i64) -> Result<(), WriteError> {
-        self.store.delete_role(name, expected_revision).await
+    /// `Ok(false)` when no role has this name.
+    pub(crate) async fn delete_role(&self, name: &str) -> Result<bool, WriteError> {
+        self.store.delete_role(name).await
+    }
+
+    pub(crate) async fn role(&self, name: &str) -> Result<Option<RoleRow>, sqlx::Error> {
+        self.store.role(name).await
+    }
+
+    pub(crate) async fn key(&self, name: &str) -> Result<Option<KeyRow>, sqlx::Error> {
+        self.store.key(name).await
     }
 
     /// Mints a key under `role` and returns its show-once `secret` (the plaintext exists
@@ -195,8 +204,8 @@ impl Service {
         self.store.set_key_role(name, expected_revision, role).await
     }
 
-    pub(crate) async fn revoke_key(&self, name: &str, expected_revision: i64) -> Result<(), WriteError> {
-        self.store.revoke_key(name, expected_revision).await
+    pub(crate) async fn revoke_key(&self, name: &str) -> Result<Revoke, WriteError> {
+        self.store.revoke_key(name).await
     }
 }
 

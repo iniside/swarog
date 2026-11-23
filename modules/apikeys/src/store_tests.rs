@@ -6,7 +6,7 @@
 //! never has the harness's `dev-client`/`dev-server` rows touched.
 
 use super::*;
-use crate::store::{KeyStatus, Store, WriteError};
+use crate::store::{KeyStatus, Revoke, Store, WriteError};
 use sqlx::PgPool;
 
 static DB_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -65,12 +65,15 @@ async fn role_policy(store: &Store, name: &str) -> Option<String> {
 }
 
 async fn key_summary(store: &Store, name: &str) -> Option<crate::store::KeyRow> {
-    store
-        .keys_page(Some(name), None, None, None, 1000)
+    store.key(name).await.unwrap()
+}
+
+async fn revoked_at(pool: &PgPool, name: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT revoked_at::text FROM apikeys.keys WHERE name = $1")
+        .bind(name)
+        .fetch_one(pool)
         .await
         .unwrap()
-        .into_iter()
-        .find(|k| k.name == name)
 }
 
 fn assert_conflict<T: std::fmt::Debug>(result: Result<T, WriteError>) {
@@ -114,8 +117,7 @@ async fn lookup_known_unknown_revoked() {
     assert_eq!(store.lookup(&format!("{base}-nope")).await.unwrap(), None);
 
     // Revoked → None (row stays; lookup ignores it).
-    let rev = key_summary(&store, &key).await.unwrap().revision;
-    store.revoke_key(&key, rev).await.unwrap();
+    assert_eq!(store.revoke_key(&key).await.unwrap(), Revoke::Revoked);
     assert_eq!(store.lookup(&secret).await.unwrap(), None);
 
     cleanup(&pool, &base).await;
@@ -187,8 +189,11 @@ async fn stale_revision_set_key_role_conflicts_without_writing() {
     cleanup(&pool, &base).await;
 }
 
+// ---- Revoke and delete role: no CAS (owner D1) ------------------------------
+
+/// A second revoke writes nothing and says the key was already revoked.
 #[tokio::test]
-async fn stale_revision_revoke_conflicts_without_writing() {
+async fn revoke_twice_is_already_revoked_without_writing() {
     let _guard = db_test_lock().await;
     let Some(pool) = test_pool().await else { return };
     let store = Store { pool: pool.clone() };
@@ -197,11 +202,102 @@ async fn stale_revision_revoke_conflicts_without_writing() {
     let key = format!("{base}-key");
     store.create_role(&role, "full").await.unwrap();
     let (secret, _p) = store.create_key(&key, &role).await.unwrap();
-    let before = key_summary(&store, &key).await.unwrap();
+    let fresh = key_summary(&store, &key).await.unwrap();
 
-    assert_conflict(store.revoke_key(&key, before.revision + 999).await);
-    assert!(!key_summary(&store, &key).await.unwrap().revoked, "not revoked on a stale CAS");
-    assert!(store.lookup(&secret).await.unwrap().is_some(), "still resolves — no write");
+    assert_eq!(store.revoke_key(&key).await.unwrap(), Revoke::Revoked);
+    let first = key_summary(&store, &key).await.unwrap();
+    assert!(first.revoked);
+    assert_eq!(first.revision, fresh.revision + 1, "the revoke bumps the revision");
+    assert!(store.lookup(&secret).await.unwrap().is_none());
+
+    let stamp = revoked_at(&pool, &key).await;
+    assert_eq!(store.revoke_key(&key).await.unwrap(), Revoke::AlreadyRevoked);
+    assert_eq!(key_summary(&store, &key).await.unwrap(), first, "no write on a repeat");
+    assert_eq!(revoked_at(&pool, &key).await, stamp, "revoked_at kept");
+
+    cleanup(&pool, &base).await;
+}
+
+#[tokio::test]
+async fn revoke_absent_key_is_absent() {
+    let _guard = db_test_lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let store = Store { pool: pool.clone() };
+    let base = unique_name(&pool).await;
+
+    assert_eq!(store.revoke_key(&format!("{base}-nope")).await.unwrap(), Revoke::Absent);
+
+    cleanup(&pool, &base).await;
+}
+
+#[tokio::test]
+async fn delete_absent_role_deletes_nothing() {
+    let _guard = db_test_lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let store = Store { pool: pool.clone() };
+    let base = unique_name(&pool).await;
+
+    assert!(!store.delete_role(&format!("{base}-nope")).await.unwrap());
+
+    cleanup(&pool, &base).await;
+}
+
+/// A revoked key keeps its role (K9), so it still blocks the delete, and the message says
+/// so with the count.
+#[tokio::test]
+async fn delete_role_used_only_by_a_revoked_key_conflicts_with_the_count() {
+    let _guard = db_test_lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let store = Store { pool: pool.clone() };
+    let base = unique_name(&pool).await;
+    let role = format!("{base}-role");
+    let key = format!("{base}-key");
+    store.create_role(&role, "full").await.unwrap();
+    store.create_key(&key, &role).await.unwrap();
+    assert_eq!(store.revoke_key(&key).await.unwrap(), Revoke::Revoked);
+
+    match store.delete_role(&role).await {
+        Err(WriteError::Conflict(msg)) => assert_eq!(
+            msg,
+            format!("role {role} is still used by 1 key(s), revoked keys included")
+        ),
+        other => panic!("expected WriteError::Conflict, got {other:?}"),
+    }
+    assert!(store.role(&role).await.unwrap().is_some(), "role kept");
+
+    cleanup(&pool, &base).await;
+}
+
+#[tokio::test]
+async fn key_and_role_read_one_row_or_none() {
+    let _guard = db_test_lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let store = Store { pool: pool.clone() };
+    let base = unique_name(&pool).await;
+    let role = format!("{base}-role");
+    let key = format!("{base}-key");
+    store.create_role(&role, "accounts.login").await.unwrap();
+    let (_, prefix) = store.create_key(&key, &role).await.unwrap();
+    let rev = role_revision(&pool, &role).await.unwrap();
+
+    let r = store.role(&role).await.unwrap().unwrap();
+    let want = crate::store::RoleRow {
+        name: role.clone(),
+        policy: "accounts.login".into(),
+        revision: rev,
+        keys: 1,
+    };
+    assert_eq!(r, want);
+    let k = store.key(&key).await.unwrap().unwrap();
+    assert_eq!((&k.name, &k.prefix, &k.role), (&key, &prefix, &role));
+    assert!(!k.revoked);
+    assert_eq!(k.created.len(), "YYYY-MM-DD".len());
+    // A revoked key still counts against its role and still reads back.
+    assert_eq!(store.revoke_key(&key).await.unwrap(), Revoke::Revoked);
+    assert_eq!(store.role(&role).await.unwrap().unwrap().keys, 1, "revoked keys included");
+    assert!(store.key(&key).await.unwrap().unwrap().revoked);
+    assert_eq!(store.role(&format!("{base}-nope")).await.unwrap(), None);
+    assert_eq!(store.key(&format!("{base}-nope")).await.unwrap(), None);
 
     cleanup(&pool, &base).await;
 }
@@ -218,10 +314,9 @@ async fn delete_role_in_use_conflicts_and_keeps_the_role() {
     let key = format!("{base}-key");
     store.create_role(&role, "full").await.unwrap();
     store.create_key(&key, &role).await.unwrap();
-    let rev = role_revision(&pool, &role).await.unwrap();
 
     // The FK (not a pre-check) rejects deleting a role a key still references.
-    assert_conflict(store.delete_role(&role, rev).await);
+    assert_conflict(store.delete_role(&role).await);
     assert!(role_policy(&store, &role).await.is_some(), "role kept — still in use");
 
     cleanup(&pool, &base).await;
@@ -235,9 +330,8 @@ async fn delete_role_unused_succeeds() {
     let base = unique_name(&pool).await;
     let role = format!("{base}-role");
     store.create_role(&role, "full").await.unwrap();
-    let rev = role_revision(&pool, &role).await.unwrap();
 
-    store.delete_role(&role, rev).await.unwrap();
+    assert!(store.delete_role(&role).await.unwrap(), "a row was deleted");
     assert!(role_policy(&store, &role).await.is_none(), "role gone");
 
     cleanup(&pool, &base).await;
@@ -394,8 +488,8 @@ async fn over_cap_name_rejected_on_every_writer_without_writing() {
     assert_invalid(store.set_key_role(&key, key_rev, &huge).await, "role name");
     // `WHERE` predicates.
     assert_invalid(store.set_role_policy(&huge, role_rev, "full").await, "role name");
-    assert_invalid(store.delete_role(&huge, role_rev).await, "role name");
-    assert_invalid(store.revoke_key(&huge, key_rev).await, "key name");
+    assert_invalid(store.delete_role(&huge).await, "role name");
+    assert_invalid(store.revoke_key(&huge).await, "key name");
     assert_invalid(store.set_key_role(&huge, key_rev, &role).await, "key name");
 
     assert!(role_policy(&store, &huge).await.is_none(), "no role written under an over-cap name");
@@ -507,8 +601,7 @@ async fn seed_upsert_roles_and_keys_self_heal() {
     assert_eq!(store.lookup(&secret).await.unwrap().unwrap().policy, "full");
 
     // A stray revoke + role drift on the shared dev DB, then re-seed self-heals.
-    let rev = key_summary(&store, &key).await.unwrap().revision;
-    store.revoke_key(&key, rev).await.unwrap();
+    assert_eq!(store.revoke_key(&key).await.unwrap(), Revoke::Revoked);
     store.set_role_policy(&role, role_revision(&pool, &role).await.unwrap(), "accounts.login").await.unwrap();
     assert!(store.lookup(&secret).await.unwrap().is_none(), "revoked before re-seed");
 
@@ -623,8 +716,7 @@ async fn keys_page_filters_by_status_role_and_literal_needle() {
     let (_, live_prefix) = store.create_key(&live, &role_a).await.unwrap();
     store.create_key(&gone, &role_a).await.unwrap();
     store.create_key(&other, &role_b).await.unwrap();
-    let rev = key_summary(&store, &gone).await.unwrap().revision;
-    store.revoke_key(&gone, rev).await.unwrap();
+    assert_eq!(store.revoke_key(&gone).await.unwrap(), Revoke::Revoked);
 
     let names = |rows: Vec<crate::store::KeyRow>| {
         let mut n: Vec<String> = rows.into_iter().map(|r| r.name).collect();
@@ -673,8 +765,7 @@ async fn role_counts_include_revoked_keys_and_key_counts_split_active() {
     let k1 = format!("{base}-k1");
     store.create_key(&k1, &used).await.unwrap();
     store.create_key(&format!("{base}-k2"), &used).await.unwrap();
-    let rev = key_summary(&store, &k1).await.unwrap().revision;
-    store.revoke_key(&k1, rev).await.unwrap();
+    assert_eq!(store.revoke_key(&k1).await.unwrap(), Revoke::Revoked);
 
     let roles: Vec<_> = store
         .roles_with_counts()
