@@ -39,6 +39,8 @@ tracing = { workspace = true }
 controlplane = { workspace = true }
 # The opaque paging cursor is base64url-no-pad over `"{created_at}|{id}"`.
 base64 = { workspace = true }
+# The operator dedup key is the SHA-256 of the portal's form-instance request id.
+sha2 = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

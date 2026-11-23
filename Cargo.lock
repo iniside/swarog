@@ -2873,6 +2873,7 @@ dependencies = [
  "schedulerevents",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "testdb",
  "tokio",

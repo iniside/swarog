@@ -268,9 +268,8 @@ impl Store {
     /// `(messages, unread)` for one player: `notifications_inbox_idx` leads with
     /// `player_id`, so both aggregates read one player's rows.
     ///
-    /// A `player_id` the cast rejects is an EMPTY inbox,
-    /// matching [`Store::page_by_player`] — the two halves of the drill-down must not
-    /// disagree about whether the player exists.
+    /// A `player_id` the cast rejects is an EMPTY inbox, as [`Store::page_by_player`] answers
+    /// it, so the Inbox tab's meta and its entries agree.
     pub(crate) async fn player_stats(&self, player_id: &str) -> Result<(i64, i64), sqlx::Error> {
         let res = sqlx::query_as::<_, (i64, i64)>(
             "SELECT count(*), count(*) FILTER (WHERE read_at IS NULL) \

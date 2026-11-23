@@ -3,17 +3,19 @@
 //! counts through `Provider::panel`.
 
 use controlplane::{
-    order, AttentionItem, CellKind, EntityRef, Link, PanelBody, PanelQuery, Point, Primitive, Provider, Role,
-    Severity, Timeline, Tone,
+    order, ActionPoint, AttentionItem, CellKind, EntityRef, FieldKind, InvokeCall, InvokeOutcome, Link, PanelBody,
+    PanelQuery, Point, Primitive, Provider, Role, Severity, Then, Timeline, Tone,
 };
-use notificationsapi::Notification;
+use notificationsapi::{Notification, MAX_BODY_BYTES, MAX_TITLE_BYTES};
 use opsapi::Status;
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::admin::{self, NotificationsAdmin, PAGE_SIZE};
 use crate::projection::{
     KIND_ACCOUNT_PROMOTED, KIND_FRIEND_ACCEPTED, KIND_FRIEND_REQUESTED, KIND_WALLET_CREDIT, PURGE_SWEEP_SUB,
 };
-use crate::service::{decode_cursor, encode_cursor};
+use crate::service::{decode_cursor, encode_cursor, is_operator_dedup_key, Service, PLAYER_DELETED};
 use crate::tests::{cleanup, operator_key, unique_player, wired, DB_LOCK};
 
 fn message(i: usize, kind: &str, read: bool) -> Notification {
@@ -145,7 +147,7 @@ fn purges_body_is_empty_at_zero_and_one_warn_item_linking_the_sweep_otherwise() 
 fn manifest_declares_the_tab_its_count_and_the_purges_item_at_the_shared_orders() {
     let m = admin::manifest();
     assert_eq!(m.module, "notifications");
-    assert!(m.actions.is_empty() && !m.writes);
+    assert!(m.writes);
     let decls: Vec<(&str, &Point, i32)> = m.contributions.iter().map(|c| (c.id.as_str(), &c.point, c.order)).collect();
     assert_eq!(decls.len(), 3);
     match decls[0] {
@@ -232,4 +234,229 @@ async fn inbox_tab_pages_one_player_by_25_with_the_player_counts() {
     assert_eq!(bad.status, Status::Invalid);
 
     cleanup(&pool, &[&pid, &other]).await;
+}
+
+/// A provider over a pool that cannot connect: every case below is decided before the store.
+fn dead_provider() -> NotificationsAdmin {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .acquire_timeout(std::time::Duration::from_millis(250))
+        .connect_lazy("postgres://gamebackend:gamebackend@127.0.0.1:1/gamebackend?sslmode=disable")
+        .unwrap();
+    NotificationsAdmin::new(Arc::new(Service::new(pool, Arc::new(push::Push::new()))))
+}
+
+fn send_call(action: &str, entity: Option<EntityRef>, title: &str, body: &str, request_id: Option<&str>) -> InvokeCall {
+    InvokeCall {
+        module: "notifications".into(),
+        action: action.into(),
+        entity,
+        input: BTreeMap::from([
+            (admin::FIELD_TITLE.to_string(), title.to_string()),
+            (admin::FIELD_BODY.to_string(), body.to_string()),
+        ]),
+        expected_revision: None,
+        reason: None,
+        operator: "tester".into(),
+        item: None,
+        request_id: request_id.map(String::from),
+    }
+}
+
+fn player(id: &str) -> Option<EntityRef> {
+    Some(EntityRef { kind: "player".into(), id: id.into() })
+}
+
+#[test]
+fn send_form_is_title_message_and_a_read_only_request_id() {
+    let form = admin::send_form();
+    assert_eq!(form.title.as_deref(), Some("Send notification"));
+    assert_eq!(form.submit_label, "Send");
+    let fields: Vec<(&str, &str, &FieldKind, bool, bool)> =
+        form.fields.iter().map(|f| (f.key.as_str(), f.label.as_str(), &f.kind, f.required, f.mono)).collect();
+    assert_eq!(
+        fields,
+        vec![
+            ("title", "Title", &FieldKind::String, true, false),
+            ("body", "Message", &FieldKind::Text, true, false),
+            ("request_id", "Request id", &FieldKind::RequestId, false, true),
+        ]
+    );
+    assert!(form.fields.iter().all(|f| f.default.is_none()));
+    assert!(controlplane::form_spec_errors(&form).is_empty());
+}
+
+#[test]
+fn notify_send_and_the_inbox_tool_open_one_form_as_operator_writes() {
+    let m = admin::manifest();
+    let actions: Vec<(&str, &ActionPoint, &str, i32, bool)> =
+        m.actions.iter().map(|a| (a.id.as_str(), &a.point, a.label.as_str(), a.order, a.when_empty)).collect();
+    assert_eq!(
+        actions,
+        vec![
+            (
+                admin::NOTIFY,
+                &ActionPoint::HeaderAction("player".into()),
+                "Notify",
+                order::player_header_action::NOTIFICATIONS_NOTIFY,
+                false,
+            ),
+            (
+                admin::SEND,
+                &ActionPoint::RowAction("player".into()),
+                "Send notification…",
+                order::player_row_action::NOTIFICATIONS,
+                false,
+            ),
+            (admin::INBOX_SEND, &ActionPoint::PanelTool(admin::INBOX.into()), "Send notification", 0, true),
+        ]
+    );
+    for a in &m.actions {
+        assert_eq!(a.then, Then::Form(admin::send_form()), "{}", a.id);
+        assert!(a.implemented && !a.danger && !a.prepare && !a.multi, "{}", a.id);
+        assert_eq!((a.min_role, a.icon.as_str()), (Role::Operator, "send"), "{}", a.id);
+    }
+}
+
+#[test]
+fn the_dedup_key_is_the_operator_prefix_and_the_request_ids_sha256_head() {
+    // SHA-256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a3...
+    assert_eq!(admin::operator_dedup_key("abc"), "admin-send-mail-ba7816bf8f01cfea414140de5dae2223");
+    let key = admin::operator_dedup_key("send:token-1");
+    assert_eq!(key, admin::operator_dedup_key("send:token-1"), "one form instance, one key");
+    assert_ne!(key, admin::operator_dedup_key("send:token-2"));
+    assert!(is_operator_dedup_key(&key));
+}
+
+#[test]
+fn title_and_message_are_required_and_capped_at_their_columns() {
+    let input = |title: &str, body: &str| {
+        BTreeMap::from([
+            (admin::FIELD_TITLE.to_string(), title.to_string()),
+            (admin::FIELD_BODY.to_string(), body.to_string()),
+        ])
+    };
+    let at_caps = input(&"t".repeat(MAX_TITLE_BYTES), &"b".repeat(MAX_BODY_BYTES));
+    assert!(admin::send_fields(&at_caps).is_ok());
+    let over = input(&"t".repeat(MAX_TITLE_BYTES + 1), &"b".repeat(MAX_BODY_BYTES + 1));
+    let over = admin::send_fields(&over).unwrap_err();
+    assert_eq!(
+        over,
+        BTreeMap::from([
+            ("body".to_string(), format!("Message is longer than {MAX_BODY_BYTES} bytes")),
+            ("title".to_string(), format!("Title is longer than {MAX_TITLE_BYTES} bytes")),
+        ])
+    );
+    let empty = admin::send_fields(&BTreeMap::from([(admin::FIELD_TITLE.to_string(), " ".to_string())])).unwrap_err();
+    assert_eq!(
+        empty,
+        BTreeMap::from([
+            ("body".to_string(), "Message is required".to_string()),
+            ("title".to_string(), "Title is required".to_string()),
+        ])
+    );
+}
+
+/// Every refusal decided before the store: field errors, a missing request id, a non-player
+/// or absent entity, an unknown action and an over-cap input value.
+#[tokio::test]
+async fn a_send_is_refused_before_the_store_when_its_input_cannot_be_written() {
+    let provider = dead_provider();
+    let id = "00000000-0000-4000-8000-000000000001";
+    let long = "t".repeat(MAX_TITLE_BYTES + 1);
+    match provider.invoke(send_call(admin::NOTIFY, player(id), &long, "b", Some("notify:1"))).await.unwrap() {
+        InvokeOutcome::FieldErrors(errors) => assert_eq!(errors.keys().collect::<Vec<_>>(), vec!["title"]),
+        other => panic!("an over-cap title is a field error, got {other:?}"),
+    }
+    let e = provider.invoke(send_call(admin::SEND, player(id), "t", "b", None)).await.unwrap_err();
+    assert_eq!(e.status, Status::Invalid);
+    let e = provider.invoke(send_call(admin::SEND, player(id), "t", "b", Some(""))).await.unwrap_err();
+    assert_eq!(e.status, Status::Invalid);
+    let group = Some(EntityRef { kind: "group".into(), id: id.into() });
+    for entity in [group, None, player("not-a-uuid")] {
+        let e = provider.invoke(send_call(admin::INBOX_SEND, entity, "t", "b", Some("x:1"))).await.unwrap_err();
+        assert_eq!(e.status, Status::Invalid);
+    }
+    let e = provider.invoke(send_call("broadcast", player(id), "t", "b", Some("x:1"))).await.unwrap_err();
+    assert_eq!(e.status, Status::NotFound);
+    let mut call = send_call(admin::SEND, player(id), "t", "b", Some("x:1"));
+    call.input.insert("value".into(), "a".repeat(controlplane::MAX_INPUT_VALUE_BYTES + 1));
+    assert_eq!(provider.invoke(call).await.unwrap_err().status, Status::Invalid);
+}
+
+/// The Inbox panels are a player's: another entity kind, or none, is refused.
+#[tokio::test]
+async fn the_inbox_panels_refuse_a_non_player_entity_and_a_missing_one() {
+    let provider = dead_provider();
+    for contribution in [admin::INBOX, admin::TAB_COUNT] {
+        let mut q = query(contribution, "00000000-0000-4000-8000-000000000001", None);
+        q.entity = Some(EntityRef { kind: "group".into(), id: q.entity.unwrap().id });
+        assert_eq!(provider.panel(q).await.unwrap_err().status, Status::Invalid, "{contribution}");
+        let mut q = query(contribution, "00000000-0000-4000-8000-000000000001", None);
+        q.entity = None;
+        assert_eq!(provider.panel(q).await.unwrap_err().status, Status::Invalid, "{contribution}");
+    }
+}
+
+async fn inbox_rows(pool: &sqlx::PgPool, pid: &str) -> Vec<(String, String, String)> {
+    sqlx::query_as("SELECT kind, title, body FROM notifications.messages WHERE player_id = $1::uuid")
+        .bind(pid)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+/// A send appends one operator.mail row; a double submit of the same form instance is sent
+/// and still one row; the same instance with edited text is refused; a deleted player is
+/// refused and gets no row.
+#[tokio::test]
+async fn a_send_appends_once_per_form_instance_and_refuses_a_reused_key_and_a_deleted_player() {
+    let Some(pool) = testdb::test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = unique_player(&pool).await;
+    let gone = unique_player(&pool).await;
+    let provider = NotificationsAdmin::new(svc);
+    let request_id = format!("notify:{}", operator_key(&pool).await);
+
+    for _ in 0..2 {
+        let call = send_call(admin::NOTIFY, player(&pid), "Hello", "Welcome back", Some(&request_id));
+        match provider.invoke(call).await.unwrap() {
+            InvokeOutcome::Ok { message, .. } => assert_eq!(message, "Notification sent"),
+            other => panic!("a send is Ok, got {other:?}"),
+        }
+    }
+    let want = vec![("operator.mail".to_string(), "Hello".to_string(), "Welcome back".to_string())];
+    assert_eq!(inbox_rows(&pool, &pid).await, want, "a double submit writes one row");
+
+    let e = provider
+        .invoke(send_call(admin::NOTIFY, player(&pid), "Hello", "Edited", Some(&request_id)))
+        .await
+        .unwrap_err();
+    assert_eq!((e.status, e.msg.as_str()), (Status::Conflict, admin::KEY_REUSED));
+    assert_eq!(inbox_rows(&pool, &pid).await, want, "an edited resubmit writes nothing");
+
+    let other = format!("send:{}", operator_key(&pool).await);
+    match provider.invoke(send_call(admin::SEND, player(&pid), "Second", "b", Some(&other))).await.unwrap() {
+        InvokeOutcome::Ok { .. } => {}
+        other => panic!("another form instance is another row, got {other:?}"),
+    }
+    assert_eq!(inbox_rows(&pool, &pid).await.len(), 2);
+
+    sqlx::query("INSERT INTO notifications.purged_players (player_id) VALUES ($1::uuid)")
+        .bind(&gone)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let e = provider
+        .invoke(send_call(admin::INBOX_SEND, player(&gone), "t", "b", Some("inbox.send:1")))
+        .await
+        .unwrap_err();
+    assert_eq!((e.status, e.msg.as_str()), (Status::Invalid, PLAYER_DELETED));
+    assert!(inbox_rows(&pool, &gone).await.is_empty());
+
+    let _ = sqlx::query("DELETE FROM notifications.purged_players WHERE player_id = $1::uuid")
+        .bind(&gone)
+        .execute(&pool)
+        .await;
+    cleanup(&pool, &[&pid, &gone]).await;
 }

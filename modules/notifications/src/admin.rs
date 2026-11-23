@@ -1,20 +1,28 @@
 //! The `notifications` control-plane provider: the player entity's Inbox tab (one keyset page
 //! of the player's messages as a timeline, newest first), its tab count and the dashboard's
-//! "Notifications purges pending" attention item.
+//! "Notifications purges pending" attention item; and the operator's Send notification form,
+//! opened from the player head, the player row menu and the Inbox tab.
 
 use async_trait::async_trait;
 use controlplane::order;
 use controlplane::{
-    Cell, CellKind, ContributionDecl, InvokeCall, InvokeOutcome, Manifest, PanelBody, PanelQuery, Point, Primitive, Provider, Role,
-    SearchHit, SearchQuery, Timeline, TimelineEntry, Tone, DEFAULT_PANEL_DEADLINE_MS,
+    ActionDecl, ActionPoint, Cell, CellKind, ContributionDecl, Emphasis, EntityRef, Field, FieldKind, FormSpec, InvokeCall,
+    InvokeOutcome, Manifest, PanelBody, PanelQuery, Point, Primitive, Provider, Role, SearchHit, SearchQuery, Then, Timeline,
+    TimelineEntry, Tone, DEFAULT_PANEL_DEADLINE_MS,
 };
-use notificationsapi::Notification;
+use notificationsapi::{Notification, MAX_BODY_BYTES, MAX_TITLE_BYTES};
 use opsapi::Error;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use crate::internal;
 use crate::projection::{KIND_FRIEND_ACCEPTED, KIND_FRIEND_REQUESTED, KIND_WALLET_CREDIT};
-use crate::service::{decode_cursor, encode_cursor, is_uuid_text, Service};
+use crate::service::{
+    body_within_cap, decode_cursor, encode_cursor, is_uuid_text, title_within_cap, NewNotification, Sent, Service,
+    OPERATOR_DEDUP_HEX, OPERATOR_DEDUP_PREFIX,
+};
 
 const MODULE: &str = "notifications";
 /// The entity kind the tab attaches to; accounts declares it.
@@ -30,6 +38,19 @@ pub(crate) const ATTENTION_PURGES: &str = "attention.purges";
 /// The kind of an operator-sent message.
 pub(crate) const KIND_OPERATOR_MAIL: &str = "operator.mail";
 
+/// The player head's Notify, the row menu's Send notification… and the Inbox tab's tool: three
+/// openers of one form and one invoke arm.
+pub(crate) const NOTIFY: &str = "notify";
+pub(crate) const SEND: &str = "send";
+pub(crate) const INBOX_SEND: &str = "inbox.send";
+
+pub(crate) const FIELD_TITLE: &str = "title";
+pub(crate) const FIELD_BODY: &str = "body";
+const FIELD_REQUEST_ID: &str = "request_id";
+
+pub(crate) const SENT_MESSAGE: &str = "Notification sent";
+pub(crate) const KEY_REUSED: &str = "this form was already sent with different text";
+
 pub(crate) struct NotificationsAdmin {
     svc: Arc<Service>,
 }
@@ -37,6 +58,37 @@ pub(crate) struct NotificationsAdmin {
 impl NotificationsAdmin {
     pub(crate) fn new(svc: Arc<Service>) -> NotificationsAdmin {
         NotificationsAdmin { svc }
+    }
+
+    /// One operator send to the bound player. A retry of one form instance derives the same
+    /// key and is a `Duplicate`; the same instance with edited text is refused.
+    async fn send(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let player = entity_player(req.entity.as_ref())?;
+        let request_id = req
+            .request_id
+            .as_deref()
+            .filter(|r| !r.is_empty())
+            .ok_or_else(|| Error::invalid(format!("{MODULE}: a send needs a request id")))?;
+        let (title, body) = match send_fields(&req.input) {
+            Ok(fields) => fields,
+            Err(errors) => return Ok(InvokeOutcome::FieldErrors(errors)),
+        };
+        let key = operator_dedup_key(request_id);
+        let n = NewNotification {
+            player_id: player,
+            kind: KIND_OPERATOR_MAIL,
+            title,
+            body,
+            source_event_id: &key,
+        };
+        match self.svc.send_operator_mail(&n).await? {
+            Sent::Appended | Sent::Duplicate => Ok(InvokeOutcome::Ok {
+                message: SENT_MESSAGE.to_string(),
+                reveal: None,
+                redirect: None,
+            }),
+            Sent::KeyReused => Err(Error::conflict(KEY_REUSED)),
+        }
     }
 
     /// The Inbox tab: one page older than `before`, newest first, and the meta over every
@@ -66,10 +118,104 @@ impl NotificationsAdmin {
 
 /// The entity id of a player panel's request.
 fn player_id(req: &PanelQuery) -> Result<&str, Error> {
-    match &req.entity {
+    entity_player(req.entity.as_ref())
+}
+
+/// The player id an entity names; any other entity, or none, is refused.
+fn entity_player(entity: Option<&EntityRef>) -> Result<&str, Error> {
+    match entity {
         Some(entity) if entity.kind == KIND && is_uuid_text(&entity.id) => Ok(&entity.id),
         Some(entity) if entity.kind == KIND => Err(Error::invalid(format!("{MODULE}: malformed id"))),
         _ => Err(Error::invalid(format!("{MODULE}: this panel needs a player"))),
+    }
+}
+
+fn input_within_cap(input: &BTreeMap<String, String>) -> bool {
+    input.values().all(|v| v.len() <= controlplane::MAX_INPUT_VALUE_BYTES)
+}
+
+/// The operator dedup key of one form instance: [`OPERATOR_DEDUP_PREFIX`] and the first
+/// [`OPERATOR_DEDUP_HEX`] hex digits of the SHA-256 of its request id, the only key shape
+/// `Service::send_operator_mail` admits.
+pub(crate) fn operator_dedup_key(request_id: &str) -> String {
+    let digest = Sha256::digest(request_id.as_bytes());
+    let mut key = String::from(OPERATOR_DEDUP_PREFIX);
+    for b in digest.iter().take(OPERATOR_DEDUP_HEX / 2) {
+        let _ = write!(key, "{b:02x}");
+    }
+    key
+}
+
+/// Title and Message, each required and within its column's cap, or the fields' errors.
+pub(crate) fn send_fields(input: &BTreeMap<String, String>) -> Result<(&str, &str), BTreeMap<String, String>> {
+    let title = input.get(FIELD_TITLE).map_or("", String::as_str);
+    let body = input.get(FIELD_BODY).map_or("", String::as_str);
+    let mut errors = BTreeMap::new();
+    if title.trim().is_empty() {
+        errors.insert(FIELD_TITLE.to_string(), "Title is required".to_string());
+    } else if !title_within_cap(title) {
+        errors.insert(FIELD_TITLE.to_string(), format!("Title is longer than {MAX_TITLE_BYTES} bytes"));
+    }
+    if body.trim().is_empty() {
+        errors.insert(FIELD_BODY.to_string(), "Message is required".to_string());
+    } else if !body_within_cap(body) {
+        errors.insert(FIELD_BODY.to_string(), format!("Message is longer than {MAX_BODY_BYTES} bytes"));
+    }
+    if errors.is_empty() {
+        Ok((title, body))
+    } else {
+        Err(errors)
+    }
+}
+
+fn field(key: &str, label: &str, kind: FieldKind, required: bool, help: Option<String>) -> Field {
+    Field {
+        key: key.to_string(),
+        label: label.to_string(),
+        kind,
+        required,
+        help,
+        default: None,
+        readonly: false,
+        mono: false,
+        placeholder: None,
+    }
+}
+
+/// The Send notification modal every opener draws; the player is the bound entity.
+pub(crate) fn send_form() -> FormSpec {
+    FormSpec {
+        fields: vec![
+            field(FIELD_TITLE, "Title", FieldKind::String, true, Some(format!("At most {MAX_TITLE_BYTES} bytes"))),
+            field(FIELD_BODY, "Message", FieldKind::Text, true, Some(format!("At most {MAX_BODY_BYTES} bytes"))),
+            Field { mono: true, ..field(FIELD_REQUEST_ID, "Request id", FieldKind::RequestId, false, None) },
+        ],
+        hidden: BTreeMap::new(),
+        submit_label: "Send".to_string(),
+        note: None,
+        revision: None,
+        title: Some("Send notification".to_string()),
+        modes: Vec::new(),
+    }
+}
+
+fn send_action(id: &str, point: ActionPoint, label: &str, order: i32) -> ActionDecl {
+    ActionDecl {
+        id: id.to_string(),
+        point,
+        label: label.to_string(),
+        icon: "send".to_string(),
+        order,
+        danger: false,
+        multi: false,
+        min_role: Role::Operator,
+        then: Then::Form(send_form()),
+        implemented: true,
+        emphasis: Emphasis::Default,
+        trailing_icon: false,
+        icon_only: false,
+        when_empty: false,
+        prepare: false,
     }
 }
 
@@ -193,9 +339,26 @@ pub(crate) fn manifest() -> Manifest {
                 "Notifications purges pending",
             ),
         ],
-        actions: Vec::new(),
+        actions: vec![
+            send_action(
+                NOTIFY,
+                ActionPoint::HeaderAction(KIND.to_string()),
+                "Notify",
+                order::player_header_action::NOTIFICATIONS_NOTIFY,
+            ),
+            send_action(
+                SEND,
+                ActionPoint::RowAction(KIND.to_string()),
+                "Send notification…",
+                order::player_row_action::NOTIFICATIONS,
+            ),
+            ActionDecl {
+                when_empty: true,
+                ..send_action(INBOX_SEND, ActionPoint::PanelTool(INBOX.to_string()), "Send notification", 0)
+            },
+        ],
         search: Vec::new(),
-        writes: false,
+        writes: true,
     }
 }
 
@@ -221,8 +384,16 @@ impl Provider for NotificationsAdmin {
         Ok(Vec::new())
     }
 
-    /// The manifest declares no action and `writes` is false, so the portal never invokes one.
     async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, Error> {
-        Err(Error::not_found(format!("{MODULE} has no action {:?}", req.action)))
+        if !input_within_cap(&req.input) {
+            return Err(Error::invalid(format!(
+                "an input value is longer than {} bytes",
+                controlplane::MAX_INPUT_VALUE_BYTES
+            )));
+        }
+        match req.action.as_str() {
+            NOTIFY | SEND | INBOX_SEND => self.send(&req).await,
+            other => Err(Error::not_found(format!("{MODULE} has no action {other:?}"))),
+        }
     }
 }

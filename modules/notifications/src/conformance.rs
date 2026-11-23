@@ -3,16 +3,24 @@
 //! Policy and expected outcomes live in the tool. These probes only exercise the same
 //! production validators real writes and real requests traverse.
 
+use controlplane::{EntityRef, InvokeCall, Provider as _};
 use notificationsapi::Player as _;
 use opsapi::Identity;
 use sqlx::PgPool;
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use crate::admin::{NotificationsAdmin, FIELD_BODY, FIELD_TITLE, SEND};
 use crate::service::{validate_new, NewNotification, Service, MALFORMED_CURSOR};
 
 /// Re-stated by reference so `tools/conformance` names this cap instead of a second
 /// literal — `service::MAX_DEDUP_KEY_BYTES` stays the only definition site. It is a module
 /// const rather than a contract one because no wire field carries a dedup key.
 pub const MAX_DEDUP_KEY_BYTES: usize = crate::service::MAX_DEDUP_KEY_BYTES;
+
+/// The control plane's per-value input cap, named here so `tools/conformance` states no
+/// second literal.
+pub const CP_INVOKE_INPUT_VALUE_BYTES: usize = controlplane::MAX_INPUT_VALUE_BYTES;
 
 const PROBE_PLAYER_ID: &str = "00000000-0000-4000-8000-000000000000";
 const PROBE_KIND: &str = "conformance.probe";
@@ -99,13 +107,10 @@ pub fn conformance_dedup_key_rejected(len: usize) -> bool {
 /// `Status::Internal`, never a cap verdict.
 #[doc(hidden)]
 pub fn conformance_cursor_rejected(len: usize) -> bool {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("current-thread runtime");
+    let rt = runtime();
     let svc = {
         let _guard = rt.enter();
-        Service::new(dead_pool(), std::sync::Arc::new(push::Push::new()))
+        Service::new(dead_pool(), Arc::new(push::Push::new()))
     };
     let outcome = rt.block_on(svc.list(
         Identity::player("conformance-cursor-probe"),
@@ -113,6 +118,43 @@ pub fn conformance_cursor_rejected(len: usize) -> bool {
         0,
     ));
     matches!(outcome, Err(e) if e.status == opsapi::Status::Invalid && e.msg != MALFORMED_CURSOR)
+}
+
+/// The provider's own first check on every `cp.invoke`, executed through
+/// `NotificationsAdmin::invoke` against a store that cannot connect. The send carries a valid
+/// title, body, request id and player, so an at-cap extra value reaches the store and answers
+/// `Internal`; one byte over, the cap's `Invalid` is the only refusal it can meet.
+#[doc(hidden)]
+pub fn conformance_cp_invoke_input_rejected(len: usize) -> bool {
+    let rt = runtime();
+    let admin = {
+        let _guard = rt.enter();
+        NotificationsAdmin::new(Arc::new(Service::new(dead_pool(), Arc::new(push::Push::new()))))
+    };
+    let input = BTreeMap::from([
+        (FIELD_TITLE.to_string(), PROBE_TITLE.to_string()),
+        (FIELD_BODY.to_string(), PROBE_BODY.to_string()),
+        ("value".to_string(), "a".repeat(len)),
+    ]);
+    let call = InvokeCall {
+        module: "notifications".to_string(),
+        action: SEND.to_string(),
+        entity: Some(EntityRef { kind: "player".to_string(), id: PROBE_PLAYER_ID.to_string() }),
+        input,
+        expected_revision: None,
+        reason: None,
+        operator: "conformance".to_string(),
+        item: None,
+        request_id: Some("send:conformance-probe".to_string()),
+    };
+    matches!(rt.block_on(admin.invoke(call)), Err(e) if e.status == opsapi::Status::Invalid)
+}
+
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread runtime")
 }
 
 /// A pool pointed at a port nothing listens on, with the acquire wait bounded so a probe

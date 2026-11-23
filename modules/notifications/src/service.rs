@@ -380,14 +380,6 @@ impl Service {
     /// NOTHING` collapses "the same form submitted twice" and "an edited form resubmitted
     /// under its old key" into one outcome, and only the first may answer success — the
     /// second discarded an operator's correction.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Step 20a2: the Send notification row action calls it \
-                      (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2334)"
-        )
-    )]
     pub(crate) async fn send_operator_mail(&self, n: &NewNotification<'_>) -> Result<Sent, Error> {
         if !is_operator_dedup_key(n.source_event_id) {
             return Err(Error::invalid(MALFORMED_DEDUP_KEY));
