@@ -24,6 +24,13 @@ _None._
   `try_fast_forward_merge`) in Lore and send a PR upstream, instead of the
   Swarog worker. Stock `loreserver` stays unmodified locally either way.
 
+- [ ] **Binary asset previews in the portal**
+  Owner decision 2026-11-23: previews of maps, textures and meshes (the
+  `AssetCard` thumbnails and the before/after previews in revision and merge
+  request diffs) come in the second or third portal iteration. The first
+  iteration shows binary metadata only: size, type, lock state, history and
+  size changes. The mockups already show the preview design.
+
 ## Notes
 
 - Lore's roadmap promises a review web client for 2027 (`docs/roadmap.md:81-85`
