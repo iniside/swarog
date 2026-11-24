@@ -1,5 +1,6 @@
 //! The audit log readers behind the admin page: one page of `audit.log` rows with the
-//! per-topic columns derived in SQL, its exact total, and the actor filter's options.
+//! per-topic columns derived in SQL, its exact total, and the actor filter's options; and
+//! behind the dashboard, the newest operator rows.
 //! They read schema `audit` only (never `admin.users`): operator logins come from the
 //! `admin.action` rows themselves. Payload keys are parsed in SQL (`payload->>'k'`), so
 //! audit still imports no payload type; the key names are the contract crates' field
@@ -21,6 +22,9 @@ pub(crate) const MISSING: &str = "—";
 
 /// How many distinct operator logins the actor filter offers.
 const ACTOR_OPTIONS_LIMIT: i64 = 50;
+
+/// How many entries the dashboard's "Recent operator activity" timeline shows.
+pub(crate) const ACTIVITY_LIMIT: i64 = 7;
 
 /// The topic filter's options: the logged topics, in [`DURABLE_TOPICS`] order. Static,
 /// so the select costs no scan.
@@ -76,6 +80,18 @@ impl LogRow {
 pub(crate) struct LogPage {
     pub rows: Vec<LogRow>,
     pub next: Option<LogCursor>,
+}
+
+/// One `admin.action` row as the dashboard timeline draws it; `actor`, `action`, `target`
+/// and `detail` are the derived columns of [`LogRow`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ActivityRow {
+    /// RFC 3339, UTC, to the second.
+    pub at: String,
+    pub actor: String,
+    pub action: String,
+    pub target: String,
+    pub detail: String,
 }
 
 /// A payload key as text: [`MISSING`] when absent, empty, or the payload is not an
@@ -307,6 +323,27 @@ impl Store {
             actors.push(SYSTEM_ACTOR.to_string());
         }
         Ok(actors)
+    }
+
+    /// The newest `limit` operator rows (`admin.action`), newest first, over the whole
+    /// retained ledger. Nothing indexes `topic` (only `at`, `audit.log_at_idx`), so the
+    /// operator rows are found among the retained rows by a filter, not an index.
+    pub(crate) async fn recent_operator_actions(&self, limit: i64) -> Result<Vec<ActivityRow>, sqlx::Error> {
+        let sql = format!(
+            "SELECT to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
+                    actor, action, target, detail \
+               FROM ({rows}) r \
+              WHERE topic = 'admin.action' \
+              ORDER BY at DESC, id DESC \
+              LIMIT $1",
+            rows = derived_rows()
+        );
+        let rows: Vec<(String, String, String, String, String)> =
+            sqlx::query_as(&sql).bind(limit.max(1)).fetch_all(&self.pool).await?;
+        Ok(rows
+            .into_iter()
+            .map(|(at, actor, action, target, detail)| ActivityRow { at, actor, action, target, detail })
+            .collect())
     }
 }
 

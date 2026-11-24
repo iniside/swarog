@@ -6,14 +6,14 @@ use std::collections::BTreeMap;
 
 use controlplane::{
     order, ActionPoint, CellKind, DataTable, FilterKind, Layout, PanelBody, PanelQuery, Point, Primitive, Provider,
-    Role, SortDir, Then,
+    Role, SortDir, Then, TimeRange,
 };
 use opsapi::Status;
 use serde_json::{json, Value};
 use sqlx::PgPool;
 
 use super::*;
-use crate::store::{LogCursor, LogPage, LogRow, SYSTEM_ACTOR};
+use crate::store::{ActivityRow, LogCursor, LogPage, LogRow, SYSTEM_ACTOR};
 use crate::{Audit, Context, Module, DURABLE_TOPICS};
 
 fn table(body: &PanelBody) -> &DataTable {
@@ -99,18 +99,118 @@ fn manifest_declares_the_audit_log_page() {
     assert!(page.tiles.is_empty());
 
     // H3: one untitled panel, so the portal draws no panel head.
-    assert_eq!(m.contributions.len(), 1);
+    assert_eq!(m.contributions.len(), 2);
     let c = &m.contributions[0];
     assert_eq!((c.id.as_str(), c.title.as_str(), c.order), (LOG, "", 10));
     assert_eq!(c.point, Point::Page(PAGE.to_string()));
     assert_eq!((c.min_role, c.cache_ttl_s, c.readonly.as_deref()), (Role::Viewer, None, None));
 
-    assert_eq!(m.actions.len(), 1);
+    assert_eq!(m.actions.len(), 2);
     let a = &m.actions[0];
     assert_eq!((a.id.as_str(), a.label.as_str(), a.icon.as_str(), a.order), (LOG_EXPORT, "Export", "download", 10));
     assert_eq!(a.point, ActionPoint::PageHead(PAGE.to_string()));
     assert_eq!(a.then, Then::Invoke);
     assert!(!a.implemented && !a.danger && !a.trailing_icon);
+}
+
+/// H14: "Recent operator activity" is a dashboard panel at its shared order; its one tool
+/// is a ghost "Audit log" link to the page with the arrow after the label, hidden when
+/// the timeline is empty.
+#[test]
+fn dashboard_panel_declares_the_activity_timeline_and_its_tool() {
+    let m = manifest();
+    let c = &m.contributions[1];
+    assert_eq!((c.id.as_str(), c.title.as_str()), (ACTIVITY, "Recent operator activity"));
+    assert_eq!((c.point.clone(), c.order), (Point::DashboardPanel, order::dashboard_panel::AUDIT));
+    assert_eq!((c.min_role, c.cache_ttl_s, c.readonly.as_deref()), (Role::Viewer, None, None));
+
+    let tool = &m.actions[1];
+    assert_eq!((tool.id.as_str(), tool.label.as_str(), tool.icon.as_str()), (LOG_OPEN, "Audit log", "right"));
+    assert_eq!(tool.point, ActionPoint::PanelTool(ACTIVITY.to_string()));
+    let page = Link::Page { module: MODULE.to_string(), page: PAGE.to_string(), params: BTreeMap::new() };
+    assert_eq!(tool.then, Then::Link(page));
+    assert_eq!(tool.emphasis, Emphasis::Ghost);
+    assert!(tool.implemented && tool.trailing_icon);
+    assert!(!tool.when_empty && !tool.icon_only && !tool.danger && !tool.multi);
+    assert_eq!(tool.min_role, Role::Viewer);
+}
+
+fn activity(action: &str, target: &str, detail: &str) -> ActivityRow {
+    ActivityRow {
+        at: "2026-11-24T10:05:09Z".to_string(),
+        actor: "marta.k".to_string(),
+        action: action.to_string(),
+        target: target.to_string(),
+        detail: detail.to_string(),
+    }
+}
+
+fn entries(body: &PanelBody) -> &[TimelineEntry] {
+    match &body.primitive {
+        Primitive::Timeline(t) => &t.entries,
+        other => panic!("expected a timeline, got {other:?}"),
+    }
+}
+
+/// H13: an entry is the operator's user cell (linked to the actor-filtered page), the
+/// action as the verb and "target · detail" as plain text (the target alone is dropped
+/// when it is missing); the panel's meta is "audit" and the timeline draws times of day.
+#[test]
+fn activity_entries_draw_actor_action_and_meta_line() {
+    let body = activity_body(&[
+        activity("wallet.adjust", "player:p1", "ok"),
+        activity("logout", MISSING, "ok"),
+        ActivityRow { actor: MISSING.to_string(), ..activity("x", "session", "ok") },
+    ]);
+    assert_eq!(body.meta.as_deref(), Some("audit"));
+    let Primitive::Timeline(t) = &body.primitive else { panic!("expected a timeline") };
+    assert!(!t.days && !t.date_only && !t.live && t.cursor_before.is_none());
+
+    let e = entries(&body);
+    assert_eq!(e.len(), 3);
+    assert_eq!(e[0].at, "2026-11-24T10:05:09Z");
+    let actor = e[0].actor.as_ref().unwrap();
+    assert_eq!((actor.kind, actor.value.as_str()), (CellKind::User, "marta.k"));
+    assert_eq!(actor.link, Some(actor_link("marta.k")));
+    assert_eq!(e[0].verb, "wallet.adjust");
+    assert_eq!(e[0].detail.as_deref(), Some("player:p1 · ok"));
+    assert!(e[0].target.is_none() && e[0].title.is_none() && e[0].summary.is_empty());
+    assert_eq!(e[1].detail.as_deref(), Some("ok"));
+    let missing = e[2].actor.as_ref().unwrap();
+    assert_eq!((missing.kind, missing.link.is_none()), (CellKind::Ref, true));
+}
+
+/// H13: the icon follows the action's module (wallet coins, event plane zap, the portal's
+/// login events the operator), else the activity mark; the error tone marks an invoke
+/// that failed, timed out or was rejected, and a locked login.
+#[test]
+fn activity_icon_and_tone_follow_the_action() {
+    let icons = [
+        ("wallet.adjust", "coins"),
+        ("core.events.pause", "zap"),
+        ("login-succeeded", "user"),
+        ("login-locked", "user"),
+        ("logout", "user"),
+        ("scheduler.run", "activity"),
+        ("walletx.adjust", "activity"),
+    ];
+    for (action, want) in icons {
+        assert_eq!(activity_icon(action), want, "{action}");
+    }
+    let tones = [
+        ("wallet.adjust", "ok", None),
+        ("wallet.adjust", "failed: invalid amount", Some(Tone::Err)),
+        ("wallet.adjust", "unknown: timeout after 10s", Some(Tone::Err)),
+        ("wallet.adjust", "rejected: field errors amount", Some(Tone::Err)),
+        ("wallet.adjust", "ok — reason: failed: earlier", None),
+        ("login-locked", "ip:127.0.0.1", Some(Tone::Err)),
+        ("login-succeeded", "ip:127.0.0.1", None),
+    ];
+    for (action, detail, want) in tones {
+        assert_eq!(activity_tone(&activity(action, MISSING, detail)), want, "{action} {detail}");
+    }
+    let body = activity_body(&[activity("core.events.pause", "sub", "failed: conflict")]);
+    assert_eq!((entries(&body)[0].icon.as_str(), entries(&body)[0].tone), ("zap", Some(Tone::Err)));
 }
 
 /// H7: the pager carries the exact total, 25 rows a page and the next row's keyset
@@ -317,4 +417,40 @@ async fn cursor_walks_to_the_next_page() {
 
     let bad = p.panel(PanelQuery { cursor: Some("x.1".into()), ..log_query(&m, &[]) }).await;
     assert_eq!(bad.unwrap_err().status, Status::Invalid);
+}
+
+/// A12/H13 against the local DB: the dashboard panel shows the seven newest `admin.action`
+/// rows, newest first, skipping a newer domain row, with an RFC 3339 UTC `at`; every
+/// dashboard range (and none) answers the same seven.
+#[tokio::test(flavor = "multi_thread")]
+async fn activity_is_the_seven_newest_operator_rows_whatever_the_range() {
+    let Some(pool) = test_pool().await else { return };
+    let m = marker(&pool).await;
+    // Ten years ahead, so no other row of this or an earlier run is newer.
+    let ahead = -10.0 * 365.0 * 86_400.0;
+    let mut ids = Vec::new();
+    for i in 0..8 {
+        let payload = json!({"actor": "ops", "action": format!("a{i}-{m}"), "target": "", "detail": "ok"});
+        ids.push(insert(&pool, "admin.action", &payload, ahead + 100.0 - i as f64).await);
+    }
+    let domain = json!({"group_id": format!("g-{m}"), "name": "g", "creator_id": "c", "join_policy": "open"});
+    ids.push(insert(&pool, "group.created", &domain, ahead).await);
+    let p = AuditAdmin::new(pool.clone());
+    let mut got = Vec::new();
+    for range in [None, Some(TimeRange::H1), Some(TimeRange::H24), Some(TimeRange::D7)] {
+        got.push((range, p.panel(PanelQuery { range, ..query(ACTIVITY) }).await));
+    }
+    delete(&pool, &ids).await;
+
+    let want: Vec<String> = (1..8).rev().map(|i| format!("a{i}-{m}")).collect();
+    for (range, body) in &got {
+        let body = body.as_ref().unwrap();
+        let e = entries(body);
+        let verbs: Vec<String> = e.iter().map(|e| e.verb.clone()).collect();
+        assert_eq!(verbs, want, "{range:?}");
+        assert_eq!(body.meta.as_deref(), Some("audit"), "{range:?}");
+        let at = e[0].at.as_bytes();
+        assert_eq!((at.len(), at[10], at[19]), (20, b'T', b'Z'), "{:?}", e[0].at);
+        assert_eq!(e[0].detail.as_deref(), Some("ok"), "an empty target is dropped");
+    }
 }

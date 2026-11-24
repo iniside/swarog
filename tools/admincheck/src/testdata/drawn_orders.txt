@@ -5,6 +5,7 @@ nav platform | apikeys | apikeys | 10
 nav platform | mail | outbox | 20
 nav platform | scheduler | scheduler | 30
 nav platform | config | config | 40
+nav platform | audit | audit | 50
 nav platform | core.events | events | 60
 dashboard_attention | portal | attention.services | 10
 dashboard_attention | core.events | attention.paused | 20
@@ -18,6 +19,7 @@ dashboard_attention | friends | attention.purges | 64
 dashboard_attention | groups | attention.purges | 65
 dashboard_attention | storage | attention.purges | 66
 dashboard_attention | notifications | attention.purges | 67
+dashboard_panel | audit | activity | 10
 dashboard_tile | accounts | tile.active | 10
 dashboard_tile | portal | tile.lore-seats | 20
 dashboard_tile | portal | tile.lore-store | 30

@@ -39,6 +39,11 @@ pub mod dashboard_attention {
     pub const NOTIFICATIONS_PURGES: i32 = 67;
 }
 
+/// `Point::DashboardPanel`.
+pub mod dashboard_panel {
+    pub const AUDIT: i32 = 10;
+}
+
 /// `Point::DashboardWide`.
 pub mod dashboard_wide {
     pub const PORTAL_HEALTH: i32 = 100;

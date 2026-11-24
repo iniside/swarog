@@ -1,8 +1,10 @@
 //! The `audit` control-plane provider: the Audit log page (`/admin/p/audit/log`), one
 //! untitled table over every `audit.log` row, newest first, narrowed by topic, actor and a
-//! target-or-detail search, paged on `(at, id)`. Nothing here writes: the module declares
-//! no writes and its one action, Export, is `implemented: false`. It reads only schema
-//! `audit` (through [`crate::store`]), never another module's tables.
+//! target-or-detail search, paged on `(at, id)`; and the dashboard's "Recent operator
+//! activity" timeline of the newest `admin.action` rows, whose tool links to the page.
+//! Nothing here writes: the module declares no writes, Export is `implemented: false` and
+//! the dashboard tool is a link. It reads only schema `audit` (through [`crate::store`]),
+//! never another module's tables.
 
 use std::collections::BTreeMap;
 
@@ -11,13 +13,13 @@ use controlplane::order;
 use controlplane::{
     ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ContributionDecl, DataTable, Emphasis, FilterDef,
     FilterKind, InvokeCall, InvokeOutcome, Layout, Link, Manifest, NavEntry, Noun, PageDecl, PageInfo, PanelBody,
-    PanelQuery, Point, Primitive, Provider, Role, Row, SearchHit, SearchQuery, SortDir, Then,
-    DEFAULT_PANEL_DEADLINE_MS,
+    PanelQuery, Point, Primitive, Provider, Role, Row, SearchHit, SearchQuery, SortDir, Then, Timeline,
+    TimelineEntry, Tone, DEFAULT_PANEL_DEADLINE_MS,
 };
 use opsapi::Error;
 use sqlx::PgPool;
 
-use crate::store::{self, LogCursor, LogFilter, LogPage, LogRow, Store, MISSING};
+use crate::store::{self, ActivityRow, LogCursor, LogFilter, LogPage, LogRow, Store, MISSING};
 
 const MODULE: &str = "audit";
 pub(crate) const PAGE: &str = "log";
@@ -26,6 +28,15 @@ pub(crate) const PAGE: &str = "log";
 pub(crate) const LOG: &str = "log";
 
 pub(crate) const LOG_EXPORT: &str = "log.export";
+
+/// The dashboard's "Recent operator activity" panel and its "Audit log →" tool.
+pub(crate) const ACTIVITY: &str = "activity";
+pub(crate) const ACTIVITY_TITLE: &str = "Recent operator activity";
+pub(crate) const LOG_OPEN: &str = "log.open";
+
+/// The `admin.action` detail prefixes of an invoke that did not succeed
+/// (`core/admin/src/engine/actions.rs` outcome text); such an entry draws in the error tone.
+const FAILED_DETAIL_PREFIXES: [&str; 3] = ["failed:", "unknown:", "rejected:"];
 
 pub(crate) const TITLE: &str = "Audit log";
 pub(crate) const SUBTITLE: &str = "Append-only record of operator, key and system actions.";
@@ -76,6 +87,13 @@ impl AuditAdmin {
         let total = self.store.log_total(&filter).await.map_err(internal)?;
         let actors = self.store.actor_options().await.map_err(internal)?;
         Ok(log_body(page, total, actor_options(actors)))
+    }
+
+    /// The newest operator rows whatever the dashboard's range: the panel shows the latest
+    /// activity, not a window.
+    async fn activity(&self) -> Result<PanelBody, Error> {
+        let rows = self.store.recent_operator_actions(store::ACTIVITY_LIMIT).await.map_err(internal)?;
+        Ok(activity_body(&rows))
     }
 }
 
@@ -167,14 +185,79 @@ pub(crate) fn actor_link(login: &str) -> Link {
 /// An operator login is a user cell linked to the page narrowed to that login; every
 /// other actor (`system`, or a missing login) is a tag.
 fn actor_cell(row: &LogRow) -> Cell {
-    if row.is_operator() && row.actor != MISSING {
-        Cell {
-            link: Some(actor_link(&row.actor)),
-            ..cell(CellKind::User, row.actor.as_str())
-        }
+    if row.is_operator() {
+        operator_cell(&row.actor)
     } else {
         cell(CellKind::Ref, row.actor.as_str())
     }
+}
+
+/// The actor of an `admin.action` row: a user cell linked to the page narrowed to that
+/// login, or a tag when the login is missing.
+fn operator_cell(login: &str) -> Cell {
+    if login == MISSING {
+        return cell(CellKind::Ref, login);
+    }
+    Cell {
+        link: Some(actor_link(login)),
+        ..cell(CellKind::User, login)
+    }
+}
+
+/// The dashboard timeline: one entry per operator row, newest first, meta "audit".
+pub(crate) fn activity_body(rows: &[ActivityRow]) -> PanelBody {
+    PanelBody {
+        meta: Some(MODULE.to_string()),
+        ..PanelBody::new(Primitive::Timeline(Timeline {
+            entries: rows.iter().map(activity_entry).collect(),
+            cursor_before: None,
+            live: false,
+            days: false,
+            date_only: false,
+        }))
+    }
+}
+
+/// The target is a free string (`session`, `ip:…`, `kind:id`), not an entity, so it
+/// travels in the plain-text meta line before the detail instead of as a linked target.
+fn activity_entry(row: &ActivityRow) -> TimelineEntry {
+    let detail = if row.target == MISSING {
+        row.detail.clone()
+    } else {
+        format!("{} · {}", row.target, row.detail)
+    };
+    TimelineEntry {
+        at: row.at.clone(),
+        actor: Some(operator_cell(&row.actor)),
+        title: None,
+        verb: row.action.clone(),
+        target: None,
+        summary: String::new(),
+        badges: Vec::new(),
+        detail: Some(detail),
+        icon: activity_icon(&row.action).to_string(),
+        tone: activity_tone(row),
+    }
+}
+
+/// The icon of an operator action, by the module its id starts with (`{module}.{action}`)
+/// or, for the portal's own login events, the operator.
+pub(crate) fn activity_icon(action: &str) -> &'static str {
+    if action.starts_with("wallet.") {
+        "coins"
+    } else if action.starts_with("core.events.") {
+        "zap"
+    } else if action.starts_with("login-") || action == "logout" {
+        "user"
+    } else {
+        "activity"
+    }
+}
+
+/// The error tone for an invoke that did not succeed and for a locked login.
+pub(crate) fn activity_tone(row: &ActivityRow) -> Option<Tone> {
+    let failed = FAILED_DETAIL_PREFIXES.iter().any(|p| row.detail.starts_with(p));
+    (failed || row.action == "login-locked").then_some(Tone::Err)
 }
 
 fn log_row(row: &LogRow) -> Row {
@@ -258,36 +341,72 @@ pub(crate) fn manifest() -> Manifest {
             params: vec![PARAM_ACTOR.to_string(), PARAM_TOPIC.to_string(), PARAM_TIME.to_string()],
         }],
         entity_kinds: Vec::new(),
-        // The table has no head: an empty title draws no panel head.
-        contributions: vec![ContributionDecl {
-            id: LOG.to_string(),
-            point: Point::Page(PAGE.to_string()),
-            order: 10,
-            title: String::new(),
-            icon: String::new(),
-            min_role: Role::Viewer,
-            cache_ttl_s: None,
-            deadline_ms: DEFAULT_PANEL_DEADLINE_MS,
-            readonly: None,
-        }],
-        // NEW: no export path exists; a download carrier is its todo item.
-        actions: vec![ActionDecl {
-            id: LOG_EXPORT.to_string(),
-            point: ActionPoint::PageHead(PAGE.to_string()),
-            label: "Export".to_string(),
-            icon: "download".to_string(),
-            order: 10,
-            danger: false,
-            multi: false,
-            min_role: Role::Operator,
-            then: Then::Invoke,
-            implemented: false,
-            emphasis: Emphasis::Default,
-            trailing_icon: false,
-            icon_only: false,
-            when_empty: false,
-            prepare: false,
-        }],
+        contributions: vec![
+            // The table has no head: an empty title draws no panel head.
+            ContributionDecl {
+                id: LOG.to_string(),
+                point: Point::Page(PAGE.to_string()),
+                order: 10,
+                title: String::new(),
+                icon: String::new(),
+                min_role: Role::Viewer,
+                cache_ttl_s: None,
+                deadline_ms: DEFAULT_PANEL_DEADLINE_MS,
+                readonly: None,
+            },
+            ContributionDecl {
+                id: ACTIVITY.to_string(),
+                point: Point::DashboardPanel,
+                order: order::dashboard_panel::AUDIT,
+                title: ACTIVITY_TITLE.to_string(),
+                icon: String::new(),
+                min_role: Role::Viewer,
+                cache_ttl_s: None,
+                deadline_ms: DEFAULT_PANEL_DEADLINE_MS,
+                readonly: None,
+            },
+        ],
+        actions: vec![
+            // NEW: no export path exists; a download carrier is its todo item.
+            ActionDecl {
+                id: LOG_EXPORT.to_string(),
+                point: ActionPoint::PageHead(PAGE.to_string()),
+                label: "Export".to_string(),
+                icon: "download".to_string(),
+                order: 10,
+                danger: false,
+                multi: false,
+                min_role: Role::Operator,
+                then: Then::Invoke,
+                implemented: false,
+                emphasis: Emphasis::Default,
+                trailing_icon: false,
+                icon_only: false,
+                when_empty: false,
+                prepare: false,
+            },
+            ActionDecl {
+                id: LOG_OPEN.to_string(),
+                point: ActionPoint::PanelTool(ACTIVITY.to_string()),
+                label: TITLE.to_string(),
+                icon: "right".to_string(),
+                order: 10,
+                danger: false,
+                multi: false,
+                min_role: Role::Viewer,
+                then: Then::Link(Link::Page {
+                    module: MODULE.to_string(),
+                    page: PAGE.to_string(),
+                    params: BTreeMap::new(),
+                }),
+                implemented: true,
+                emphasis: Emphasis::Ghost,
+                trailing_icon: true,
+                icon_only: false,
+                when_empty: false,
+                prepare: false,
+            },
+        ],
         search: Vec::new(),
         writes: false,
     }
@@ -302,6 +421,7 @@ impl Provider for AuditAdmin {
     async fn panel(&self, req: PanelQuery) -> Result<PanelBody, Error> {
         match req.contribution.as_str() {
             LOG => self.log(&req).await,
+            ACTIVITY => self.activity().await,
             other => Err(Error::not_found(format!("{MODULE} has no contribution {other:?}"))),
         }
     }
@@ -321,3 +441,4 @@ impl Provider for AuditAdmin {
 #[cfg(test)]
 #[path = "admin_tests.rs"]
 mod tests;
+

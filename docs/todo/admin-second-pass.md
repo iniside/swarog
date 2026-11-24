@@ -148,7 +148,7 @@ modules/mail/src/admin.rs landed in 544dd4e5; the line numbers are its committed
   `cp.invoke scheduler` conformance case.
 - [ ] **Audit log export**
   ADMIN2-69. Mockup: the Audit log head's "Export" button (UILayout/redesign/assets/pages-platform.js:118).
-  Action `log.export`, `implemented: false` and `Then::Invoke`: modules/audit/src/admin.rs:275;
+  Action `log.export`, `implemented: false` and `Then::Invoke`: modules/audit/src/admin.rs:371;
   `invoke` refuses it, and the control plane has no download carrier. Replaced by: a
   download carrier in `core/controlplane` (decision O-3) and an export of the narrowed rows.
 - [ ] **Friends remove friend**
@@ -319,8 +319,8 @@ modules/audit/src/admin.rs, as committed in admin-control-plane-redesign step 24
 
 - [ ] **Audit log actor options with no source**
   ADMIN2-70. Mockup: the Actor select's `scheduler` and `apikey:ak_c4a8` options
-  (UILayout/redesign/assets/pages-platform.js:121). Fake: modules/audit/src/admin.rs:42
-  (`FAKE_ACTORS`, appended by `actor_options` at :113): only `admin.action` rows carry an
+  (UILayout/redesign/assets/pages-platform.js:121). Fake: modules/audit/src/admin.rs:53
+  (`FAKE_ACTORS`, appended by `actor_options` at :131): only `admin.action` rows carry an
   actor, so both options narrow the table to zero rows. Replaced by: actors recorded by the
   scheduler and the API key verifier (the acting key's name), or an owner decision to drop
   the two options.

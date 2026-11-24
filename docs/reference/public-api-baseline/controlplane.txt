@@ -200,6 +200,8 @@ pub const controlplane::order::dashboard_attention::PORTAL_SERVICES: i32
 pub const controlplane::order::dashboard_attention::SCHEDULER: i32
 pub const controlplane::order::dashboard_attention::STORAGE_PURGES: i32
 pub const controlplane::order::dashboard_attention::WALLET_PURGES: i32
+pub mod controlplane::order::dashboard_panel
+pub const controlplane::order::dashboard_panel::AUDIT: i32
 pub mod controlplane::order::dashboard_tile
 pub const controlplane::order::dashboard_tile::ACCOUNTS: i32
 pub const controlplane::order::dashboard_tile::EVENTS: i32
