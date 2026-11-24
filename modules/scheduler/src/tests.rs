@@ -225,21 +225,39 @@ fn lock_key_is_stable_and_fnv1a() {
     assert_eq!(lock_key("audit-prune"), expected);
 }
 
-/// Links each seed DDL literal tuple to its shared contract const — a rename on either
-/// side (a seed literal or its `schedulerevents::schedule_names::*` const) fails this
-/// build/test instead of drifting into a silent no-op prune. Every name added to the
-/// loop below is a name this test guards; a name left out is not.
+/// Every `pub const` in the contract's `schedule_names` module, read from its source,
+/// so a name added there is checked here without editing this test.
+fn contract_schedule_names() -> Vec<String> {
+    const SRC: &str = include_str!("../../../api/scheduler/events/src/lib.rs");
+    let start = SRC
+        .find("pub mod schedule_names {")
+        .expect("api/scheduler/events/src/lib.rs no longer has `pub mod schedule_names {`");
+    let block: Vec<&str> = SRC[start..].lines().skip(1).take_while(|l| *l != "}").collect();
+    let declared = block.iter().filter(|l| l.trim_start().starts_with("pub const ")).count();
+    let names: Vec<String> = block
+        .iter()
+        .filter_map(|l| {
+            let rest = l.trim_start().strip_prefix("pub const ")?;
+            let (_, value) = rest.split_once(": &str = \"")?;
+            value.strip_suffix("\";").map(String::from)
+        })
+        .collect();
+    assert_eq!(
+        names.len(),
+        declared,
+        "every `pub const` in schedule_names must read as `pub const NAME: &str = \"value\";` \
+         on one line; parsed {names:?}"
+    );
+    assert!(!names.is_empty(), "schedule_names parsed to no names");
+    assert!(names.iter().any(|n| n == schedulerevents::schedule_names::AUDIT_PRUNE));
+    names
+}
+
+/// Links each contract schedule name to a seed DDL row: a name with no seeded row is a
+/// consumer's prune that never fires, and a renamed seed literal fails here too.
 #[test]
 fn seeded_schedule_names_are_contract() {
-    for name in [
-        schedulerevents::schedule_names::AUDIT_PRUNE,
-        schedulerevents::schedule_names::SESSIONS_PRUNE,
-        schedulerevents::schedule_names::NOTIFICATIONS_PRUNE,
-        schedulerevents::schedule_names::MAIL_PRUNE,
-        schedulerevents::schedule_names::GROUPS_PRUNE,
-        schedulerevents::schedule_names::INVENTORY_GRANTS_PRUNE,
-        schedulerevents::schedule_names::PLAYER_PURGE,
-    ] {
+    for name in contract_schedule_names() {
         assert!(
             SCHEMA_DDL.contains(&format!("('{name}',")),
             "seed DDL no longer contains the schedule row for {name}"

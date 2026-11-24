@@ -400,6 +400,10 @@ friends_admin_checks.rs (after Step 17b). Each has its own commit and review.
 (c) Drive the action through admin-svc to the module's process over cp.invoke and assert the
 effect and the repeat's NoOp (Fire now: the second fire's new last_fired). Previously-wrong
 branch: writes false / forbidden arm. At-risk topology: split.
+19b also proves the inventory-grants-prune (commit 5f77efea) inside inventory-svc. Seed a stale
+operator_grants row and a 29-day row, make inventory-grants-prune due, then assert that the stale
+row goes, the 29-day row stays, and the inventory.grants-prune-on-scheduler.v1 cursor advances.
+Follow the shape of [GR6] (tools/splitproof/src/main.rs:2574-2598).
 (d) [test-author] top tier; proof-auditor.
 
 ## Phase D: session Client and IP (23)

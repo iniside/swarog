@@ -1956,8 +1956,11 @@ async fn a_scheduler_fire_prunes_only_grant_ids_past_retention() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = DB_LOCK.lock().await;
     let (ctx, transport) = wired_for_delivery(&pool).await;
-    let old = seed_aged_grant(&pool, OPERATOR_GRANT_RETENTION_DAYS + 5).await;
-    let fresh = seed_aged_grant(&pool, 1).await;
+    // The retention is a promise in days; the rows sit one day either side of it, so a
+    // cutoff in another unit or off by more than a day fails here.
+    assert_eq!(OPERATOR_GRANT_RETENTION_DAYS, 30);
+    let old = seed_aged_grant(&pool, OPERATOR_GRANT_RETENTION_DAYS + 1).await;
+    let fresh = seed_aged_grant(&pool, OPERATOR_GRANT_RETENTION_DAYS - 1).await;
 
     emit_fired(&ctx, &pool, GRANTS_PRUNE_SCHEDULE_NAME).await;
     transport.deliver_all().await.unwrap();
@@ -2016,12 +2019,19 @@ async fn one_fire_loops_batched_grant_deletes_and_never_exceeds_the_batch_per_st
     .execute(&mut *tx)
     .await
     .unwrap();
+    // Each row has its own `at` (row n is n ms older than the base), so the watermark
+    // round-trips a real timestamp between batches. Row `seeded - GRANTS_PRUNE_BATCH` is
+    // the 257th oldest; it shares the 256th oldest's `at`, so the tie straddles the first
+    // batch boundary and only a `>=` floor reaches the row left behind.
     sqlx::query(
         "INSERT INTO inventory.operator_grants (request_id, at) \
-         SELECT 'grants-prune-probe-' || n, now() - make_interval(days => 99) \
+         SELECT 'grants-prune-probe-' || n, \
+                now() - make_interval(days => 99) \
+                  - make_interval(secs => (CASE WHEN n = $2 THEN n + 1 ELSE n END) / 1000.0) \
            FROM generate_series(1, $1) AS n",
     )
     .bind(seeded)
+    .bind(seeded - GRANTS_PRUNE_BATCH)
     .execute(&mut *tx)
     .await
     .unwrap();
