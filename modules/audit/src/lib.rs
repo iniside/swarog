@@ -40,6 +40,10 @@ use futures::future::BoxFuture;
 use lifecycle::{Context, Ddl, Module};
 use sqlx::PgConnection;
 
+// Used by the provider in 24.a1b.
+#[allow(dead_code)]
+mod store;
+
 /// The domain events audit records, each on the DURABLE plane via `on_tx_raw`. This is
 /// a conscious edit point (the bus has no wildcard subscribe). The anti-drift test
 /// (`tests.rs`) diffs this set against the producers' declared topics (including
