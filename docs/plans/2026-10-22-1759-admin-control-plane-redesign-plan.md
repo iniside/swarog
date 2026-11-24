@@ -3322,7 +3322,7 @@ for owner**. Each step runs its own crates' tests, one rollout at a time.
   - Before dispatch of 25h1, the plan names, per rewritten group, what it asserts after the
     redesign (research gap from the step-size audit; for example, ML4b drives
     `requeue-all-parked`, which Step 11's G11 dropped); the owner approves those lines.
-  - **25h1 — portal core:** AD0–AD6g, ADX1–ADX3b, AU3, `admin_csrf`, the kept login,
+  - **25h1 — portal core:** AD0–AD6g, ADX1–ADX3b, `admin_csrf`, the kept login,
     lockout, rate limit, CSRF, reveal and audit-trail assertions, and the killed-provider and
     viewer-denied additions.
   - **25h2 — monolith parity:** M3/M3b, WL6m, NT4m, ML3–ML4b, `mail_form`, `wallet_form`
@@ -3510,7 +3510,7 @@ Splitproof:
   | PH3 | `:3561` |
   | PH6 | `:3817` |
   | PH11 | `:4026` |
-  | AU3 | `:5467-5472` |
+  | AU3 | `:5467-5472` (re-pointed by 24t, 99463190) |
   | WL3–WL6 | `:5563-5665` |
   | NT2/NT2b/NT2c | `:5733-5841+` |
   | NT4 | `:5965` |

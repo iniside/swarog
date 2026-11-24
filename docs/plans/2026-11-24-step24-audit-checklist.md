@@ -202,6 +202,9 @@ Out of this plan (owner, 2026-11-24): no accept file, no crawl, no `PAGE_MAP` ch
   - X5 filter: `?actor=proofadmin` (the AD6a login) answers rows whose actor is only `proofadmin`, and its total is ≥ 1.
   - Dashboard: `/admin` draws "Recent operator activity" with a `proofadmin` entry.
   - Break run: admin-svc without its `audit` peer draws the audit panel's error block, page still 200.
+    Correction (24t, 2026-11-24): without the peer there is no audit manifest, so the page answers 404 and
+    `/admin` has no audit slot. The error block needs a cached manifest and a failing panel call
+    (audit-svc down after boot); no break run observed that branch.
 - Alternative: leave AU3 to 25h1 and rely on H15 live looks.
 
 ## 10. Part sizes (estimate)
