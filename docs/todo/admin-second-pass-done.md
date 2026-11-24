@@ -2,6 +2,14 @@
 
 Last updated: 2026-11-24
 
+- [x] **Scheduler Fire now** (2026-11-24, admin-second-pass step 15)
+  ADMIN2-64. The Schedules row menu's "Fire now" (`schedule.fire`) is implemented and
+  `scheduler` declares `writes: true`. It runs the tick's fire path with the due re-check
+  skipped: it stamps `last_fired` and emits `scheduler.fired`, and a repeat fires again. A
+  held advisory lock or another running Fire now is a Conflict, a missing schedule NotFound,
+  and a process with the scheduler disabled refuses it. The "cp.invoke scheduler input value"
+  CapCase covers its input guard; the mockup's row menu now draws Fire now.
+
 - [x] **Inventory grant and revoke** (2026-11-24, admin-second-pass step 14)
   INVENTORY-05. The player's Inventory tab "Grant item" tool, the row-menu "Grant item…" and the
   holding "Revoke item…" are implemented in inventory (`item.grant`, `holding.revoke`). The

@@ -43,7 +43,7 @@ pub(crate) async fn test_pool() -> Option<PgPool> {
 }
 
 /// A run-unique schedule name so assertions/cleanup never collide on the shared DB.
-async fn unique_name(pool: &PgPool) -> String {
+pub(crate) async fn unique_name(pool: &PgPool) -> String {
     let (s,): (String,) = sqlx::query_as("SELECT 'test-' || gen_random_uuid()::text")
         .fetch_one(pool)
         .await
@@ -77,7 +77,7 @@ pub(crate) async fn cleanup(pool: &PgPool, name: &str) {
 /// RECORDS enqueued durable emits (Go's `fakeTransport`), so `fire`'s `emit_tx` has a
 /// transport to write into without a live durable plane (which would need a DB these
 /// tests shouldn't need). Durable delivery is the asyncevents plane's own concern.
-struct FakeTransport {
+pub(crate) struct FakeTransport {
     rows: Mutex<Vec<(String, Vec<u8>)>>,
     stop_after: Mutex<Option<(String, watch::Sender<bool>)>>,
 }
@@ -96,7 +96,7 @@ impl FakeTransport {
 
     /// How many enqueued rows carry the given schedule name — the fake-transport-backed
     /// stand-in for the old Go event-count-by-name query.
-    fn count(&self, name: &str) -> usize {
+    pub(crate) fn count(&self, name: &str) -> usize {
         self.rows
             .lock()
             .unwrap()
@@ -145,7 +145,7 @@ impl Transport for FakeTransport {
 }
 
 /// A bus with a fake transport installed, plus a handle to that transport for assertions.
-fn bus_with_fake() -> (Arc<Bus>, Arc<FakeTransport>) {
+pub(crate) fn bus_with_fake() -> (Arc<Bus>, Arc<FakeTransport>) {
     let ft = FakeTransport::new();
     let bus = Bus::with_transport(ft.clone() as Arc<dyn Transport>);
     (Arc::new(bus), ft)
@@ -448,10 +448,18 @@ async fn fire_exactly_once_under_concurrency() {
 
     let (p1, b1, n1) = (pool1.clone(), bus1.clone(), name.clone());
     let (p2, b2, n2) = (pool2.clone(), bus2.clone(), name.clone());
-    let h1 = tokio::spawn(async move { fire(&p1, &b1, &n1, TICK_DEADLINE).await });
-    let h2 = tokio::spawn(async move { fire(&p2, &b2, &n2, TICK_DEADLINE).await });
-    h1.await.unwrap().expect("replica 1 fire");
-    h2.await.unwrap().expect("replica 2 fire");
+    let h1 = tokio::spawn(async move { fire(&p1, &b1, &n1, TICK_DEADLINE, Due::Recheck).await });
+    let h2 = tokio::spawn(async move { fire(&p2, &b2, &n2, TICK_DEADLINE, Due::Recheck).await });
+    let mut outcomes = [
+        h1.await.unwrap().expect("replica 1 fire"),
+        h2.await.unwrap().expect("replica 2 fire"),
+    ];
+    outcomes.sort_by_key(|o| *o != FireOutcome::Fired);
+    assert_eq!(outcomes[0], FireOutcome::Fired, "one replica fired: {outcomes:?}");
+    assert!(
+        matches!(outcomes[1], FireOutcome::NotDue | FireOutcome::LockHeld),
+        "the other found it fired or locked: {outcomes:?}"
+    );
 
     assert_eq!(
         ft1.count(&name) + ft2.count(&name),
@@ -483,15 +491,17 @@ async fn fires_again_after_interval() {
 
     let (bus, ft) = bus_with_fake();
 
-    fire(&pool, &bus, &name, TICK_DEADLINE)
+    let first = fire(&pool, &bus, &name, TICK_DEADLINE, Due::Recheck)
         .await
         .expect("first fire");
+    assert_eq!(first, FireOutcome::Fired);
     assert_eq!(ft.count(&name), 1, "after first fire want 1 durable emit");
 
     // Immediately not due — second fire is a no-op.
-    fire(&pool, &bus, &name, TICK_DEADLINE)
+    let second = fire(&pool, &bus, &name, TICK_DEADLINE, Due::Recheck)
         .await
         .expect("second (immediate) fire");
+    assert_eq!(second, FireOutcome::NotDue);
     assert_eq!(
         ft.count(&name),
         1,
@@ -509,12 +519,73 @@ async fn fires_again_after_interval() {
     .execute(&pool)
     .await
     .expect("age last_fired");
-    fire(&pool, &bus, &name, TICK_DEADLINE)
+    let third = fire(&pool, &bus, &name, TICK_DEADLINE, Due::Recheck)
         .await
         .expect("third fire");
+    assert_eq!(third, FireOutcome::Fired);
     assert_eq!(ft.count(&name), 2, "after interval want 2 durable emits");
 
     cleanup(&pool, &name).await;
+}
+
+/// A forced fire skips only the due re-check: a schedule fired a moment ago fires again,
+/// stamping `last_fired` each time; a missing name, under either mode, is `Missing` with
+/// nothing emitted; and a held advisory lock is `LockHeld` with nothing emitted.
+#[tokio::test(flavor = "multi_thread")]
+async fn forced_fire_skips_only_the_due_recheck() {
+    let _tick_guard = TICK_TEST_LOCK.lock().await;
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let name = unique_name(&pool).await;
+    seed_schedule(&pool, &name, 3600).await;
+    sqlx::query("UPDATE scheduler.schedules SET last_fired = now() - interval '1 minute' WHERE name = $1")
+        .bind(&name)
+        .execute(&pool)
+        .await
+        .expect("make the schedule not due");
+    let (bus, ft) = bus_with_fake();
+
+    let rechecked = fire(&pool, &bus, &name, TICK_DEADLINE, Due::Recheck).await.unwrap();
+    assert_eq!(rechecked, FireOutcome::NotDue);
+    assert_eq!(ft.count(&name), 0);
+
+    let stamped_before: f64 = sqlx::query_scalar(
+        "SELECT extract(epoch FROM now() - last_fired)::float8 FROM scheduler.schedules WHERE name = $1",
+    )
+    .bind(&name)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(stamped_before >= 59.0, "not due yet: {stamped_before}");
+    assert_eq!(fire(&pool, &bus, &name, TICK_DEADLINE, Due::Forced).await.unwrap(), FireOutcome::Fired);
+    assert_eq!(fire(&pool, &bus, &name, TICK_DEADLINE, Due::Forced).await.unwrap(), FireOutcome::Fired);
+    assert_eq!(ft.count(&name), 2, "a repeat forced fire fires again");
+    let stamped_after: f64 = sqlx::query_scalar(
+        "SELECT extract(epoch FROM now() - last_fired)::float8 FROM scheduler.schedules WHERE name = $1",
+    )
+    .bind(&name)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(stamped_after < 30.0, "the forced fire stamped last_fired: {stamped_after}");
+
+    let mut holder = PgConnection::connect(&dsn()).await.expect("connect lock holder");
+    let held: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+        .bind(lock_key(&name))
+        .fetch_one(&mut holder)
+        .await
+        .unwrap();
+    assert!(held);
+    assert_eq!(fire(&pool, &bus, &name, TICK_DEADLINE, Due::Forced).await.unwrap(), FireOutcome::LockHeld);
+    assert_eq!(ft.count(&name), 2, "a held lock fires nothing");
+    holder.close().await.unwrap();
+
+    cleanup(&pool, &name).await;
+    for due in [Due::Forced, Due::Recheck] {
+        assert_eq!(fire(&pool, &bus, &name, TICK_DEADLINE, due).await.unwrap(), FireOutcome::Missing, "{due:?}");
+    }
+    assert_eq!(ft.count(&name), 2, "a missing schedule fires nothing");
 }
 
 /// The 4b hang bound, end to end against the live DB: a competing row lock wedges
@@ -546,7 +617,7 @@ async fn wedged_fire_errors_via_statement_timeout_and_leaks_nothing() {
 
     let (bus, ft) = bus_with_fake();
     let started = std::time::Instant::now();
-    let err = fire(&pool, &bus, &name, Duration::from_millis(500))
+    let err = fire(&pool, &bus, &name, Duration::from_millis(500), Due::Recheck)
         .await
         .expect_err("wedged fire must ERROR via statement_timeout, not stall");
     assert!(
@@ -587,7 +658,7 @@ async fn wedged_fire_errors_via_statement_timeout_and_leaks_nothing() {
     // Release the wedge: a fresh fire now succeeds — nothing about the error path
     // poisoned the schedule or the pool the connect options come from.
     btx.rollback().await.expect("release competing lock");
-    fire(&pool, &bus, &name, TICK_DEADLINE)
+    fire(&pool, &bus, &name, TICK_DEADLINE, Due::Recheck)
         .await
         .expect("fire after unblock");
     assert_eq!(ft.count(&name), 1, "after unblock want exactly 1 durable emit");

@@ -70,13 +70,16 @@
   P.cancelMail = id => UI.confirm({ c: { module: "mail", point: "page", prim: "ConfirmAction" }, title: `Cancel ${id}?`, body: "The message is removed from the outbox and will never be delivered.", impact: [["Recipient", D.mail.find(m => m.id === id).to], ["Template", D.mail.find(m => m.id === id).template]], confirm: "Cancel message", done: "Message cancelled" });
 
   // ---------- scheduler ----------
+  UI.defineMenu("schedule", id => [{ c: { module: "scheduler", point: "entity.schedule.row_action", prim: "MenuAction" }, label: "scheduler", items: [
+    { label: "Fire now", icon: "zap", run: `UI.toast('Fired ${id}')` },
+  ] }]);
   P.scheduler = {
     meta: { nav: "scheduler", crumbs: [plat, ["Scheduler"]] },
     render: () => {
       const s = panel({ c: pg("scheduler", "DataTable"), title: "Schedules", meta: `${D.schedules.length}`, flush: true,
         body: table({ pager: false, cols: [{ label: "Id" }, { label: "When" }, { label: "Next fire" }, { label: "Last" }],
           rows: D.schedules.map(x => [`<span class="mono" style="font-weight:500">${x.id}</span>`, `<span class="mono">${x.every}</span>`, `<span class="dim">${x.next}</span>`, `<span class="dim">${x.lastAt}</span>`]),
-          rowMenu: () => `<button class="btn sm icon ghost" onclick="UI.toast('Fire now','info')">${icon("more")}</button>` }) });
+          rowMenu: (r, i) => rowMenuBtn("schedule", D.schedules[i].id) }) });
       const f = panel({ c: pg("scheduler", "Timeline"), title: "Recent fires", flush: true, tools: `<span class="badge plain">24 h</span>`,
         body: timeline(D.fires.map(x => ({ t: x.at.slice(0, 5), html: `<span class="mono">${x.id}</span>`, icon: "zap" }))) });
       return P.head("Scheduler", "Interval schedules; each fire emits scheduler.fired for the modules that react to it.", "") + `<div class="stack">${s}${f}</div>`;

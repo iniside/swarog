@@ -22,6 +22,10 @@
 //! in ONE tx, COMMITs, and only THEN unlocks — so the next winner always observes the
 //! moved `last_fired`.
 //!
+//! The portal's Fire now (`admin.rs`) runs the same [`fire`] with [`Due::Forced`]: the
+//! re-check is skipped, the `last_fired` bump must find the row, and the lock, the
+//! dedicated connection and the one bump-and-emit transaction are the tick's.
+//!
 //! ## Dedicated per-fire connections (round-4 remediation; supersedes Go NOTE #10)
 //! [`fire`] opens its OWN `PgConnection` from the shared pool's connect options
 //! (`PgConnection::connect_with(pool.connect_options())` — the module has no DSN)
@@ -83,15 +87,17 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 mod admin;
+pub mod conformance;
 mod store;
 
 /// Dedicated Postgres sessions the scheduler holds beyond the shared pool: each
 /// `fire` runs on ONE dedicated per-fire connection opened from the pool's connect
 /// options (see the module docs on why the advisory lock must ride a session the
-/// pool can't hand to another caller). Ticks are serial, so at most one is live at a
-/// time. Public so the fleet's Postgres session budget (`tools/processctl`) reserves
-/// it for the scheduler process.
-pub const DEDICATED_FIRE_SESSIONS: usize = 1;
+/// pool can't hand to another caller). Ticks are serial, so at most one tick fire is live
+/// at a time, and the portal's Fire now admits one at a time beside it. Public so the
+/// fleet's Postgres session budget (`tools/processctl`) reserves them for the scheduler
+/// process.
+pub const DEDICATED_FIRE_SESSIONS: usize = 2;
 
 /// How often the emission loop scans for due schedules. It bounds firing latency (a
 /// schedule fires within ~1s of becoming due), not accuracy — `last_fired` is
@@ -393,7 +399,7 @@ async fn tick(
         // Advancing before the await prevents a slow/erroring head from starving
         // later names; stop/budget-skipped names never reach this assignment.
         *cursor = Some(name.clone());
-        if let Err(e) = fire(pool, bus, name, remaining).await {
+        if let Err(e) = fire(pool, bus, name, remaining, Due::Recheck).await {
             tracing::error!(schedule = %name, error = %e, "scheduler fire failed");
             failed += 1;
         }
@@ -402,6 +408,27 @@ async fn tick(
         anyhow::bail!("{failed} schedule fire(s) failed this tick");
     }
     Ok(())
+}
+
+/// What one [`fire`] did. The tick ignores it; the portal's Fire now answers by it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FireOutcome {
+    Fired,
+    /// The re-check under the lock found the schedule not due (only [`Due::Recheck`]).
+    NotDue,
+    /// Another session holds the schedule's advisory lock and may be firing it now.
+    LockHeld,
+    /// No schedule has this name (or, under [`Due::Recheck`], its interval is out of bounds).
+    Missing,
+}
+
+/// Whether [`fire`] re-checks that the schedule is due under the lock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Due {
+    /// The tick: fire only if the interval elapsed since `last_fired`.
+    Recheck,
+    /// The operator's Fire now: fire whenever the row exists.
+    Forced,
 }
 
 /// Emits `scheduler.fired` for one due schedule EXACTLY ONCE across horizontal replicas.
@@ -415,7 +442,13 @@ async fn tick(
 /// pool, so no session state can leak. Every statement runs under a session
 /// `statement_timeout` of `deadline` (the tick's REMAINING budget), so a wedged
 /// lock/re-check/update/emit ERRORS back through the caller's error arm.
-async fn fire(pool: &PgPool, bus: &Bus, name: &str, deadline: Duration) -> anyhow::Result<()> {
+pub(crate) async fn fire(
+    pool: &PgPool,
+    bus: &Bus,
+    name: &str,
+    deadline: Duration,
+    due: Due,
+) -> anyhow::Result<FireOutcome> {
     let key = lock_key(name);
 
     // The module has no DSN of its own — the ctx-provided pool's connect options are
@@ -432,7 +465,7 @@ async fn fire(pool: &PgPool, bus: &Bus, name: &str, deadline: Duration) -> anyho
         )
     })??;
 
-    let result = fire_on(&mut conn, bus, name, key, deadline).await;
+    let result = fire_on(&mut conn, bus, name, key, deadline, due).await;
 
     // Graceful close on every non-abort path: ends the session immediately, which also
     // releases the advisory lock should the explicit unlock in `fire_on` have failed.
@@ -454,7 +487,8 @@ async fn fire_on(
     name: &str,
     key: i64,
     deadline: Duration,
-) -> anyhow::Result<()> {
+    due: Due,
+) -> anyhow::Result<FireOutcome> {
     sqlx::query(&format!(
         "SET statement_timeout = {}",
         deadline.as_millis().max(1)
@@ -468,10 +502,10 @@ async fn fire_on(
         .await?;
     if !locked {
         // Another replica holds this key (or a colliding one) and is firing now.
-        return Ok(());
+        return Ok(FireOutcome::LockHeld);
     }
 
-    let result = fire_locked(conn, bus, name).await;
+    let result = fire_locked(conn, bus, name, due).await;
 
     if let Err(e) = sqlx::query("SELECT pg_advisory_unlock($1)")
         .bind(key)
@@ -486,28 +520,38 @@ async fn fire_on(
     result
 }
 
-/// The lock-held critical section: re-check `still_due`, then bump `last_fired` +
-/// `emit_tx` the durable event in ONE tx and COMMIT. Split out so [`fire`] can capture
-/// this Result and still guarantee the unlock.
-async fn fire_locked(conn: &mut PgConnection, bus: &Bus, name: &str) -> anyhow::Result<()> {
-    // Re-check UNDER the lock: a replica that held the lock just before us may already
-    // have fired this schedule and moved `last_fired`. `fetch_optional` returns None when
-    // the row vanished (deleted between the due-scan and here) — treat as not-due.
-    let still_due: Option<bool> = sqlx::query_scalar(&FIRE_RECHECK_SQL)
-        .bind(name)
-        .fetch_optional(&mut *conn)
-        .await?;
-    let Some(true) = still_due else {
-        return Ok(()); // not due, or deleted between the scan and here
-    };
+/// The lock-held critical section: under [`Due::Recheck`] re-check `still_due`, then bump
+/// `last_fired` + `emit_tx` the durable event in ONE tx and COMMIT. Split out so [`fire`] can
+/// capture this Result and still guarantee the unlock.
+async fn fire_locked(conn: &mut PgConnection, bus: &Bus, name: &str, due: Due) -> anyhow::Result<FireOutcome> {
+    if due == Due::Recheck {
+        // Re-check UNDER the lock: a replica that held the lock just before us may already
+        // have fired this schedule and moved `last_fired`. `fetch_optional` returns None when
+        // the row vanished (deleted between the due-scan and here).
+        let still_due: Option<bool> = sqlx::query_scalar(&FIRE_RECHECK_SQL)
+            .bind(name)
+            .fetch_optional(&mut *conn)
+            .await?;
+        match still_due {
+            None => return Ok(FireOutcome::Missing),
+            Some(false) => return Ok(FireOutcome::NotDue),
+            Some(true) => {}
+        }
+    }
 
     // `last_fired` bump + the durable event append commit together, on the LOCKED connection.
-    // (Commit happens here, before the unlock back in `fire`.)
+    // (Commit happens here, before the unlock back in `fire`.) The bump is also the forced
+    // fire's existence check: no row bumped, nothing emitted.
     let mut tx = conn.begin().await?;
-    sqlx::query("UPDATE scheduler.schedules SET last_fired = now() WHERE name = $1")
+    let bumped = sqlx::query("UPDATE scheduler.schedules SET last_fired = now() WHERE name = $1")
         .bind(name)
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .rows_affected();
+    if bumped == 0 {
+        tx.rollback().await?;
+        return Ok(FireOutcome::Missing);
+    }
     bus.emit_tx(
         AnyTx::new(&mut *tx), // erased after the deref: Transaction<'_> isn't 'static
         &schedulerevents::FIRED,
@@ -517,7 +561,7 @@ async fn fire_locked(conn: &mut PgConnection, bus: &Bus, name: &str) -> anyhow::
     )
     .await?;
     tx.commit().await?;
-    Ok(())
+    Ok(FireOutcome::Fired)
 }
 
 /// Derives a stable 64-bit advisory-lock key from a schedule name via FNV-1a, then
@@ -677,7 +721,8 @@ impl Module for Scheduler {
             .get()
             .ok_or_else(|| anyhow::anyhow!("scheduler.init ran before register"))?
             .clone();
-        let provider: Arc<dyn controlplane::Provider> = Arc::new(admin::SchedulerAdmin::new(pool, enabled));
+        let bus = ctx.bus().clone();
+        let provider: Arc<dyn controlplane::Provider> = Arc::new(admin::SchedulerAdmin::new(pool, bus, enabled));
         ctx.contribute(controlplane::PROVIDER_SLOT, provider);
 
         // Loop liveness → `/readyz`, contributed only when the loop will actually run

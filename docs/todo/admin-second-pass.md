@@ -60,12 +60,6 @@ modules/mail/src/admin.rs landed in 544dd4e5; the line numbers are its committed
 
 ### Not-implemented actions
 
-- [ ] **Scheduler Fire now**
-  ADMIN2-64. Mockup: the Schedules row button's "Fire now". Action `schedule.fire`,
-  `implemented: false` and `Then::Invoke`: modules/scheduler/src/admin.rs (`manifest`);
-  the scheduler has no write path. Replaced by: fire now as `Then::Invoke` (an immediate
-  fire under the advisory lock), with `writes: true` and a `cp.invoke scheduler`
-  conformance case.
 - [ ] **Friends remove friend**
   The player's Friends tab row-menu "Remove friend…" on a `friendship` row is
   `implemented: false`; tracked as FRIENDS-08 in `docs/todo/friends.md`.

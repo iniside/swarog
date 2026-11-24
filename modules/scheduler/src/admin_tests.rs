@@ -1,19 +1,28 @@
-//! The scheduler provider: the manifest, the Schedules and Recent fires bodies and the refused
-//! Fire now action; and, over a live Postgres, the next-fire and last-fire text the
-//! SQL computes (overdue, upcoming, never fired, a legacy out-of-range interval) and the
-//! 24-hour fire window, through `Provider::panel`.
+//! The scheduler provider: the manifest, the Schedules and Recent fires bodies and the Fire
+//! now guards; and, over a live Postgres, the next-fire and last-fire text the SQL computes
+//! (overdue, upcoming, never fired, a legacy out-of-range interval), the 24-hour fire window,
+//! and Fire now's fire, repeat, held lock, missing row and disabled refusal through
+//! `Provider::invoke`.
 
 use controlplane::{
     order, ActionPoint, CellKind, DataTable, Layout, PanelBody, PanelQuery, Point, Primitive, Provider, Role, Then,
     Timeline, Tone,
 };
 use opsapi::Status;
-use sqlx::PgPool;
+use sqlx::{Connection, PgConnection, PgPool};
 
 use super::*;
 use crate::store::{FireRow, ScheduleRow};
-use crate::tests::{cleanup, test_pool, TICK_TEST_LOCK};
-use crate::INTERVAL_SECONDS_CEILING;
+use crate::tests::{bus_with_fake, cleanup, test_pool, TICK_TEST_LOCK};
+use crate::{lock_key, INTERVAL_SECONDS_CEILING};
+
+const DEAD_DSN: &str = "postgres://gamebackend:gamebackend@127.0.0.1:1/gamebackend?sslmode=disable";
+
+/// A provider on a pool that cannot connect: only an answer given before any I/O comes back
+/// as anything but `Internal`.
+fn offline(enabled: bool) -> SchedulerAdmin {
+    SchedulerAdmin::new(PgPool::connect_lazy(DEAD_DSN).unwrap(), Arc::new(Bus::new()), enabled)
+}
 
 fn table(body: &PanelBody) -> &DataTable {
     match &body.primitive {
@@ -45,10 +54,14 @@ fn query(contribution: &str) -> PanelQuery {
 }
 
 fn call(action: &str) -> InvokeCall {
+    InvokeCall { action: action.into(), ..fire_call("audit-prune") }
+}
+
+fn fire_call(name: &str) -> InvokeCall {
     InvokeCall {
         module: MODULE.into(),
-        action: action.into(),
-        entity: Some(EntityRef { kind: SCHEDULE_KIND.into(), id: "audit-prune".into() }),
+        action: SCHEDULE_FIRE.into(),
+        entity: Some(EntityRef { kind: SCHEDULE_KIND.into(), id: name.into() }),
         input: Default::default(),
         expected_revision: None,
         reason: None,
@@ -68,10 +81,10 @@ fn schedule(name: &str, next_fire: Option<&str>, last_at: Option<&str>) -> Sched
 }
 
 #[test]
-fn manifest_declares_the_read_only_page() {
+fn manifest_declares_the_page_and_its_one_writer() {
     let m = manifest();
     assert_eq!(m.module, "scheduler");
-    assert!(!m.writes, "the scheduler page writes nothing");
+    assert!(m.writes, "Fire now writes");
     assert_eq!(m.entries.len(), 1);
     let nav = &m.entries[0];
     assert_eq!((nav.section.as_str(), nav.id.as_str(), nav.label.as_str()), ("platform", "scheduler", "Scheduler"));
@@ -102,7 +115,7 @@ fn manifest_declares_the_read_only_page() {
 }
 
 #[test]
-fn fire_now_is_the_one_disabled_invoke() {
+fn fire_now_is_the_one_implemented_invoke() {
     let m = manifest();
     let row = ActionPoint::RowAction(SCHEDULE_KIND.to_string());
     let got: Vec<(&str, &ActionPoint, &str, &str, i32, bool, bool)> = m
@@ -112,24 +125,41 @@ fn fire_now_is_the_one_disabled_invoke() {
         .collect();
     assert_eq!(got, [(SCHEDULE_FIRE, &row, "Fire now", "zap", 10, false, false)]);
     for a in &m.actions {
-        assert!(!a.implemented, "{} must be disabled", a.id);
+        assert!(a.implemented, "{} is implemented", a.id);
         assert_eq!(a.then, Then::Invoke, "{} opens nothing", a.id);
         assert_eq!(a.min_role, Role::Operator, "{}", a.id);
         assert!(!a.prepare, "{}", a.id);
     }
 }
 
+/// Every guard answers before any I/O: the provider's pool cannot connect, so a guard that
+/// let the call through would answer `Internal`.
 #[tokio::test]
-async fn invoke_refuses_fire_now_and_knows_no_other_action() {
-    let Some(pool) = test_pool().await else {
-        return;
-    };
-    let p = SchedulerAdmin::new(pool, true);
-    assert_eq!(p.invoke(call(SCHEDULE_FIRE)).await.unwrap_err().status, Status::Forbidden);
+async fn invoke_guards_answer_before_any_io() {
+    let p = offline(true);
     for action in ["schedule.create", "schedule.edit", "schedule.delete", "schedule.pause"] {
         assert_eq!(p.invoke(call(action)).await.unwrap_err().status, Status::NotFound, "{action}");
     }
     assert_eq!(p.panel(query("nope")).await.unwrap_err().status, Status::NotFound);
+
+    let mut over = fire_call("audit-prune");
+    over.input.insert("value".into(), "a".repeat(controlplane::MAX_INPUT_VALUE_BYTES + 1));
+    assert_eq!(p.invoke(over).await.unwrap_err().status, Status::Invalid, "an over-cap input value");
+    for entity in [
+        None,
+        Some(EntityRef { kind: "player".into(), id: "audit-prune".into() }),
+        Some(EntityRef { kind: SCHEDULE_KIND.into(), id: String::new() }),
+    ] {
+        let req = InvokeCall { entity: entity.clone(), ..fire_call("audit-prune") };
+        assert_eq!(p.invoke(req).await.unwrap_err().status, Status::Invalid, "{entity:?}");
+    }
+
+    let refused = offline(false).invoke(fire_call("audit-prune")).await.unwrap_err();
+    assert_eq!((refused.status, refused.msg.as_str()), (Status::Forbidden, DISABLED_REFUSAL));
+
+    let _held = p.firing.lock().await;
+    let busy = p.invoke(fire_call("audit-prune")).await.unwrap_err();
+    assert_eq!((busy.status, busy.msg.as_str()), (Status::Conflict, FIRE_BUSY));
 }
 
 #[test]
@@ -243,7 +273,7 @@ async fn panels_compute_next_and_last_fire_in_sql() {
     let Some(pool) = test_pool().await else {
         return;
     };
-    let p = SchedulerAdmin::new(pool.clone(), true);
+    let p = SchedulerAdmin::new(pool.clone(), Arc::new(Bus::new()), true);
     let overdue = test_name(&pool).await;
     let upcoming = test_name(&pool).await;
     let never = test_name(&pool).await;
@@ -313,6 +343,59 @@ async fn disabled_scheduler_warns_on_the_live_panel() {
     let Some(pool) = test_pool().await else {
         return;
     };
-    let body = SchedulerAdmin::new(pool, false).panel(query(SCHEDULES)).await.unwrap();
+    let body = SchedulerAdmin::new(pool, Arc::new(Bus::new()), false).panel(query(SCHEDULES)).await.unwrap();
     assert_eq!(body.banner.map(|b| b.text), Some(DISABLED_BANNER.to_string()));
+}
+
+/// D8 over the real fire path: Fire now fires a schedule that is not due and stamps its
+/// `last_fired`, a repeat fires again, a held advisory lock is a Conflict and a deleted row
+/// NotFound, both with nothing emitted, and a disabled process refuses with nothing emitted
+/// or stamped.
+#[tokio::test(flavor = "multi_thread")]
+async fn fire_now_fires_on_demand_and_answers_each_outcome() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let name = test_name(&pool).await;
+    insert(&pool, &name, 3_600, "now() - interval '1 minute'").await;
+    let (bus, ft) = bus_with_fake();
+    let p = SchedulerAdmin::new(pool.clone(), bus.clone(), true);
+    let age = || async {
+        sqlx::query_scalar::<_, f64>(
+            "SELECT extract(epoch FROM now() - last_fired)::float8 FROM scheduler.schedules WHERE name = $1",
+        )
+        .bind(&name)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+
+    let refused = SchedulerAdmin::new(pool.clone(), bus.clone(), false).invoke(fire_call(&name)).await.unwrap_err();
+    assert_eq!(refused.status, Status::Forbidden);
+    assert_eq!(ft.count(&name), 0, "a disabled process fires nothing");
+    assert!(age().await >= 59.0, "a disabled process stamps nothing");
+
+    for n in 1..=2 {
+        match p.invoke(fire_call(&name)).await.unwrap() {
+            InvokeOutcome::Ok { message, .. } => assert_eq!(message, format!("Fired {name}")),
+            other => panic!("fire {n}: {other:?}"),
+        }
+        assert_eq!(ft.count(&name), n, "fire {n} emits once");
+        assert!(age().await < 30.0, "fire {n} stamped last_fired");
+    }
+
+    let mut holder = PgConnection::connect_with(&pool.connect_options()).await.unwrap();
+    let held: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+        .bind(lock_key(&name))
+        .fetch_one(&mut holder)
+        .await
+        .unwrap();
+    assert!(held);
+    assert_eq!(p.invoke(fire_call(&name)).await.unwrap_err().status, Status::Conflict);
+    assert_eq!(ft.count(&name), 2, "a held lock fires nothing");
+    holder.close().await.unwrap();
+
+    cleanup(&pool, &name).await;
+    assert_eq!(p.invoke(fire_call(&name)).await.unwrap_err().status, Status::NotFound);
+    assert_eq!(ft.count(&name), 2, "a deleted schedule fires nothing");
 }

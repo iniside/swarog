@@ -1,9 +1,15 @@
 //! The `scheduler` control-plane provider: the Scheduler page (the Schedules table with each
 //! schedule's interval, next fire and last fire, and the Recent fires timeline of the last 24
-//! hours) and its disabled Fire now action. Nothing here writes: the module declares no writes
-//! and the action is `implemented: false`.
+//! hours) and its one write, Fire now: an immediate fire of the row's schedule through
+//! [`crate::fire`] with [`Due::Forced`], so it stamps `last_fired` and emits `scheduler.fired`
+//! even when the schedule is not due, and a repeat fires again.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
+use bus::Bus;
 use controlplane::order;
 use controlplane::{
     ActionDecl, ActionPoint, Align, Banner, Cell, CellKind, Column, ContributionDecl, DataTable, Emphasis,
@@ -13,8 +19,10 @@ use controlplane::{
 };
 use opsapi::Error;
 use sqlx::PgPool;
+use tokio::sync::Mutex;
 
 use crate::store::{self, FireRow, ScheduleRow};
+use crate::{fire, Due, FireOutcome};
 
 const MODULE: &str = "scheduler";
 pub(crate) const PAGE: &str = "schedules";
@@ -37,16 +45,44 @@ pub(crate) const FIRES_WINDOW: &str = "24 h";
 /// What a never-fired or out-of-range value shows.
 pub(crate) const NEVER: &str = "—";
 pub(crate) const DISABLED_BANNER: &str = "Scheduler disabled on this process: no schedule fires";
+pub(crate) const DISABLED_REFUSAL: &str = "Scheduler disabled on this process: Fire now is refused";
+pub(crate) const FIRE_BUSY: &str = "Another Fire now is running on this process; try again";
+
+/// The `statement_timeout` of a Fire now. With the dedicated connect's 5 s bound it ends
+/// before the portal's 10 s invoke deadline.
+pub(crate) const FIRE_NOW_DEADLINE: Duration = Duration::from_secs(3);
 
 pub(crate) struct SchedulerAdmin {
     pool: PgPool,
+    bus: Arc<Bus>,
     /// This process's `SCHEDULER_ENABLED`: when off, no schedule it lists fires here.
     enabled: bool,
+    /// Held for one Fire now, so at most one runs beside the tick
+    /// ([`crate::DEDICATED_FIRE_SESSIONS`]).
+    firing: Mutex<()>,
 }
 
 impl SchedulerAdmin {
-    pub(crate) fn new(pool: PgPool, enabled: bool) -> SchedulerAdmin {
-        SchedulerAdmin { pool, enabled }
+    pub(crate) fn new(pool: PgPool, bus: Arc<Bus>, enabled: bool) -> SchedulerAdmin {
+        SchedulerAdmin { pool, bus, enabled, firing: Mutex::new(()) }
+    }
+
+    async fn fire_now(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let name = bound_schedule(req)?;
+        if !self.enabled {
+            return Err(Error::forbidden(DISABLED_REFUSAL));
+        }
+        let Ok(_firing) = self.firing.try_lock() else {
+            return Err(Error::conflict(FIRE_BUSY));
+        };
+        match fire(&self.pool, &self.bus, name, FIRE_NOW_DEADLINE, Due::Forced).await.map_err(internal)? {
+            FireOutcome::Fired => {
+                Ok(InvokeOutcome::Ok { message: format!("Fired {name}"), reveal: None, redirect: None })
+            }
+            FireOutcome::LockHeld => Err(Error::conflict(format!("{name} is firing now; try again"))),
+            FireOutcome::Missing => Err(Error::not_found(format!("no schedule {name:?}"))),
+            FireOutcome::NotDue => Ok(InvokeOutcome::NoOp { message: format!("{name} is not due") }),
+        }
     }
 
     async fn schedules(&self) -> Result<PanelBody, Error> {
@@ -62,6 +98,19 @@ impl SchedulerAdmin {
 
 fn internal<E: std::fmt::Display>(e: E) -> Error {
     Error::internal(e.to_string())
+}
+
+/// Every input value is at most [`controlplane::MAX_INPUT_VALUE_BYTES`].
+fn input_within_cap(input: &BTreeMap<String, String>) -> bool {
+    input.values().all(|v| v.len() <= controlplane::MAX_INPUT_VALUE_BYTES)
+}
+
+/// The schedule name of a row action: a non-empty `schedule` entity id.
+fn bound_schedule(req: &InvokeCall) -> Result<&str, Error> {
+    match &req.entity {
+        Some(e) if e.kind == SCHEDULE_KIND && !e.id.is_empty() => Ok(&e.id),
+        _ => Err(Error::invalid("scheduler: this action needs a schedule")),
+    }
 }
 
 fn cell(kind: CellKind, value: impl Into<String>) -> Cell {
@@ -197,8 +246,8 @@ fn contribution(id: &str, order: i32, title: &str) -> ContributionDecl {
     }
 }
 
-/// A disabled schedule action: it opens no form or confirm, so it is `Then::Invoke`.
-fn disabled_action(id: &str, point: ActionPoint, label: &str, icon: &str, order: i32) -> ActionDecl {
+/// A schedule action that opens no form or confirm, so it is `Then::Invoke`.
+fn invoke_action(id: &str, point: ActionPoint, label: &str, icon: &str, order: i32) -> ActionDecl {
     ActionDecl {
         id: id.to_string(),
         point,
@@ -209,7 +258,7 @@ fn disabled_action(id: &str, point: ActionPoint, label: &str, icon: &str, order:
         multi: false,
         min_role: Role::Operator,
         then: Then::Invoke,
-        implemented: false,
+        implemented: true,
         emphasis: Emphasis::Default,
         trailing_icon: false,
         icon_only: false,
@@ -250,9 +299,9 @@ pub(crate) fn manifest() -> Manifest {
             contribution(SCHEDULES, 10, "Schedules"),
             contribution(FIRES, 20, "Recent fires"),
         ],
-        actions: vec![disabled_action(SCHEDULE_FIRE, row(), "Fire now", "zap", 10)],
+        actions: vec![invoke_action(SCHEDULE_FIRE, row(), "Fire now", "zap", 10)],
         search: Vec::new(),
-        writes: false,
+        writes: true,
     }
 }
 
@@ -275,8 +324,14 @@ impl Provider for SchedulerAdmin {
     }
 
     async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, Error> {
+        if !input_within_cap(&req.input) {
+            return Err(Error::invalid(format!(
+                "an input value is longer than {} bytes",
+                controlplane::MAX_INPUT_VALUE_BYTES
+            )));
+        }
         match req.action.as_str() {
-            SCHEDULE_FIRE => Err(Error::forbidden("not implemented yet")),
+            SCHEDULE_FIRE => self.fire_now(&req).await,
             other => Err(Error::not_found(format!("{MODULE} has no action {other:?}"))),
         }
     }

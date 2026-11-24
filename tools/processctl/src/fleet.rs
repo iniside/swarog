@@ -203,8 +203,9 @@ pub(crate) const AE_WORKERS: u32 = 2;
 pub(crate) const AE_WAKEUP_SESSIONS: u32 = 1;
 /// Mirror of `invalidation::LISTEN_SESSIONS` — the one cache-invalidation `PgListener`.
 pub(crate) const INVALIDATION_LISTEN_SESSIONS: u32 = 1;
-/// Mirror of `scheduler::DEDICATED_FIRE_SESSIONS` — the scheduler's per-fire connection.
-pub(crate) const SCHEDULER_FIRE_SESSIONS: u32 = 1;
+/// Mirror of `scheduler::DEDICATED_FIRE_SESSIONS` — the scheduler's per-fire connections
+/// (the tick's and one operator Fire now).
+pub(crate) const SCHEDULER_FIRE_SESSIONS: u32 = 2;
 /// Mirror of `asyncevents::TRANSIENT_POISON_SESSIONS` — transient poison-recovery burst
 /// headroom. NOT charged per service; it rides inside [`HARNESS_RESERVE`]'s breakdown.
 pub(crate) const AE_TRANSIENT_POISON_SESSIONS: u32 = 2;

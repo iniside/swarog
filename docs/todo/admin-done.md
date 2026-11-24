@@ -2,6 +2,10 @@
 
 Last updated: 2026-11-24
 
+- [x] **`invoke_refuses_fire_now_and_knows_no_other_action` needs a DB pool it never uses** (2026-11-24, admin-second-pass step 15)
+  Replaced by `invoke_guards_answer_before_any_io`, which builds `SchedulerAdmin` on a lazy pool
+  that cannot connect and needs no database.
+
 - [x] **SH3 checks only that the old portal attention id is gone** (2026-11-24, admin-second-pass step 3)
   Obsolete: the scheduler no longer declares an attention contribution, and SH3 now asserts
   that the dashboard slots no panel under `/admin/_panel/scheduler/`.

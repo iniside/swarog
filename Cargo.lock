@@ -1019,6 +1019,7 @@ dependencies = [
  "party",
  "partyapi",
  "rpc-contract-model",
+ "scheduler",
  "sqlx",
  "storage",
  "storageapi",

@@ -139,9 +139,6 @@ _None._
   `TIMESTAMP_MAX_EPOCH_SECONDS` (`modules/scheduler/src/lib.rs:141`, used in
   `store.rs:43` of `SCHEDULES_SQL`) has no test at its edge. Add an anti-drift row at
   `TIMESTAMP_MAX_EPOCH_SECONDS` minus the ceiling interval.
-- [ ] **`invoke_refuses_fire_now_and_knows_no_other_action` needs a DB pool it never uses**
-  `modules/scheduler/src/admin_tests.rs` skips the test without a pool and builds
-  `SchedulerAdmin::new(pool, true)`, but `invoke` and `panel("nope")` do not read the DB.
 - [ ] **Comment errors**
   `modules/scheduler/src/lib.rs:137-140` (the `TIMESTAMP_MAX_EPOCH_SECONDS` doc);
   `INTERVAL_SECONDS` doc in `scheduler_admin_checks.rs:11-15` carries the `fetch`/`patient`
