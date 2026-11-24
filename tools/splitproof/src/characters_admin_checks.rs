@@ -49,6 +49,17 @@ fn first_inner<'a>(html: &'a str, tag: &str) -> &'a str {
 }
 
 /// `html` with its tags stripped, entities decoded and whitespace collapsed.
+fn is_day_time(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 19
+        && b.iter().enumerate().all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            10 => *c == b' ',
+            13 | 16 => *c == b':',
+            _ => c.is_ascii_digit(),
+        })
+}
+
 pub(super) fn text(html: &str) -> String {
     let mut out = String::new();
     let mut in_tag = false;
@@ -126,19 +137,19 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
         format!("status={page_code} tabs_on={} href={tab_href:?} label={tab_label:?} characters={} fact={} count={}",
             tabs.len(), list_url.is_some(), fact_url.is_some(), count_url.is_some()));
 
-    // [CH2] the tab panel: the six columns, both characters in creation order.
+    // [CH2] the tab panel: the four columns, both characters in creation order.
     let list_url = list_url.unwrap_or_else(|| want("characters"));
     let (list_code, list) = get(admin, &format!("{front}{list_url}")).await?;
     let (headers, rows) = table(&list);
     let row_ok = |row: Option<&(String, Vec<String>)>, name: &str, id: &str| {
         row.is_some_and(|(_, cells)| {
-            cells.len() == 6 && text(&cells[0]) == name && text(&cells[1]) == "mage" && text(&cells[4]) == "—"
-                && cells[5] == format!("<span class=\"mono muted\">{id}</span>")
+            cells.len() == 4 && text(&cells[0]) == name && text(&cells[1]) == "mage" && is_day_time(&text(&cells[2]))
+                && cells[3] == format!("<span class=\"mono muted\">{id}</span>")
         })
     };
     p.check(&format!("[CH2{tag}] Characters tab panel lists both characters through the characters provider"),
         list_code == 200 && attr(&list, "data-state") == "ok"
-            && headers == ["Name", "Class", "Level", "Region", "Last played", "Id"]
+            && headers == ["Name", "Class", "Created", "Character id"]
             && rows.len() == 2 && row_ok(rows.first(), &one, &one_id) && row_ok(rows.get(1), &two, &two_id),
         format!("status={list_code} state={:?} headers={headers:?} rows={:?} body={}",
             attr(&list, "data-state"), rows.iter().map(|(_, c)| c.iter().map(|x| text(x)).collect::<Vec<_>>()).collect::<Vec<_>>(),

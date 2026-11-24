@@ -2,6 +2,15 @@
 
 Last updated: 2026-11-24
 
+- [x] **Character level** (2026-11-24, admin-second-pass step 8a)
+  ADMIN2-48. Mockup: the Characters tab's Level column. Removed: `fake_level`, the Level cell and
+  column, the pinned-hash test, the splitproof header; the mockup already drew four columns.
+- [x] **Character region** (2026-11-24, admin-second-pass step 8a)
+  ADMIN2-49. Mockup: the Characters tab's Region column. Removed: `fake_region`, `REGIONS`, the
+  Region cell and column.
+- [x] **Character last played** (2026-11-24, admin-second-pass step 8a)
+  ADMIN2-50. Mockup: the Characters tab's Last played column. Removed: `NO_LAST_PLAYED`, the "—"
+  cell and column. The tab now draws Name, Class, Created (UTC day-time from SQL) and Character id.
 - [x] **Export CSV** (2026-11-24, admin-second-pass step 7b)
   ADMIN2-25. Mockup: the Users & players "Export CSV" head action. Removed: `EXPORT_CSV`, its
   forbidden arm and the mockup button. No download carrier exists in the control plane (D1).

@@ -17,8 +17,7 @@ use sqlx::PgPool;
 use testdb::test_pool;
 
 use super::{
-    characters_body, column_cells, count_cell, fact_text, fake_level, fake_region, label_cells, manifest,
-    purges_body, CharactersAdmin,
+    characters_body, column_cells, count_cell, fact_text, label_cells, manifest, purges_body, CharactersAdmin,
 };
 use crate::store::Store;
 use crate::tests::{cleanup, unique_player, wired};
@@ -71,7 +70,7 @@ fn cell(body: PanelBody) -> (String, CellKind) {
 }
 
 #[test]
-fn tab_panel_maps_each_character_to_the_six_cells_in_the_given_order() {
+fn tab_panel_maps_each_character_to_the_four_cells_in_the_given_order() {
     let body = characters_body(&[character(SECOND, "Bram", "rogue"), character(FIRST, "Aiko", "mage")]);
     assert_eq!(body.meta.as_deref(), Some("2"), "meta is the row count");
     let t = table(&body);
@@ -81,14 +80,12 @@ fn tab_panel_maps_each_character_to_the_six_cells_in_the_given_order() {
         [
             ("Name", CellKind::Text),
             ("Class", CellKind::Text),
-            ("Level", CellKind::Number),
-            ("Region", CellKind::Ref),
-            ("Last played", CellKind::Text),
-            ("Id", CellKind::MonoMuted),
+            ("Created", CellKind::MonoMuted),
+            ("Character id", CellKind::MonoMuted),
         ]
     );
     let aligns: Vec<bool> = t.columns.iter().map(|c| matches!(c.align, Align::Right)).collect();
-    assert_eq!(aligns, [false, false, true, false, false, false], "only Level is right-aligned");
+    assert_eq!(aligns, [false, false, false, false], "every column is left-aligned");
     assert!(t.page.next_cursor.is_none() && t.page.total.is_none(), "no pager");
     assert!(t.search_placeholder.is_none() && t.filters.is_empty() && !t.selectable, "no toolbar");
     let rows: Vec<Vec<(&str, CellKind)>> = t
@@ -102,17 +99,13 @@ fn tab_panel_maps_each_character_to_the_six_cells_in_the_given_order() {
             vec![
                 ("Bram", CellKind::Text),
                 ("rogue", CellKind::Text),
-                ("30", CellKind::Number),
-                ("eu-central", CellKind::Ref),
-                ("—", CellKind::Text),
+                ("2026-11-21 10:00:00+00", CellKind::MonoMuted),
                 (SECOND, CellKind::MonoMuted),
             ],
             vec![
                 ("Aiko", CellKind::Text),
                 ("mage", CellKind::Text),
-                ("57", CellKind::Number),
-                ("ap-ne", CellKind::Ref),
-                ("—", CellKind::Text),
+                ("2026-11-21 10:00:00+00", CellKind::MonoMuted),
                 (FIRST, CellKind::MonoMuted),
             ],
         ],
@@ -128,18 +121,6 @@ fn tab_panel_with_no_characters_is_an_empty_table() {
     let body = characters_body(&[]);
     assert_eq!(body.meta.as_deref(), Some("0"));
     assert!(table(&body).rows.is_empty(), "an empty DataTable draws the portal's empty state");
-}
-
-#[test]
-fn fake_level_and_region_are_pinned_pure_functions_of_the_id() {
-    // Pinned: a change of salt, range or hash moves these values.
-    assert_eq!((fake_level(FIRST), fake_region(FIRST)), (57, "ap-ne"));
-    assert_eq!((fake_level(SECOND), fake_region(SECOND)), (30, "eu-central"));
-    for n in 0..500 {
-        let id = format!("00000000-0000-4000-8000-{n:012}");
-        assert!((1..=60).contains(&fake_level(&id)), "level of {id} is in 1..=60");
-        assert_eq!(fake_level(&id), fake_level(&id));
-    }
 }
 
 #[test]
@@ -325,8 +306,10 @@ async fn panels_answer_a_players_characters_fact_and_count() {
 
     let tab = tab.unwrap();
     assert_eq!(tab.meta.as_deref(), Some("3"));
-    let ids: Vec<&str> = table(&tab).rows.iter().map(|r| r.cells[5].value.as_str()).collect();
+    let ids: Vec<&str> = table(&tab).rows.iter().map(|r| r.cells[3].value.as_str()).collect();
     assert_eq!(ids, [early.as_str(), middle.as_str(), late.as_str()], "rows in created_at order");
+    let created: Vec<&str> = table(&tab).rows.iter().map(|r| r.cells[2].value.as_str()).collect();
+    assert_eq!(created, ["2026-11-21 10:00:00", "2026-11-21 11:00:00", "2026-11-21 12:00:00"], "created is the UTC day-time from SQL");
     let empty = empty.unwrap();
     assert_eq!(empty.meta.as_deref(), Some("0"));
     assert!(table(&empty).rows.is_empty());

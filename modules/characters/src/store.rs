@@ -103,6 +103,20 @@ impl Store {
         Ok(rows.into_iter().map(to_character).collect())
     }
 
+    /// The Characters tab's rows: like list_by_player, with created_at as a UTC YYYY-MM-DD HH24:MI:SS day-time.
+    pub(crate) async fn list_for_panel(&self, player_id: &str) -> Result<Vec<Character>, sqlx::Error> {
+        let rows: Vec<Row> = sqlx::query_as(&format!(
+            "SELECT id::text, player_id::text, name, class, \
+             to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') \
+             FROM characters.characters WHERE player_id = $1::uuid \
+             ORDER BY created_at, id LIMIT {LIST_HARD_LIMIT}"
+        ))
+        .bind(player_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(to_character).collect())
+    }
+
     /// Fetches one character. A malformed id (22P02) is treated as `Ok(None)`, like a
     /// genuine miss — a real DB error propagates.
     pub(crate) async fn get(&self, id: &str) -> Result<Option<Character>, sqlx::Error> {

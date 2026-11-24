@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use charactersapi::Character;
 use controlplane::{
-    fake_hash, Align, Cell, CellKind, Column, ContributionDecl, DataTable, EntityKindDecl, InvokeCall, InvokeOutcome,
+    Align, Cell, CellKind, Column, ContributionDecl, DataTable, EntityKindDecl, InvokeCall, InvokeOutcome,
     Manifest, PageInfo, PanelBody, PanelQuery, Point, Primitive, Provider, Role, Row, SearchHit, SearchQuery,
     DEFAULT_PANEL_DEADLINE_MS, MAX_PANEL_REFS,
 };
@@ -31,12 +31,6 @@ const TAB_COUNT: &str = "tab.count";
 const COLUMN_COUNT: &str = "column.count";
 const LABEL: &str = "label.character";
 const ATTENTION_PURGES: &str = "attention.purges";
-
-/// What the Last played cell draws: characters stores no last-played time.
-const NO_LAST_PLAYED: &str = "—";
-
-/// The region shapes the mockup draws.
-const REGIONS: [&str; 6] = ["eu-west", "eu-central", "us-east", "us-west", "ap-ne", "sa-east"];
 
 pub(crate) struct CharactersAdmin {
     svc: Arc<Service>,
@@ -84,7 +78,7 @@ impl CharactersAdmin {
 
     async fn characters(&self, req: &PanelQuery) -> Result<PanelBody, Error> {
         let id = player_id(req)?;
-        let characters = self.svc.store.list_by_player(id).await.map_err(read_error)?;
+        let characters = self.svc.store.list_for_panel(id).await.map_err(read_error)?;
         Ok(characters_body(&characters))
     }
 }
@@ -143,16 +137,6 @@ fn column(key: &str, label: &str, kind: CellKind, align: Align) -> Column {
     }
 }
 
-// FAKE: characters stores no level.
-pub(crate) fn fake_level(character_id: &str) -> u64 {
-    fake_hash("level", character_id) % 60 + 1
-}
-
-// FAKE: characters stores no region.
-pub(crate) fn fake_region(character_id: &str) -> &'static str {
-    REGIONS[(fake_hash("region", character_id) % REGIONS.len() as u64) as usize]
-}
-
 /// The summary fact's wording: "1 character", otherwise "N characters".
 pub(crate) fn fact_text(n: i64) -> String {
     if n == 1 {
@@ -198,9 +182,7 @@ fn character_row(c: &Character) -> Row {
         cells: vec![
             text(CellKind::Text, c.name.clone()),
             text(CellKind::Text, c.class.clone()),
-            text(CellKind::Number, fake_level(&c.id).to_string()),
-            text(CellKind::Ref, fake_region(&c.id)),
-            text(CellKind::Text, NO_LAST_PLAYED),
+            text(CellKind::MonoMuted, c.created_at.clone()),
             text(CellKind::MonoMuted, c.id.clone()),
         ],
         highlight: false,
@@ -216,10 +198,8 @@ pub(crate) fn characters_body(characters: &[Character]) -> PanelBody {
         columns: vec![
             column("name", "Name", CellKind::Text, Align::Left),
             column("class", "Class", CellKind::Text, Align::Left),
-            column("level", "Level", CellKind::Number, Align::Right),
-            column("region", "Region", CellKind::Ref, Align::Left),
-            column("last_played", "Last played", CellKind::Text, Align::Left),
-            column("id", "Id", CellKind::MonoMuted, Align::Left),
+            column("created", "Created", CellKind::MonoMuted, Align::Left),
+            column("id", "Character id", CellKind::MonoMuted, Align::Left),
         ],
         rows: characters.iter().map(character_row).collect(),
         page: PageInfo {
