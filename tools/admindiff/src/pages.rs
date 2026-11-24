@@ -437,6 +437,11 @@ pub const PAGE_MAP: &[Page] = &[
         force: false,
     },
     Page { page: "audit", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
+    Page { page: "character", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
+    Page { page: "characters", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
+    Page { page: "group", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
+    Page { page: "groups", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
+    Page { page: "items", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
     Page {
         page: "economy",
         route: Route::Mapped("/admin/p/wallet/economy"),
@@ -741,7 +746,14 @@ pub fn excluded_menu_id(host: &str, kind: &str) -> String {
 pub const EXCLUDED_MOCK_MENUS: &[(&str, &str)] = &[
     ("repo", NO_LORE),
     ("lock", NO_LORE),
+    ("character", UNPORTED_ROW_MENU),
+    ("group", UNPORTED_ROW_MENU),
+    ("groupMember", UNPORTED_ROW_MENU),
+    ("item", UNPORTED_ROW_MENU),
 ];
+
+/// Why the redesign's character, group, group member and item row menus are not compared.
+const UNPORTED_ROW_MENU: &str = "the portal draws no such row menu yet: the character, characters, group, groups and items pages that own it are pending";
 
 /// The `PAGES` keys other than `tab` (the page map's tab, [`Page::tab`]) that an `onclick` body
 /// of a compared page, tab or menu target assigns, whatever element draws it, each with the
@@ -751,6 +763,9 @@ pub const EXCLUDED_MOCK_MENUS: &[(&str, &str)] = &[
 pub const NON_TAB_KEYS: &[(&str, &str)] = &[(
     "mailTab",
     "mail's queue counters (.q-count, pages-platform.js P.mail) switch the outbox panel's queue state in place; the portal draws those states as the outbox panel's own tabs (modules/mail/src/admin.rs TABS), not as page tabs, and the compared mail page is the default attention state",
+), (
+    "cfg",
+    "config's key links (pages-platform.js P.config) select the key whose Edit and Revisions panels the page draws; the portal names the selected key in its key page param (modules/config/src/admin.rs PARAM_KEY), not a page tab, and the compared config page selects no key",
 )];
 
 /// The `UI.<name>` calls that append an element to the body that no recorded opener draws

@@ -271,7 +271,7 @@ fn the_real_mockup_draws_only_declared_tabs() {
 #[test]
 fn a_non_tab_key_no_compared_tab_assigns_is_stale() {
     let repo = crate::repo_root();
-    let keys = [NON_TAB_KEYS[0], ("repoTab", "lore-repo's file tabs")];
+    let keys = [NON_TAB_KEYS[0], NON_TAB_KEYS[1], ("repoTab", "lore-repo's file tabs")];
     let e = format!("{:#}", renders(&repo, &Lists { non_tab_keys: &keys, ..LISTS }).expect_err("repoTab is stale"));
     assert_eq!(e, "tab drift:\n  NON_TAB_KEYS lists PAGES.repoTab, which no onclick a compared render draws assigns");
 }
@@ -283,8 +283,8 @@ fn a_non_tab_key_no_compared_tab_assigns_is_stale() {
 fn a_non_tab_key_a_compared_tab_assigns_is_not_stale() {
     let repo_tab = r#"<button class="tab" onclick="PAGES.repoTab='files';REG.render()">files</button>"#;
     let repo = FakeRepo::new("renders-non-tab-key", &mock_html(&format!("{}{repo_tab}", body(true))));
-    renders(repo.path(), &Lists { non_tab_keys: &[NON_TAB_KEYS[0], ("repoTab", "another page's tab state")], ..LISTS }).expect("repoTab is assigned");
-    let e = format!("{:#}", renders(repo.path(), &Lists { non_tab_keys: &[NON_TAB_KEYS[0], ("repoTab", " ")], ..LISTS }).expect_err("no reason"));
+    renders(repo.path(), &Lists { non_tab_keys: &[NON_TAB_KEYS[0], NON_TAB_KEYS[1], ("repoTab", "another page's tab state")], ..LISTS }).expect("repoTab is assigned");
+    let e = format!("{:#}", renders(repo.path(), &Lists { non_tab_keys: &[NON_TAB_KEYS[0], NON_TAB_KEYS[1], ("repoTab", " ")], ..LISTS }).expect_err("no reason"));
     assert_eq!(e, "tab drift:\n  NON_TAB_KEYS repoTab has no reason");
 }
 
@@ -297,15 +297,15 @@ fn the_declared_keys_and_appenders_fail_twice_malformed_reasonless_and_unused() 
     let repo = FakeRepo::new("renders-declared", &mock_html(&body(true)));
     renders(repo.path(), &LISTS).expect("the production lists are clean on the stand-in");
     let keys = |k: &[(&'static str, &'static str)]| format!("{:#}", renders(repo.path(), &Lists { non_tab_keys: k, ..LISTS }).expect_err("tab drift"));
-    assert_eq!(keys(&[NON_TAB_KEYS[0], NON_TAB_KEYS[0]]), "tab drift:\n  NON_TAB_KEYS lists PAGES.mailTab twice");
+    assert_eq!(keys(&[NON_TAB_KEYS[0], NON_TAB_KEYS[1], NON_TAB_KEYS[0]]), "tab drift:\n  NON_TAB_KEYS lists PAGES.mailTab twice");
     let tab = concat!(
         "tab drift:\n",
         "  NON_TAB_KEYS lists PAGES.tab, which is the page map's tab\n",
         "  NON_TAB_KEYS lists PAGES.tab, which no onclick a compared render draws assigns",
     );
-    assert_eq!(keys(&[NON_TAB_KEYS[0], ("tab", "why")]), tab);
-    assert_eq!(keys(&[("mailTab", " ")]), "tab drift:\n  NON_TAB_KEYS mailTab has no reason");
-    assert_eq!(keys(&[NON_TAB_KEYS[0], ("queueTab", "why")]), "tab drift:\n  NON_TAB_KEYS lists PAGES.queueTab, which no onclick a compared render draws assigns");
+    assert_eq!(keys(&[NON_TAB_KEYS[0], NON_TAB_KEYS[1], ("tab", "why")]), tab);
+    assert_eq!(keys(&[("mailTab", " "), NON_TAB_KEYS[1]]), "tab drift:\n  NON_TAB_KEYS mailTab has no reason");
+    assert_eq!(keys(&[NON_TAB_KEYS[0], NON_TAB_KEYS[1], ("queueTab", "why")]), "tab drift:\n  NON_TAB_KEYS lists PAGES.queueTab, which no onclick a compared render draws assigns");
     let e = format!("{:#}", renders(repo.path(), &Lists { non_tab_keys: &[], ..LISTS }).expect_err("mailTab undeclared"));
     assert!(e.starts_with("mockup onclick failed:\n") && e.contains("assigns PAGES.mailTab, which is neither PAGE_MAP's tab nor a NON_TAB_KEYS key"), "{e}");
 

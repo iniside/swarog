@@ -591,7 +591,7 @@ fn the_harness_opens_the_real_user_menu() {
 fn the_harness_records_every_real_registry_menu() {
     let mut ids = super::defined_menus(&real_repo()).expect("reads the registry");
     ids.sort();
-    assert_eq!(ids, ["apikey", "lock", "repo", "user"]);
+    assert_eq!(ids, ["apikey", "character", "group", "groupMember", "item", "lock", "repo", "user"]);
 }
 
 /// The harness wraps `defineMenu` when a script assigns `UI`, so a menu defined through a
