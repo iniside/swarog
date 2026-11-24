@@ -1,6 +1,6 @@
 # Processctl
 
-Last updated: 2026-11-21
+Last updated: 2026-11-24
 
 ## In progress
 
@@ -48,6 +48,28 @@ _None._
   "os error 32" (file in use) and still stopped cleanly. Cause not investigated
   (report, don't fix); diagnose the supervisor's Windows shutdown path before fixing.
   Source: mockup-implementer smoke for 01b28403, admin-control-plane-redesign step 8a (2026-11-10).
+- [ ] **Launcher env lists drift from what the backend reads**
+  PROCESSCTL-09. The env allow-lists are hand-kept in several places: tools/processctl/src/fleet.rs
+  (`SERVICE_ENV_ALLOWLIST` :17, `ACCOUNTS_OVERRIDEABLE_ENV` :25-30, `MAIL_OVERRIDEABLE_ENV` :35-39,
+  `MONOLITH_BASE_ENV` :46-74, per-service lists :902-909), compose.yaml:22-40, .env.example and
+  weles/fleet.*.toml. Nothing checks them against the crates' env reads, and they have already drifted:
+  - `SCHEDULER_ENABLED` is missing from the monolith list, though the split passes it (a both-topologies gap).
+  - `AUDIT_RETENTION_DAYS`, `GROUPS_RETENTION_DAYS` and `PARTY_LEASE_SECS` are on no processctl list.
+  - compose.yaml and .env.example lack `EPIC_*`, `GOOGLE_*`, `ADMIN_COOKIE_SECURE`, the retention vars and others.
+
+  Before planning, the owner needs a full inventory of the env vars (name, read site, process, default,
+  meaning), and then two decisions:
+  - which vars are operator-facing, dev-only or launcher-internal;
+  - whether federated login (`EPIC_*`, `GOOGLE_*`) is configurable in Docker.
+
+  Proposed design, after those decisions:
+  - each crate exports `pub const OPERATOR_ENV`, and its read site uses that const;
+  - one processctl dev-dependency test diffs the per-service and monolith lists, compose.yaml and
+    .env.example against those consts, with an explicit exclusion table;
+  - a crate→service map checks itself against the cmd/* Cargo.toml files;
+  - weles stays out.
+
+  Source: researcher for the admin-second-pass follow-ups (2026-11-24).
 
 ### Known limits (admin-control-plane-redesign step 15)
 
