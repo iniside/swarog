@@ -2,6 +2,11 @@
 
 Last updated: 2026-11-24
 
+- [x] **Copy payload** (2026-11-24, admin-second-pass step 18)
+  ADMIN2-16. `POISON_COPY` is an implemented `Then::Copy` tool on the poison panel
+  (core/admin/src/events_provider.rs). The template draws it as a button with `data-copy="code"`
+  and `admin.js` copies the panel body's `[data-copy-source]` code block, with no request.
+
 - [x] **Friends remove friend** (2026-11-24, admin-second-pass step 17b)
   The player's Friends tab row-menu "Remove friend…" on an accepted `friendship` row is
   implemented (FRIENDS-08, `docs/todo/friends-done.md`); pending rows show no menu.

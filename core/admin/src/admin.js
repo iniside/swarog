@@ -345,6 +345,15 @@
       return;
     }
     if ((el = t.closest("[data-copy]"))) {
+      // A bare data-copy is the secret-reveal modal's Copy; a named one (a panel action drawn
+      // from Then::Copy) copies that [data-copy-source] block of its own panel body, no request.
+      var name = el.getAttribute("data-copy");
+      if (name) {
+        var body = el.closest(".panel-body");
+        var source = body && body.querySelector('[data-copy-source="' + name + '"]');
+        if (navigator.clipboard && source) navigator.clipboard.writeText(source.textContent);
+        return;
+      }
       var secret = el.closest(".secret-value").querySelector("[data-secret]");
       if (navigator.clipboard && secret) {
         navigator.clipboard.writeText(secret.textContent).then(function () {

@@ -120,6 +120,8 @@
 {%- set content = action_content(a) -%}
 {%- if not a.enabled %}<button type="button" class="btn{{ ' ' ~ c if c }}" disabled title="{{ a.hint }}"{{ refused(a) }}>{{ content }}</button>
 {%- elif a.then == "link" %}<a class="btn{{ ' ' ~ c if c }}" href="{{ a.href }}" style="text-decoration:none">{{ content }}</a>
+{#- A copy action sends no request: admin.js copies the `data-copy-source` block its panel body holds. -#}
+{%- elif a.then == "copy" %}<button type="button" class="btn{{ ' ' ~ c if c }}" data-copy="code">{{ content }}</button>
 {%- else %}<button type="button" class="btn{{ ' ' ~ c if c }}"{{ hx_action(a) }}>{{ content }}</button>
 {%- endif -%}
 {%- endmacro %}
@@ -244,7 +246,7 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 
 {%- macro props(p) -%}
 <dl class="props"{% if p.columns > 1 %} style="grid-template-columns:{% for i in range(p.columns) %}max-content 1fr {% endfor %}"{% endif %}>{% for k, v in p.items %}<dt>{{ k }}</dt><dd>{{ cell(v) }}</dd>{% endfor %}</dl>
-{%- if p.code %}<div class="code" style="margin-top:10px">{{ p.code }}</div>{% endif -%}
+{%- if p.code %}<div class="code" style="margin-top:10px" data-copy-source="code">{{ p.code }}</div>{% endif -%}
 {%- endmacro %}
 
 {%- macro kpi(k, p) -%}

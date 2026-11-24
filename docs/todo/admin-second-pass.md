@@ -13,11 +13,7 @@ Rule source: docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:45-
 
 ## In progress
 
-- [ ] **Copy payload**
-  ADMIN2-16. Mockup: the poison-event "Copy payload" tool. Action `POISON_COPY`,
-  `implemented: false`: core/admin/src/events_provider.rs:330-331; copying to the
-  clipboard is a client action no backend call performs. Replaced by: a client-side
-  copy handler in `admin.js`, or an owner decision to drop the button.
+_None._
 
 ## Open
 
