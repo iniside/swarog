@@ -143,7 +143,7 @@ Sources:
 
 ## Order
 
-Sixteen phases in four groups, A–D. The identity work (A) gates everything, because
+Seventeen phases in four groups, A–D. The identity work (A) gates everything, because
 loreserver accepts nothing without a token. The `lore` module (B) gates review
 (C), because review subscribes to `lore.*`. The portal (D) comes last, because it
 consumes the public surface of A, B and C. Each phase keeps both topologies working
@@ -210,18 +210,11 @@ split proof checks its endpoints through gateway-svc.
   Refresh reuses the family store.
 - (d) `[opus]`.
 
-**Step 4: Device grant and client_credentials.**
-- (a) `device_authorization` and the approval page (mockup screen 2), plus
-  `client_credentials` for confidential clients (`is_service_account`).
-- (b) `lore login` uses the device flow. The lore module's own calls to
-  loreserver (bridge, locks, branch protect) need a service token.
-- (c) A service token's `resources` claim is the whole Tier 2 story for
-  services: loreserver denies a token with no matching entry
-  (`resource_grants_authorizer.rs:20-21`), and `is_service_account` is only a
-  forwarding marker. A confidential client registration therefore carries its
-  resource grants (`urc-*` pattern plus actions). An operator sets them in the
-  accounts admin, and `accounts` puts them in the token. `modules/lore` gets its
-  client id and secret through typed config.
+**Step 4: Device grant.**
+- (a) `device_authorization` and the approval page (mockup screen 2).
+- (b) `lore login` uses the device flow.
+- (c) `client_credentials` for service clients moved to Step 5d (owner
+  question 5): their grants live in `authz`, so it needs 5a.
 - (d) `[opus]`.
 
 ### B. RBAC and the `lore` module
@@ -234,7 +227,9 @@ split proof checks its endpoints through gateway-svc.
       at boot (semantics in (c));
     - `roles` (kind, name, actions[]), operator data;
     - `global_roles` (kind, user, role);
-    - `grants` (kind, resource, user, role);
+    - `grants` (kind, resource, principal, role), where a principal is a user or
+      a service client (Step 5d);
+    - `creator_role` per kind, operator data;
     - purge tombstones.
   - Wire API (all wire-only, no `#[http]`, the wallet precedent):
     - `actions(user, kind, resource?)`: with no resource, the global actions
@@ -243,7 +238,10 @@ split proof checks its endpoints through gateway-svc.
       (filters `RepositoryList`);
     - `holders(kind, resource)` and `holders_of_kind(kind)`: the Access tab
       and billing seats;
-    - `grant`/`revoke`;
+    - `grant`/`revoke` (operator-facing, from the admin page);
+    - `grant_creator(kind, resource, principal)`: grants the kind's
+      operator-configured creator role (default: a role holding the full
+      catalog), so a module never names a role (owner question 6);
     - `drop_resource(kind, resource)`;
     - `declare_kind(kind, actions)`.
   - Admin `Provider`: role matrix per kind, global assignment, per-resource
@@ -285,7 +283,8 @@ split proof checks its endpoints through gateway-svc.
     `authz` (for 5c). With `authz` down, lore ops that need a decision answer
     unavailable, never allow.
   - Declares kind `lore` in `authz` at boot.
-  - A repository's creator gets an `owner` grant through `authzapi`. Creating a
+  - A repository's creator gets the kind's creator role through
+    `authzapi::grant_creator`. Creating a
     repository requires the `create-repo` action. Removing a repository calls
     `drop_resource`.
 - (b) Step 5c's exchange and every later lore phase need the repository inventory.
@@ -315,6 +314,7 @@ split proof checks its endpoints through gateway-svc.
 - (b) It needs `authz` (5a). Repositories (5b) give the operator something to
   grant on, but their inventory only feeds loreserver from Step 6. Splitting it
   from Step 4 lets the split proof run accounts-svc against a real authz-svc.
+  The principal is a user here; 5d extends it to service clients.
 - (c) Error answers:
   - `authz` absent: `invalid_target`, so accounts boots without it (optional
     lookup `registry::try_require`, `core/registry/src/lib.rs:103`). This only
@@ -327,6 +327,24 @@ split proof checks its endpoints through gateway-svc.
 
   The minted token carries `resources` per loreserver's
   `resource_claim`/`resource_template`.
+- (d) `[opus]`. The split proof covers accounts-svc → authz-svc.
+
+**Step 5d: `client_credentials` for service clients and PATs.**
+- (a) `client_credentials` in `accounts` for confidential clients
+  (`is_service_account`). Service clients and personal access tokens are
+  `authz` principals: the token step asks `authzapi::actions` for the client
+  exactly as 5c does for a user, and mints `resources` from the answer. The
+  accounts admin creates the client and shows its secret once; grants are
+  assigned on the `authz` page.
+- (b) The lore module's own calls to loreserver (bridge, locks, branch
+  protect, ancestry for `review`) need a service token. `modules/lore` gets
+  its client id and secret through typed config.
+- (c) A service token's `resources` claim is the whole Tier 2 story for
+  services: loreserver denies a token with no matching entry
+  (`resource_grants_authorizer.rs:20-21`), and `is_service_account` is only a
+  forwarding marker. Same absent/down/empty answers as 5c. Service-token
+  resources are wildcards over a kind only if `authz` holds a global grant for
+  that client; the 5d plan fixes how a global grant maps onto `urc-*` entries.
 - (d) `[opus]`. The split proof covers accounts-svc → authz-svc.
 
 **Step 6: `lore.user.v1` server for loreserver's `user_url`.**
@@ -384,7 +402,7 @@ split proof checks its endpoints through gateway-svc.
   - `repository_catalog`/`repository_catalog_url`. Run
   `lore login` → `lore clone` → `lore push` → `lore repo list`, with a denied
   push for a read-only grant, in the monolith and then the split.
-- (b) It proves A + 5a–5c + 6 against the real server before building on them.
+- (b) It proves A + 5a–5d + 6 against the real server before building on them.
 - (c) Swarog side: a short setup note in `docs/reference/` (`lore.md`).
 - (d) `[docs]` plus an owner check.
 
@@ -393,7 +411,7 @@ split proof checks its endpoints through gateway-svc.
   `lore.branch_created`/`deleted`, `lore.lock_changed`,
   `lore.repository_changed` (final names in the phase plan). One bridge in
   `modules/lore` runs a task per repo and authenticates with a service token
-  from Step 4. Each topic gets its audit sink (`DURABLE_TOPICS`) in the same
+  from Step 5d. Each topic gets its audit sink (`DURABLE_TOPICS`) in the same
   step, so `ALLOW_UNSUBSCRIBED` stays empty.
 - (b) review (Step 10) and notifications consume these.
 - (c) `Subscribe` is lossy (broadcast capacity 200), so events are hints. On
@@ -473,8 +491,8 @@ split proof checks its endpoints through gateway-svc.
   - The design-system primitives from the v2 delta.
   - An apikeys role for the portal (used by Step 13).
   - `accounts` player ops for the profile: list and revoke own refresh
-    families (devices); PAT create/list/revoke (their grant model follows
-    owner question 5).
+    families (devices); PAT create/list/revoke (PATs are `authz`
+    principals, Step 5d).
 - (b) It consumes everything above.
 - (c) The BFF holds the user's Swarog session and exchanges it (Step 5c): once
   without a resource for the repositories list, and per repo for
@@ -538,20 +556,10 @@ Resolved 2026-11-24: grants live in a separate `authz` module (Step 5a).
    repo dependency. The portal uses the Swarog API only for login, review, MRs
    and comments.
 
-5. **Service and PAT grants (Step 4, structural).** Step 4 still has confidential
-   clients carry their own `resources` grants, set in the accounts admin. That
-   is a second source of truth beside `authz`. Proposal: service clients and
-   PATs become `authz` principals; `client_credentials` asks `authzapi` for them
-   exactly as the exchange does for users, and the per-client grant column and
-   form go away. Step 4 then splits: the device grant stays in A, and
-   `client_credentials` moves after 5a (as 5d). OK?
-6. **Creator grant vs "modules never see role names" (Step 5b).** `lore` gives a
-   repository's creator an `owner` grant, but `grant` takes a role. Options:
-   - **(A, recommended)** `authzapi::grant_creator(kind, resource, user)`:
-     `authz` resolves an operator-configured creator role per kind (default a
-     role holding the full catalog). `lore` never names a role.
-   - **(B)** Grants by action set instead of by role. Simpler for modules, but
-     operators lose "change the role, re-scope every holder" for these grants.
+5. **Resolved 2026-11-24: service clients and PATs are `authz` principals**
+   (Step 5d). No per-client grant column in `accounts`.
+6. **Resolved 2026-11-24: (A) `authzapi::grant_creator`.** `authz` resolves an
+   operator-configured creator role per kind; `lore` never names a role.
 
 ## Not in this roadmap
 
