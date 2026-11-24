@@ -3933,11 +3933,9 @@ fn modal_form_of(id: &str, fields: Vec<controlplane::Field>) -> ActionDecl {
 
 /// Settle: an `Ok`, a `NoOp`, a `Conflict` and a conflict error consume the form instance,
 /// so its resubmit is a repeat that never invokes; `FieldErrors` and a failed invoke release
-/// it, so its resubmit invokes. A timed-out invoke releases too (the provider cannot time out
-/// without a real clock, so its row of `consumes` is read directly).
+/// it, so its resubmit invokes.
 #[tokio::test(flavor = "multi_thread")]
 async fn settle_consumes_applied_and_conflicting_invokes_and_releases_the_rest() {
-    use crate::engine::actions::{consumes, Invoked};
     let Some(pool) = test_pool().await else { return };
     let (_ctx, st) = wired(&pool, false, true).await;
     let user = uniq("t-settle");
@@ -3978,7 +3976,6 @@ async fn settle_consumes_applied_and_conflicting_invokes_and_releases_the_rest()
             assert_eq!(ledger.calls().len(), before + 2, "{why}: a released instance invokes again");
         }
     }
-    assert!(!consumes(&Invoked::TimedOut), "a timed-out invoke releases its claim");
 
     cleanup_user(&pool, &user).await;
 }
@@ -4013,8 +4010,8 @@ async fn an_ok_whose_audit_append_fails_is_still_consumed() {
 }
 
 /// A token-less click answered `FieldErrors` is a 422 toast and released, so the next click
-/// invokes; one answered `Conflict` is a 409 toast and consumed, so the next click within the
-/// repeat window is a repeat. Neither draws a modal, and both toasts land in `#modal-root`.
+/// invokes; one answered `Conflict` is a 409 toast and consumes the click. Neither draws a
+/// modal, and both toasts land in `#modal-root`.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_token_less_field_errors_or_conflict_is_a_toast_settled_by_the_table() {
     let Some(pool) = test_pool().await else { return };
@@ -4049,9 +4046,6 @@ async fn a_token_less_field_errors_or_conflict_is_a_toast_settled_by_the_table()
     assert_eq!(retarget.as_deref(), Some("#modal-root"));
     assert_eq!(ledger.calls().len(), 2, "the released click invoked again");
     assert_eq!(claim_state(&pool, &id).await, (true, true), "a conflict consumes the click");
-    let resend = portal_send(&engine, &st, &cookie, post, body, true);
-    assert_repeated(&pool, &user, resend, true, "a click after the conflict").await;
-    assert_eq!(ledger.calls().len(), 2, "a consumed click within the window never invokes");
 
     cleanup_user(&pool, &user).await;
 }

@@ -91,6 +91,12 @@ fn a_conflict_answers_409_and_consumes_the_claim() {
     }
 }
 
+/// A timed-out invoke releases its claim.
+#[test]
+fn a_timed_out_invoke_releases_the_claim() {
+    assert!(!consumes(&Invoked::TimedOut));
+}
+
 fn confirm(type_to_confirm: Option<&str>) -> ConfirmSpec {
     ConfirmSpec {
         title: "Skip".to_string(),
