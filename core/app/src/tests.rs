@@ -1913,3 +1913,113 @@ async fn run_websocket_upgrade_outlives_the_request_timeout_layer() {
         } => {}
     }
 }
+
+// ============================================================================
+// The control-plane face: `run` registers `cp.*` on every edge-serving process, over
+// whatever `controlplane::PROVIDER_SLOT` holds, so a portal can ask any peer.
+// ============================================================================
+
+const CP_FIXTURE_MODULE: &str = "appcpfixture";
+
+fn cp_fixture_manifest() -> controlplane::Manifest {
+    controlplane::Manifest { module: CP_FIXTURE_MODULE.into(), writes: true, ..controlplane::Manifest::default() }
+}
+
+/// A provider whose only answer that matters is its manifest.
+struct CpFixtureProvider;
+
+#[async_trait::async_trait]
+impl controlplane::Provider for CpFixtureProvider {
+    fn manifest(&self) -> controlplane::Manifest {
+        cp_fixture_manifest()
+    }
+
+    async fn panel(&self, _req: controlplane::PanelQuery) -> Result<controlplane::PanelBody, opsapi::Error> {
+        Err(opsapi::Error::not_found("no panels"))
+    }
+
+    async fn search(
+        &self,
+        _req: controlplane::SearchQuery,
+    ) -> Result<Vec<controlplane::SearchHit>, opsapi::Error> {
+        Ok(Vec::new())
+    }
+
+    async fn invoke(
+        &self,
+        _req: controlplane::InvokeCall,
+    ) -> Result<controlplane::InvokeOutcome, opsapi::Error> {
+        Err(opsapi::Error::not_found("no actions"))
+    }
+}
+
+/// A module that contributes [`CpFixtureProvider`] in `init`, as a real module does.
+struct ContributesCpProvider;
+
+#[async_trait::async_trait]
+impl Module for ContributesCpProvider {
+    fn name(&self) -> &str {
+        CP_FIXTURE_MODULE
+    }
+
+    fn init(&self, ctx: &Context) -> anyhow::Result<()> {
+        let provider: std::sync::Arc<dyn controlplane::Provider> = std::sync::Arc::new(CpFixtureProvider);
+        ctx.contribute(controlplane::PROVIDER_SLOT, provider);
+        Ok(())
+    }
+}
+
+/// Picks an OS-assigned free UDP port for the edge listener (bind :0, read, drop).
+fn free_udp_port() -> u16 {
+    std::net::UdpSocket::bind("127.0.0.1:0")
+        .expect("probe udp port")
+        .local_addr()
+        .expect("local addr")
+        .port()
+}
+
+/// Boots the real `run` with an edge server and `modules`, then asks its edge listener
+/// for `cp.manifests` through the generated client, as a peer portal does.
+async fn manifests_served_by_run(modules: Vec<Box<dyn Module>>) -> Vec<controlplane::Manifest> {
+    use controlplane::ControlPlane;
+
+    let edge_port = free_udp_port();
+    let mut cfg =
+        Config::from_values(None, None, None, None, None, None, None, None, None, None).without_db();
+    cfg.listen_addr = format!("127.0.0.1:{}", free_port());
+    cfg.edge_addr = format!("127.0.0.1:{edge_port}");
+    let edge_server = Some(std::sync::Arc::new(std::sync::Mutex::new(edge::Server::new())));
+
+    // Driven via `select!` on this task, not `tokio::spawn` — see
+    // `run_with_tls_files_serves_https` for why.
+    tokio::select! {
+        res = run(cfg, modules, edge_server, None) => panic!("server exited early: {res:?}"),
+        manifests = async {
+            let ca = edge::shared_dev_ca().expect("shared dev CA");
+            let addr: std::net::SocketAddr = format!("127.0.0.1:{edge_port}").parse().expect("edge addr");
+            for _ in 0..100 {
+                if let Ok(client) = edge::Client::dial(addr, &ca).await {
+                    let face = controlplanerpc::control_plane_rpc::Client::new(std::sync::Arc::new(client));
+                    return face.manifests().await.expect("cp.manifests");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            panic!("the edge listener never came up at {addr}");
+        } => manifests,
+    }
+}
+
+/// An edge process with one contributed provider serves that provider's manifest.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_serves_cp_manifests_of_the_contributed_provider() {
+    let manifests = manifests_served_by_run(vec![Box::new(ContributesCpProvider)]).await;
+    assert_eq!(manifests, vec![cp_fixture_manifest()]);
+}
+
+/// An edge process with an empty provider slot still answers `cp.manifests`, with an
+/// empty `Vec` rather than an unknown method.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_serves_empty_cp_manifests_without_a_provider() {
+    let manifests = manifests_served_by_run(Vec::new()).await;
+    assert!(manifests.is_empty(), "no provider contributed, so no manifest: {manifests:?}");
+}

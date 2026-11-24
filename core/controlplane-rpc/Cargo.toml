@@ -15,3 +15,6 @@ registry = { workspace = true }
 rpc-macro = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

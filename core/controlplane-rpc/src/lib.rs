@@ -24,3 +24,6 @@ pub fn remote_factory(peer: &'static str) -> remote::RemoteFactory {
         );
     })
 }
+
+#[cfg(test)]
+mod tests;
