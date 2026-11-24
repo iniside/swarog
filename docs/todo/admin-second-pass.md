@@ -21,20 +21,20 @@ _None._
 
 - [ ] **Deployment name, version and process count**
   ADMIN2-01. Mockup: top-bar deployment and the dashboard subtitle ("emberline-prod ·
-  Swarog 0.42.1 · 20 processes (split topology)"). Fake: core/admin/src/fakes.rs:12,15
+  Swarog 0.42.1 · 20 processes (split topology)"). Fake: core/admin/src/fakes.rs:8,11
   (`DEPLOYMENT`, `DASHBOARD_SUBTITLE`): the portal has no deployment name and no
   version or process-count source. Replaced by: a deployment name in config and the
   fleet's version and process count from Weles.
 - [ ] **Service health, probe interval, down/degraded notes and the wallet-down attention
   item**
   ADMIN2-02. Mockup: Service health panel (state, version, uptime, latency, note), top-bar
-  health popover, "wallet-svc unavailable" attention. Fakes: core/admin/src/fakes.rs:18
-  (`HEALTH_PROBE_S`, and its `health_note`/`health_probe` strings), :35 (`services()`),
-  :159 (`attention_services()`): no health probe exists until Weles exposes its API.
+  health popover, "wallet-svc unavailable" attention. Fakes: core/admin/src/fakes.rs:14
+  (`HEALTH_PROBE_S`, and its `health_note`/`health_probe` strings), :31 (`services()`),
+  :97 (`attention_services()`): no health probe exists until Weles exposes its API.
   Replaced by: real per-process probes from the Weles API.
 - [ ] **Service health history bar**
   ADMIN2-03. Mockup: the 48-bucket uptime bar per service. Fake:
-  core/admin/src/fakes.rs:81 (`history`): no health history is stored. Replaced by: a
+  core/admin/src/fakes.rs:77 (`history`): no health history is stored. Replaced by: a
   stored probe history (needs ADMIN2-02 first).
 
 ### Fake data of the config port

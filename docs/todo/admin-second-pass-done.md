@@ -76,13 +76,13 @@ Last updated: 2026-11-24
 - [x] **Lore tiles and stale-locks attention** (2026-11-24, admin-second-pass step 1)
   ADMIN2-05. Mockup: "Lore seats" and "Lore store used" tiles, "2 stale Lore locks"
   attention. Fakes: core/admin/src/fakes.rs:113 (`lore_seats`), :127 (`lore_store`), :171
-  (`attention_lore`): there is no Lore module. Replaced by: a Lore module, or dropping the
-  elements by owner decision.
+  (`attention_lore`): there is no Lore module. Dropped by owner decision on 2026-11-24;
+  nothing replaces them.
 
 - [x] **Matches in progress tile** (2026-11-24, admin-second-pass step 1)
   ADMIN2-06. Mockup: "Matches in progress" KPI. Fake: core/admin/src/fakes.rs:141
-  (`matches_in_progress`): `match.matches` holds finished matches only. Replaced by:
-  in-flight match tracking in the match module.
+  (`matches_in_progress`): `match.matches` holds finished matches only. Dropped by owner decision on 2026-11-24;
+  nothing replaces it.
 
 - [x] **A filter on an undeclared key draws but does nothing** (2026-11-22, admin-control-plane-redesign step 16)
   ADMIN2-45. `panels::resolve` (core/admin/src/engine/panels.rs) refuses a `DataTable` or

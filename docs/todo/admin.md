@@ -115,15 +115,15 @@ _None._
 ### Known limits (admin-control-plane-redesign step 22)
 
 - [ ] **SH2 tells admission's refusal from the provider's only by letter case**
-  `tools/splitproof/src/scheduler_admin_checks.rs:154` looks for "Not implemented yet" (the
+  `tools/splitproof/src/scheduler_admin_checks.rs:151` looks for "Not implemented yet" (the
   portal's admission) against the provider's "not implemented yet"
-  (`modules/scheduler/src/admin.rs:408`); `tools/splitproof/src/storage_admin_checks.rs:135`
+  (`modules/scheduler/src/admin.rs:279`); `tools/splitproof/src/storage_admin_checks.rs:135`
   uses the same idiom. Fix: a distinct provider message, or assert that no `admin.action`
   audit row was written.
 - [ ] **Splitproof skips the Scheduler page's disabled banner and its schedules foot, and Recent fires has no cap note**
-  The page draws `DISABLED_BANNER` (`modules/scheduler/src/admin.rs:43`) and the foot "first
-  100 schedules" when more than `MAX_ROWS` exist (`admin.rs:246-247`); no splitproof check
-  covers either. Recent fires is read with `MAX_FIRES` = 100 (`admin.rs:38`, `:76`) and the
+  The page draws `DISABLED_BANNER` (`modules/scheduler/src/admin.rs:39`) and the foot "first
+  100 schedules" when more than `MAX_ROWS` exist (`admin.rs:146-147`); no splitproof check
+  covers either. Recent fires is read with `MAX_FIRES` = 100 (`admin.rs:34`, `:58`) and the
   page does not say it is capped.
 - [ ] **The F1 ceiling bound is only loosely pinned**
   `TIMESTAMP_MAX_EPOCH_SECONDS` (`modules/scheduler/src/lib.rs:141`, used in
@@ -134,7 +134,7 @@ _None._
   `SchedulerAdmin::new(pool, true)`, but `invoke` and `panel("nope")` do not read the DB.
 - [ ] **Comment errors**
   `modules/scheduler/src/lib.rs:137-140` (the `TIMESTAMP_MAX_EPOCH_SECONDS` doc);
-  `INTERVAL_SECONDS` doc in `scheduler_admin_checks.rs:14-19` carries the `fetch`/`patient`
+  `INTERVAL_SECONDS` doc in `scheduler_admin_checks.rs:11-15` carries the `fetch`/`patient`
   paragraph that belongs to the pass, not the constant; rustdoc warns of an unclosed `<X>` at
   `core/controlplane/src/lib.rs:390`; `tools/splitproof/src/apikeys_admin_checks.rs:39-52`
   hop and break-run wording, and the long line at `:41`; `core/admin/src/golden_tests/view_tests.rs:98`
