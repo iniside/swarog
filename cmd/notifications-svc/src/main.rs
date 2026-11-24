@@ -1,9 +1,10 @@
 //! `notifications-svc` — the notifications fortress process. It hosts ONLY
 //! notifications and stands up one shared QUIC edge server; the durable-events plane
 //! is app-owned (DB ⇒ plane), not a listed module. `notifications` contributes its
-//! player-op faces plus `admin.adminData`/`admin.adminSubmit` to `edge::EDGE_SLOT`
-//! (topology-blind), and `app::run` installs them on this server, so gateway-svc can
-//! dispatch the player ops Remote and admin-svc can fetch/submit its admin page over
+//! player-op faces to `edge::EDGE_SLOT` and its control-plane provider to
+//! `controlplane::PROVIDER_SLOT` (topology-blind), and `app::run` installs them (the
+//! provider as the `cp.*` face) on this server, so gateway-svc can
+//! dispatch the player ops Remote and admin-svc can pull its control-plane page over
 //! the mTLS edge. Its durable subscriptions (`notifications.wallet-changed.v1`,
 //! `notifications.player-promoted.v1`, …) pull from the shared XID-ordered log; each
 //! handler runs on the handed delivery tx, atomically with the checkpoint advance.

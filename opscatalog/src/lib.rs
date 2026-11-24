@@ -17,7 +17,7 @@
 //! ## Scope
 //! ONLY api-gated operations belong here: methods carrying a `#[http(...)]` binding, which
 //! the gateway dispatches from an HTTP route. Internal wire-only methods (e.g.
-//! `apikeys.lookupKey`, `admin.adminData`) yield no `route_bindings()` entry and are
+//! `apikeys.lookupKey`) yield no `route_bindings()` entry and are
 //! deliberately absent — they are not part of the player/operator-facing op vocabulary.
 
 /// One gateway-dispatched operation, as a static row in [`OPERATIONS`]. Mirrors the

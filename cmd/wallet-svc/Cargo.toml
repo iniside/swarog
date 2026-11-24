@@ -7,7 +7,7 @@ publish = false
 
 # The wallet fortress process. Hosts wallet and stands up one shared QUIC edge server
 # (EDGE_ADDR, :9010 in the run scripts) so gateway-svc can dispatch the player reads
-# Remote and admin-svc can fetch/submit its admin page over `admin.adminData`. wallet
+# Remote and admin-svc can pull its control-plane page over the `cp.*` face. wallet
 # owns schema `wallet` + a durable subscription, so it needs a DB pool and thus hosts
 # the durable-events plane (app-owned, DB ⇒ plane). It fills wallet's `config`
 # dependency with a `remote::Stub` that dials config-svc, so it imports the `configrpc`

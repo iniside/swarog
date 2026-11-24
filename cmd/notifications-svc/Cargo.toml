@@ -7,8 +7,8 @@ publish = false
 
 # The notifications fortress process. Hosts notifications and stands up one shared
 # QUIC edge server (EDGE_ADDR, :9011 in the run scripts) so gateway-svc can dispatch
-# the player ops Remote and admin-svc can fetch/submit its admin page over
-# `admin.adminSubmit`. notifications owns schema `notifications` + three durable
+# the player ops Remote and admin-svc can pull its control-plane page over
+# the `cp.*` face. notifications owns schema `notifications` + three durable
 # subscriptions (wallet.changed, player.promoted, scheduler.fired-prune), so it needs
 # a DB pool and thus hosts the durable-events plane (app-owned, DB ⇒ plane). It
 # dials no peer for a CAPABILITY: `requires()` is empty (retention is

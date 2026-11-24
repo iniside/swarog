@@ -1,6 +1,6 @@
 //! `audit-svc` — the audit fortress process (Step 8). It hosts `audit` and stands up
 //! one shared QUIC edge server (`EDGE_ADDR`, `:9004` in the run scripts); `audit`
-//! contributes its admin provider to `controlplane::PROVIDER_SLOT` (topology-blind), and
+//! contributes its control-plane provider to `controlplane::PROVIDER_SLOT` (topology-blind), and
 //! `app::run` serves it as the `cp.*` face on this server so admin-svc pulls audit's
 //! Audit log page over the mutually-authenticated edge.
 //!
@@ -21,7 +21,7 @@ use lifecycle::ProcessWiring;
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
 
-    // One shared QUIC edge server for this process. `audit` contributes its admin
+    // One shared QUIC edge server for this process. `audit` contributes its control-plane
     // provider to `controlplane::PROVIDER_SLOT` during `init`; `app::run` registers the
     // `cp.*` face from it on this server after Build, then `listen`s it.
     let edge_server = Arc::new(Mutex::new(edge::Server::new()));

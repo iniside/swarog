@@ -250,7 +250,7 @@ url = "2"
 sha2 = "0.10"
 
 # Cookie parsing for the admin portal's session auth (axum 0.7 line). Only the
-# `cookie` feature — the admin module reads `admin_session` via `CookieJar` and
+# `cookie` feature — `core/admin` reads `admin_session` via `CookieJar` and
 # writes Set-Cookie headers itself (exact flag control, no extra `time` dep).
 axum-extra = { version = "0.9", features = ["cookie"] }
 

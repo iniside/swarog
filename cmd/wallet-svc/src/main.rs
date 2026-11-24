@@ -2,8 +2,8 @@
 //! shared QUIC edge server; the durable-events plane is app-owned (DB ⇒ plane), not a
 //! listed module. `wallet` contributes its `wallet.*` + player-op faces to
 //! `edge::EDGE_SLOT` (topology-blind), and `app::run` installs them on this server, so
-//! gateway-svc can dispatch the player reads Remote and admin-svc can fetch/submit its
-//! admin page over `admin.adminData`. `wallet.changed` is appended onto the shared
+//! gateway-svc can dispatch the player reads Remote and admin-svc can pull its
+//! control-plane page over the `cp.*` face. `wallet.changed` is appended onto the shared
 //! durable log inside the movement tx; consumers (audit-svc) pull it with their own
 //! workers, and wallet's own `wallet.player-registered.v1` worker pulls accounts-svc's
 //! `player.registered` for the config-driven starter grant.

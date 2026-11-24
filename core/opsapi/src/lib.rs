@@ -14,7 +14,7 @@
 //!
 //!   - [`Operation`] + the three slots — the *declaration* seam. A module
 //!     Contributes one [`OpSet`] per capability it exposes (into [`SLOT`] /
-//!     [`BINDING_SLOT`] / [`LOCAL_SLOT`], the same `contrib` mechanism admin uses);
+//!     [`BINDING_SLOT`] / [`LOCAL_SLOT`], the same `contrib` mechanism `controlplane::PROVIDER_SLOT` uses);
 //!     the gateway (Step 10) reads every contribution to build its HTTP route
 //!     table. A module lights up a route by contributing, never by the gateway
 //!     importing it.
