@@ -14,10 +14,6 @@ _None._
 
 ### Known limits (admin-control-plane-redesign step 24)
 
-- [ ] **Audit log Export has no download path**
-  The page-head Export action is `implemented: false` (`modules/audit/src/admin.rs:370-374`)
-  and its invoke answers forbidden "not implemented yet" (`admin.rs:435`); the control plane has
-  no download carrier. Once one lands, add a splitproof check for it (none exists today).
 - [ ] **Audit filters and totals scan unindexed rows**
   Only `at` is indexed (`audit.log_at_idx`); the topic, actor and search filters, the page
   total `count(*)` and the actor options all scan the retained rows (`modules/audit/src/store.rs:216`,

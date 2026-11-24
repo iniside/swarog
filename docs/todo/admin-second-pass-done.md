@@ -2,6 +2,16 @@
 
 Last updated: 2026-11-24
 
+- [x] **Audit log export** (2026-11-24, admin-second-pass step 5a)
+  ADMIN2-69. Mockup: the Audit log head's "Export" button. Removed by plan D1 (no
+  download carrier exists): the `log.export` action, its invoke arm and the mockup button.
+  The download carrier is a separate plan.
+
+- [x] **Audit log actor options with no source** (2026-11-24, admin-second-pass step 5a)
+  ADMIN2-70. Mockup: the Actor select's `scheduler` and `apikey:ak_c4a8` options. Removed
+  by owner ruling: `FAKE_ACTORS` and `actor_options` went, the select lists only the stored
+  operator logins and `system`, and the mockup options went with them.
+
 - [x] **Rewind checkpoint** (2026-11-24, admin-second-pass step 4)
   ADMIN2-17. Mockup: the subscription row's "Rewind checkpoint…". No checkpoint rewind
   exists in the event plane. Removed by owner ruling: the `sub.rewind` action, its invoke

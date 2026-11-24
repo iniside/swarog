@@ -93,7 +93,7 @@ fn manifest_declares_the_audit_log_page() {
     assert_eq!(m.pages.len(), 1);
     let page = &m.pages[0];
     assert_eq!((page.id.as_str(), page.title.as_str(), page.subtitle.as_str()), (PAGE, TITLE, SUBTITLE));
-    assert_eq!(page.head_actions, [LOG_EXPORT]);
+    assert!(page.head_actions.is_empty());
     assert_eq!(page.layout, Layout::Stack(vec![LOG.to_string()]));
     assert_eq!(page.params, [PARAM_ACTOR, PARAM_TOPIC, PARAM_TIME]);
     assert!(page.tiles.is_empty());
@@ -105,12 +105,8 @@ fn manifest_declares_the_audit_log_page() {
     assert_eq!(c.point, Point::Page(PAGE.to_string()));
     assert_eq!((c.min_role, c.cache_ttl_s, c.readonly.as_deref()), (Role::Viewer, None, None));
 
-    assert_eq!(m.actions.len(), 2);
-    let a = &m.actions[0];
-    assert_eq!((a.id.as_str(), a.label.as_str(), a.icon.as_str(), a.order), (LOG_EXPORT, "Export", "download", 10));
-    assert_eq!(a.point, ActionPoint::PageHead(PAGE.to_string()));
-    assert_eq!(a.then, Then::Invoke);
-    assert!(!a.implemented && !a.danger && !a.trailing_icon);
+    assert_eq!(m.actions.len(), 1);
+    assert!(m.actions.iter().all(|a| !matches!(a.point, ActionPoint::PageHead(_))));
 }
 
 /// H14: "Recent operator activity" is a dashboard panel at its shared order; its one tool
@@ -124,7 +120,7 @@ fn dashboard_panel_declares_the_activity_timeline_and_its_tool() {
     assert_eq!((c.point.clone(), c.order), (Point::DashboardPanel, order::dashboard_panel::AUDIT));
     assert_eq!((c.min_role, c.cache_ttl_s, c.readonly.as_deref()), (Role::Viewer, None, None));
 
-    let tool = &m.actions[1];
+    let tool = &m.actions[0];
     assert_eq!((tool.id.as_str(), tool.label.as_str(), tool.icon.as_str()), (LOG_OPEN, "Audit log", "right"));
     assert_eq!(tool.point, ActionPoint::PanelTool(ACTIVITY.to_string()));
     let page = Link::Page { module: MODULE.to_string(), page: PAGE.to_string(), params: BTreeMap::new() };
@@ -279,11 +275,11 @@ fn operator_actor_links_to_the_actor_filtered_page() {
     assert!(t.rows.iter().flat_map(|r| &r.cells).filter(|c| c.kind != CellKind::User).all(|c| c.link.is_none()));
 }
 
-/// The toolbar: Topic over the logged topics, Actor over the store's options then the
-/// FAKE actors (A5), and the inert Time chip (A6).
+/// The toolbar: Topic over the logged topics, Actor over the store's options only, and the
+/// inert Time chip (A6).
 #[test]
 fn toolbar_offers_topic_actor_and_time() {
-    let body = log_body(LogPage { rows: Vec::new(), next: None }, 0, actor_options(vec!["marta.k".into(), SYSTEM_ACTOR.into()]));
+    let body = log_body(LogPage { rows: Vec::new(), next: None }, 0, vec!["marta.k".into(), SYSTEM_ACTOR.into()]);
     let t = table(&body);
     let keys: Vec<&str> = t.filters.iter().map(|f| f.key.as_str()).collect();
     assert_eq!(keys, [PARAM_TOPIC, PARAM_ACTOR, PARAM_TIME]);
@@ -291,8 +287,7 @@ fn toolbar_offers_topic_actor_and_time() {
     assert_eq!(labels, ["Topic", "Actor", "Time"]);
     let topics: Vec<String> = DURABLE_TOPICS.iter().map(|s| s.to_string()).collect();
     assert_eq!(t.filters[0].kind, FilterKind::Select(topics));
-    let actors: Vec<String> =
-        ["marta.k", "system", "scheduler", "apikey:ak_c4a8"].iter().map(|s| s.to_string()).collect();
+    let actors: Vec<String> = ["marta.k", "system"].iter().map(|s| s.to_string()).collect();
     assert_eq!(t.filters[1].kind, FilterKind::Select(actors));
     assert_eq!(t.filters[2].kind, FilterKind::Range);
 }
@@ -300,7 +295,7 @@ fn toolbar_offers_topic_actor_and_time() {
 #[tokio::test(flavor = "multi_thread")]
 async fn invoke_refuses_every_action() {
     let p = AuditAdmin::new(PgPool::connect_lazy("postgres://localhost/unused").unwrap());
-    assert_eq!(p.invoke(call(LOG_EXPORT)).await.unwrap_err().status, Status::Forbidden);
+    assert_eq!(p.invoke(call("log.export")).await.unwrap_err().status, Status::NotFound);
     assert_eq!(p.invoke(call("log.delete")).await.unwrap_err().status, Status::NotFound);
     assert_eq!(p.panel(query("nope")).await.unwrap_err().status, Status::NotFound);
 }
@@ -367,8 +362,8 @@ fn ids_and_total(body: &PanelBody) -> (Vec<String>, Option<u64>) {
 }
 
 /// The search, topic and actor params reach the store and narrow both the page and the
-/// total; a FAKE actor narrows to zero rows and keeps the toolbar (H8); an unknown topic
-/// is refused.
+/// total; an actor nobody logged narrows to zero rows and keeps the toolbar (H8); an unknown
+/// topic is refused.
 #[tokio::test(flavor = "multi_thread")]
 async fn filter_params_narrow_the_page_and_the_total() {
     let Some(pool) = test_pool().await else { return };
@@ -381,6 +376,7 @@ async fn filter_params_narrow_the_page_and_the_total() {
     let r3 = insert(&pool, "group.created", &json!({"group_id": format!("c-{m}"), "name": "g", "creator_id": "c", "join_policy": "open"}), 10.0).await;
     let p = AuditAdmin::new(pool.clone());
 
+    let ghost = format!("ghost-{m}");
     let cases: Vec<Case> = vec![
         (vec![], vec![t3, t2, t1]),
         (vec![(PARAM_TOPIC, "admin.action")], vec![t2, t1]),
@@ -389,8 +385,7 @@ async fn filter_params_narrow_the_page_and_the_total() {
         (vec![(PARAM_ACTOR, SYSTEM_ACTOR)], vec![t3]),
         (vec![(PARAM_TOPIC, ""), (PARAM_ACTOR, "")], vec![t3, t2, t1]),
         (vec![(PARAM_TIME, "today")], vec![t3, t2, t1]),
-        (vec![(PARAM_ACTOR, FAKE_ACTORS[0])], vec![]),
-        (vec![(PARAM_ACTOR, FAKE_ACTORS[1])], vec![]),
+        (vec![(PARAM_ACTOR, ghost.as_str())], vec![]),
     ];
     let mut got = Vec::new();
     for (params, _) in &cases {

@@ -101,11 +101,6 @@ modules/mail/src/admin.rs landed in 544dd4e5; the line numbers are its committed
   the scheduler has no write path. Replaced by: fire now as `Then::Invoke` (an immediate
   fire under the advisory lock), with `writes: true` and a `cp.invoke scheduler`
   conformance case.
-- [ ] **Audit log export**
-  ADMIN2-69. Mockup: the Audit log head's "Export" button (UILayout/redesign/assets/pages-platform.js:118).
-  Action `log.export`, `implemented: false` and `Then::Invoke`: modules/audit/src/admin.rs:371;
-  `invoke` refuses it, and the control plane has no download carrier. Replaced by: a
-  download carrier in `core/controlplane` (decision O-3) and an export of the narrowed rows.
 - [ ] **Friends remove friend**
   The player's Friends tab row-menu "Remove friend…" on a `friendship` row is
   `implemented: false`; tracked as FRIENDS-08 in `docs/todo/friends.md`.
@@ -267,13 +262,6 @@ modules/apikeys/src/admin.rs, as committed in admin-control-plane-redesign step 
 
 modules/audit/src/admin.rs, as committed in admin-control-plane-redesign step 24 part a1b.
 
-- [ ] **Audit log actor options with no source**
-  ADMIN2-70. Mockup: the Actor select's `scheduler` and `apikey:ak_c4a8` options
-  (UILayout/redesign/assets/pages-platform.js:121). Fake: modules/audit/src/admin.rs:53
-  (`FAKE_ACTORS`, appended by `actor_options` at :131): only `admin.action` rows carry an
-  actor, so both options narrow the table to zero rows. Replaced by: actors recorded by the
-  scheduler and the API key verifier (the acting key's name), or an owner decision to drop
-  the two options.
 - [ ] **Audit log inline styles**
   ADMIN2-71. Mockup: the search box is 260 px wide (pages-platform.js:120), the Action cell
   has `font-weight:500` and the Target cell `font-size:11.5px` (pages-platform.js:123). The

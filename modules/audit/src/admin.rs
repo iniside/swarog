@@ -2,8 +2,7 @@
 //! untitled table over every `audit.log` row, newest first, narrowed by topic, actor and a
 //! target-or-detail search, paged on `(at, id)`; and the dashboard's "Recent operator
 //! activity" timeline of the newest `admin.action` rows, whose tool links to the page.
-//! Nothing here writes: the module declares no writes, Export is `implemented: false` and
-//! the dashboard tool is a link. It reads only schema `audit` (through [`crate::store`]),
+//! Nothing here writes: the module declares no writes and the dashboard tool is a link. It reads only schema `audit` (through [`crate::store`]),
 //! never another module's tables.
 
 use std::collections::BTreeMap;
@@ -27,8 +26,6 @@ pub(crate) const PAGE: &str = "log";
 /// The page's one table.
 pub(crate) const LOG: &str = "log";
 
-pub(crate) const LOG_EXPORT: &str = "log.export";
-
 /// The dashboard's "Recent operator activity" panel and its "Audit log →" tool.
 pub(crate) const ACTIVITY: &str = "activity";
 pub(crate) const ACTIVITY_TITLE: &str = "Recent operator activity";
@@ -47,10 +44,6 @@ pub(crate) const PARAM_TOPIC: &str = "topic";
 pub(crate) const PARAM_ACTOR: &str = "actor";
 /// The Time chip's param. It narrows nothing: the table lists every retained row.
 pub(crate) const PARAM_TIME: &str = "time";
-
-/// The actor options no row carries: nothing records a scheduler or an API key as the
-/// actor of a ledger row, so each narrows the table to zero rows.
-pub(crate) const FAKE_ACTORS: [&str; 2] = ["scheduler", "apikey:ak_c4a8"];
 
 pub(crate) const MAX_NEEDLE_BYTES: usize = 256;
 pub(crate) const MAX_ACTOR_BYTES: usize = 256;
@@ -86,7 +79,7 @@ impl AuditAdmin {
         let page = self.store.log_page(&filter, after, store::PAGE_SIZE).await.map_err(internal)?;
         let total = self.store.log_total(&filter).await.map_err(internal)?;
         let actors = self.store.actor_options().await.map_err(internal)?;
-        Ok(log_body(page, total, actor_options(actors)))
+        Ok(log_body(page, total, actors))
     }
 
     /// The newest operator rows whatever the dashboard's range: the panel shows the latest
@@ -124,20 +117,6 @@ pub(crate) fn parse_cursor(raw: &str) -> Result<LogCursor, Error> {
         return Err(invalid());
     }
     Ok(LogCursor { at_us, id })
-}
-
-/// The actor select's options: the store's operator logins and `system`, then the FAKE
-/// actors.
-pub(crate) fn actor_options(mut actors: Vec<String>) -> Vec<String> {
-    for fake in FAKE_ACTORS {
-        // FAKE: no ledger row names a scheduler or an API key as its actor (only
-        // `admin.action` carries one, an operator login); the mockup's options are kept and
-        // narrow the table to zero rows.
-        if !actors.iter().any(|a| a == fake) {
-            actors.push(fake.to_string());
-        }
-    }
-    actors
 }
 
 fn cell(kind: CellKind, value: impl Into<String>) -> Cell {
@@ -335,7 +314,7 @@ pub(crate) fn manifest() -> Manifest {
             id: PAGE.to_string(),
             title: TITLE.to_string(),
             subtitle: SUBTITLE.to_string(),
-            head_actions: vec![LOG_EXPORT.to_string()],
+            head_actions: Vec::new(),
             tiles: Vec::new(),
             layout: Layout::Stack(vec![LOG.to_string()]),
             params: vec![PARAM_ACTOR.to_string(), PARAM_TOPIC.to_string(), PARAM_TIME.to_string()],
@@ -367,24 +346,6 @@ pub(crate) fn manifest() -> Manifest {
             },
         ],
         actions: vec![
-            // NEW: no export path exists; a download carrier is its todo item.
-            ActionDecl {
-                id: LOG_EXPORT.to_string(),
-                point: ActionPoint::PageHead(PAGE.to_string()),
-                label: "Export".to_string(),
-                icon: "download".to_string(),
-                order: 10,
-                danger: false,
-                multi: false,
-                min_role: Role::Operator,
-                then: Then::Invoke,
-                implemented: false,
-                emphasis: Emphasis::Default,
-                trailing_icon: false,
-                icon_only: false,
-                when_empty: false,
-                prepare: false,
-            },
             ActionDecl {
                 id: LOG_OPEN.to_string(),
                 point: ActionPoint::PanelTool(ACTIVITY.to_string()),
@@ -432,7 +393,6 @@ impl Provider for AuditAdmin {
 
     async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, Error> {
         match req.action.as_str() {
-            LOG_EXPORT => Err(Error::forbidden("not implemented yet")),
             other => Err(Error::not_found(format!("{MODULE} has no action {other:?}"))),
         }
     }
