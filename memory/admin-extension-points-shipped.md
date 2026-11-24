@@ -1,26 +1,25 @@
 ---
 name: admin-extension-points-shipped
-description: "SUPERSEDED: the 2026-07-14 ExtensionPoint/ExtensionEntry admin seam was razed; cross-module admin is now controlplane::Provider + Manifest/ContributionDecl/Point"
+description: "Admin seam = controlplane::Provider in PROVIDER_SLOT, served over the cp.* face; the old ExtensionPoint/adminapi seam is razed"
 metadata:
   node_type: memory
   type: project
   originSessionId: 2d1f848f-2c99-4b3e-a3bb-5c792c0ff30b
-  modified: 2026-11-23T23:04:38.001Z
+  modified: 2026-11-24T13:03:38.392Z
 ---
 
-The ExtensionPoint/ExtensionEntry admin seam (shipped 2026-07-14, plan
-docs/plans/2026-07-14-1851-admin-extension-points-plan.md) no longer exists. It was
-removed by b8435c9a "refactor(admin): raze the old admin contract
-(admin-control-plane-redesign step 1)"; checked 2026-11-24 (no ExtensionPoint in
-core/, modules/ or api/).
+A module contributes a `controlplane::Provider` (manifest, panel, search, invoke,
+prepare) to `controlplane::PROVIDER_SLOT` (core/controlplane/src/lib.rs). The manifest
+declares contributions placed at `Point`s. `core/admin` is the portal (core, not a
+module) and renders every provider from the slot.
 
-The replacement: a module contributes a `controlplane::Provider` (manifest, panel,
-search, invoke, prepare) to `PROVIDER_SLOT` (core/controlplane/src/lib.rs). The
-manifest is `Manifest { contributions: Vec<ContributionDecl> }` with `Point`
-placements (Page, EntityTab, EntityListColumn, RowAction, PanelForm, TableRow...).
-In the split, every edge peer answers `cp.*`, and admin-svc reaches peers via its
-`peer_face` hand list (cmd/admin-svc/src/lib.rs). The nearest page precedent is
+Every edge process serves the slot over the `cp.*` face: `core/app/src/lib.rs` calls
+`controlplanerpc::register_face` unconditionally (an empty manifest list when the process
+hosts no provider). admin-svc reaches peers with `controlplanerpc::remote_factory(peer)`
+in its `peer_face` hand list (cmd/admin-svc/src/lib.rs). Nearest page precedent:
 modules/apikeys/src/admin.rs.
 
-Read the code before relying on this note. See [[step13-resume-point]] and
+The old ExtensionPoint/ExtensionEntry seam (2026-07-14) and `adminapi::SLOT` no longer
+exist (razed in b8435c9a). Read the code before relying on this note. See
+[[step13-resume-point]], [[generic-remote-admin-write-seam]] and
 [[follow-uilayout-mockup-faithfully]].

@@ -59,8 +59,8 @@
 - [cargo fmt is NOT safe here](cargo-fmt-is-not-safe-here.md) — hand-format; tell every code-writing subagent
 - [weles must stay C-free](weles-must-stay-c-free-cross-compile.md) — no *-sys / bundled-C deps in weles/processctl
 - [Module reference pair](module-reference-pair.md) — characters + inventory are the reference modules
-- [Generic remote-admin-write seam](generic-remote-admin-write-seam.md) — enrich generic adminapi, never a module-coupled page
-- [Admin seam = controlplane::Provider](admin-extension-points-shipped.md) — old ExtensionPoint seam razed (b8435c9a); use Provider/Manifest/Point
+- [Generic remote-admin-write seam](generic-remote-admin-write-seam.md) — remote writes go through generic cp.invoke, never a module-coupled page
+- [Admin seam = controlplane::Provider](admin-extension-points-shipped.md) — Provider in PROVIDER_SLOT, served over cp.* face; core/admin is the portal; old seam razed
 - [Splitproof is proof surface](splitproof-is-proof-surface.md) — authoring = test-author opus; auditing = proof-auditor
 - [Plans: invariants, not prose code](plans-specify-invariants-not-prose-code.md) — specify decisions + invariants; one plan review
 - [Purge race is a bug](purge-race-is-a-bug-not-accepted.md) — fix tombstone/sweep races per module, never accept
