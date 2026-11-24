@@ -15,7 +15,8 @@
 //!    every [`Convention::ALL`]; `NotApplicable` needs a non-empty `why`.
 //! 3. **Executors.** T6 env-validation (a bad env value must fail a fresh full
 //!    `App::build()` with an error chain naming the var), T8 input byte caps
-//!    (`!probe(cap) && probe(cap + 1)`), T7 infra-outage classification
+//!    (`!probe(cap) && probe(cap + 1)`, plus `probe(cap - 1)` for an exact-length
+//!    case), T7 infra-outage classification
 //!    (`Unavailable`, never `Rejected`), T2 argon2 parameter parity (pairwise).
 //! 4. **Report.** A module × convention table, per-fail detail lines, non-zero
 //!    exit on any fail.
@@ -50,7 +51,7 @@ mod tests;
 
 use checks::{
     argon_parity_findings, completeness_findings, control_plane_cap_findings, conv_label,
-    coverage_boundary_findings, credential_cap_findings, drift_findings, eval_cap_probe,
+    coverage_boundary_findings, credential_cap_findings, drift_findings, eval_cap_probe, eval_exact_floor_probe,
     input_policy_prose_findings, COVERAGE_BOUNDARIES,
 };
 use model::{ArgonParams, Convention, EnvCase, Fixture, InputPolicy, OutageClass, Stance};
@@ -419,6 +420,14 @@ fn main() {
                             rejected_at_cap,
                             rejected_over_cap,
                         ));
+                        if case.exact {
+                            let rejected_under_cap = (case.probe)(case.cap - 1);
+                            case_failures.extend(eval_exact_floor_probe(
+                                case.name,
+                                case.cap,
+                                rejected_under_cap,
+                            ));
+                        }
                     }
                 }
                 Fixture::InfraOutage503(cases) => {

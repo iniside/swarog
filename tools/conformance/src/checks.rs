@@ -441,6 +441,19 @@ pub fn eval_cap_probe(
     None
 }
 
+/// T8 verdict for an exact-length case ([`crate::model::CapCase::exact`]): input one byte
+/// under the one admitted length must be rejected too. `None` = pass.
+pub fn eval_exact_floor_probe(name: &str, cap: usize, rejected_under_cap: bool) -> Option<String> {
+    if rejected_under_cap {
+        return None;
+    }
+    Some(format!(
+        "{name}: input of {} bytes (exact length {cap} - 1) was ACCEPTED — only the \
+         upper bound of the exact length is enforced",
+        cap - 1
+    ))
+}
+
 /// T2 verdict: every declared [`ArgonParams`] must be pairwise equal. Zero or
 /// one participant yields no findings (the caller notes a single participant).
 pub fn argon_parity_findings(params: &[(&str, ArgonParams)]) -> Vec<String> {

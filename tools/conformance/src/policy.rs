@@ -256,21 +256,25 @@ fn accounts() -> Entry {
                     CapCase {
                         name: "accounts login/register email",
                         cap: 320,
+                        exact: false,
                         probe: Arc::new(accounts::conformance::conformance_email_rejected),
                     },
                     CapCase {
                         name: "accounts login/register password",
                         cap: 1024,
+                        exact: false,
                         probe: Arc::new(accounts::conformance::conformance_password_rejected),
                     },
                     CapCase {
                         name: "accounts register effective display name",
                         cap: 128,
+                        exact: false,
                         probe: Arc::new(accounts::conformance::conformance_display_name_rejected),
                     },
                     CapCase {
                         name: "accounts federated epic credential",
                         cap: accounts::conformance::MAX_OIDC_CREDENTIAL_BYTES,
+                        exact: false,
                         probe: Arc::new(
                             accounts::conformance::conformance_epic_credential_rejected,
                         ),
@@ -278,6 +282,7 @@ fn accounts() -> Entry {
                     CapCase {
                         name: "accounts federated google credential",
                         cap: accounts::conformance::MAX_OIDC_CREDENTIAL_BYTES,
+                        exact: false,
                         probe: Arc::new(
                             accounts::conformance::conformance_google_credential_rejected,
                         ),
@@ -285,6 +290,7 @@ fn accounts() -> Entry {
                     CapCase {
                         name: "accounts federated guest ticket",
                         cap: accounts::conformance::MAX_GUEST_CREDENTIAL_BYTES,
+                        exact: false,
                         probe: Arc::new(
                             accounts::conformance::conformance_guest_credential_rejected,
                         ),
@@ -292,16 +298,19 @@ fn accounts() -> Entry {
                     CapCase {
                         name: "accounts federated provider name",
                         cap: accounts::conformance::MAX_PROVIDER_NAME_BYTES,
+                        exact: false,
                         probe: Arc::new(accounts::conformance::conformance_provider_name_rejected),
                     },
                     CapCase {
                         name: "accounts link provider name",
                         cap: accounts::conformance::MAX_PROVIDER_NAME_BYTES,
+                        exact: false,
                         probe: Arc::new(accounts::conformance::conformance_link_provider_rejected),
                     },
                     CapCase {
                         name: "accounts link guest credential",
                         cap: accounts::conformance::MAX_GUEST_CREDENTIAL_BYTES,
+                        exact: false,
                         probe: Arc::new(
                             accounts::conformance::conformance_link_credential_rejected,
                         ),
@@ -309,31 +318,37 @@ fn accounts() -> Entry {
                     CapCase {
                         name: "accounts delete ticket",
                         cap: accounts::conformance::MAX_DELETE_TICKET_BYTES,
+                        exact: false,
                         probe: Arc::new(accounts::conformance::conformance_delete_ticket_rejected),
                     },
                     CapCase {
                         name: "accounts refresh token",
                         cap: accountsapi::MAX_SESSION_TOKEN_BYTES,
+                        exact: false,
                         probe: Arc::new(accounts::conformance::conformance_refresh_token_rejected),
                     },
                     CapCase {
                         name: "accounts session token",
                         cap: accountsapi::MAX_SESSION_TOKEN_BYTES,
+                        exact: false,
                         probe: Arc::new(accounts::conformance::conformance_session_token_rejected),
                     },
                     CapCase {
                         name: "cp.invoke accounts input value",
                         cap: accounts::conformance::CP_INVOKE_INPUT_VALUE_BYTES,
+                        exact: false,
                         probe: Arc::new(accounts::conformance::conformance_cp_invoke_input_rejected),
                     },
                     CapCase {
                         name: "accounts admin bound player id",
                         cap: accounts::conformance::UUID_SHAPE_BYTES,
+                        exact: true,
                         probe: Arc::new(accounts::conformance::conformance_admin_player_rejected),
                     },
                     CapCase {
                         name: "accounts admin bound session family",
                         cap: accounts::conformance::UUID_SHAPE_BYTES,
+                        exact: true,
                         probe: Arc::new(accounts::conformance::conformance_admin_family_rejected),
                     },
                 ])),
@@ -385,16 +400,19 @@ fn admin() -> Entry {
                     CapCase {
                         name: "admin login username",
                         cap: 128,
+                        exact: false,
                         probe: Arc::new(admin::conformance::conformance_username_rejected),
                     },
                     CapCase {
                         name: "admin login password",
                         cap: 1024,
+                        exact: false,
                         probe: Arc::new(admin::conformance::conformance_password_rejected),
                     },
                     CapCase {
                         name: "cp.invoke core.events input value",
                         cap: admin::conformance::CORE_EVENTS_INPUT_VALUE_BYTES,
+                        exact: false,
                         probe: Arc::new(admin::conformance::conformance_core_events_input_rejected),
                     },
                 ])),
@@ -425,21 +443,25 @@ fn apikeys() -> Entry {
                     CapCase {
                         name: "apikeys gateway presented-key lookup",
                         cap: apikeysapi::MAX_KEY_BYTES,
+                        exact: false,
                         probe: Arc::new(apikeys::conformance::conformance_key_rejected),
                     },
                     CapCase {
                         name: "apikeys role policy",
                         cap: apikeys::conformance::MAX_POLICY_BYTES,
+                        exact: false,
                         probe: Arc::new(apikeys::conformance::conformance_policy_rejected),
                     },
                     CapCase {
                         name: "apikeys role/key name",
                         cap: apikeys::conformance::MAX_NAME_BYTES,
+                        exact: false,
                         probe: Arc::new(apikeys::conformance::conformance_name_rejected),
                     },
                     CapCase {
                         name: "cp.invoke apikeys input value",
                         cap: apikeys::conformance::CP_INVOKE_INPUT_VALUE_BYTES,
+                        exact: false,
                         probe: Arc::new(apikeys::conformance::conformance_cp_invoke_input_rejected),
                     },
                 ])),
@@ -505,11 +527,13 @@ fn characters() -> Entry {
                     CapCase {
                         name: "characters create name",
                         cap: 128,
+                        exact: false,
                         probe: Arc::new(characters::conformance::conformance_name_rejected),
                     },
                     CapCase {
                         name: "characters create class",
                         cap: 64,
+                        exact: false,
                         probe: Arc::new(characters::conformance::conformance_class_rejected),
                     },
                 ])),
@@ -536,6 +560,7 @@ fn config() -> Entry {
                 Stance::Applies(Fixture::InputByteCaps(vec![CapCase {
                     name: "cp.invoke config input value",
                     cap: config::conformance::CP_INVOKE_INPUT_VALUE_BYTES,
+                    exact: false,
                     probe: Arc::new(config::conformance::conformance_cp_invoke_input_rejected),
                 }])),
             ),
@@ -567,11 +592,13 @@ fn friends() -> Entry {
                     CapCase {
                         name: "friends request target handle",
                         cap: accountsapi::MAX_HANDLE_BYTES,
+                        exact: false,
                         probe: Arc::new(friends::conformance::conformance_target_handle_rejected),
                     },
                     CapCase {
                         name: "friends list/pending cursor",
                         cap: friendsapi::MAX_CURSOR_BYTES,
+                        exact: false,
                         probe: Arc::new(friends::conformance::conformance_cursor_rejected),
                     },
                 ])),
@@ -650,31 +677,37 @@ fn groups() -> Entry {
                     CapCase {
                         name: "groups create name",
                         cap: groupsapi::MAX_NAME_BYTES,
+                        exact: false,
                         probe: Arc::new(groups::conformance::conformance_name_rejected),
                     },
                     CapCase {
                         name: "groups list/members/pending cursor",
                         cap: groupsapi::MAX_CURSOR_BYTES,
+                        exact: false,
                         probe: Arc::new(groups::conformance::conformance_cursor_rejected),
                     },
                     CapCase {
                         name: "groups invite target handle",
                         cap: accountsapi::MAX_HANDLE_BYTES,
+                        exact: false,
                         probe: Arc::new(groups::conformance::conformance_target_handle_rejected),
                     },
                     CapCase {
                         name: "cp.invoke groups input value",
                         cap: groups::conformance::CP_INVOKE_INPUT_VALUE_BYTES,
+                        exact: false,
                         probe: Arc::new(groups::conformance::conformance_cp_invoke_input_rejected),
                     },
                     CapCase {
                         name: "groups admin bound group id",
                         cap: groups::conformance::UUID_SHAPE_BYTES,
+                        exact: true,
                         probe: Arc::new(groups::conformance::conformance_admin_group_rejected),
                     },
                     CapCase {
                         name: "groups admin promoted player id",
                         cap: groups::conformance::UUID_SHAPE_BYTES,
+                        exact: true,
                         probe: Arc::new(groups::conformance::conformance_admin_player_rejected),
                     },
                 ])),
@@ -738,11 +771,13 @@ fn gateway() -> Entry {
                     CapCase {
                         name: "gateway presented bearer",
                         cap: accountsapi::MAX_SESSION_TOKEN_BYTES,
+                        exact: false,
                         probe: Arc::new(gateway::conformance::conformance_session_token_rejected),
                     },
                     CapCase {
                         name: "gateway presented api key",
                         cap: apikeysapi::MAX_KEY_BYTES,
+                        exact: false,
                         probe: Arc::new(gateway::conformance::conformance_api_key_rejected),
                     },
                     // The field the gateway both NAMES and BOUNDS itself: an
@@ -751,6 +786,7 @@ fn gateway() -> Entry {
                     CapCase {
                         name: "gateway push group name",
                         cap: gateway::conformance::MAX_GROUP_NAME_BYTES,
+                        exact: false,
                         probe: Arc::new(gateway::conformance::conformance_group_name_rejected),
                     },
                     // The method string of a `/push` invoke frame: the front both names and
@@ -758,6 +794,7 @@ fn gateway() -> Entry {
                     CapCase {
                         name: "gateway push invoke method",
                         cap: gateway::conformance::MAX_INVOKE_METHOD_BYTES,
+                        exact: false,
                         probe: Arc::new(gateway::conformance::conformance_invoke_method_rejected),
                     },
                 ])),
@@ -819,6 +856,7 @@ fn inventory() -> Entry {
                 Stance::Applies(Fixture::InputByteCaps(vec![CapCase {
                     name: "cp.invoke inventory input value",
                     cap: inventory::conformance::CP_INVOKE_INPUT_VALUE_BYTES,
+                    exact: false,
                     probe: Arc::new(inventory::conformance::conformance_cp_invoke_input_rejected),
                 }])),
             ),
@@ -960,41 +998,49 @@ fn mail() -> Entry {
                     CapCase {
                         name: "mail request idempotency key",
                         cap: mailevents::MAX_IDEMPOTENCY_KEY_BYTES,
+                        exact: false,
                         probe: Arc::new(mail::conformance::conformance_idempotency_key_rejected),
                     },
                     CapCase {
                         name: "mail request recipient",
                         cap: mailevents::MAX_ADDRESS_BYTES,
+                        exact: false,
                         probe: Arc::new(mail::conformance::conformance_recipient_rejected),
                     },
                     CapCase {
                         name: "mail request subject",
                         cap: mailevents::MAX_SUBJECT_BYTES,
+                        exact: false,
                         probe: Arc::new(mail::conformance::conformance_subject_rejected),
                     },
                     CapCase {
                         name: "mail request body",
                         cap: mailevents::MAX_BODY_BYTES,
+                        exact: false,
                         probe: Arc::new(mail::conformance::conformance_body_rejected),
                     },
                     CapCase {
                         name: "mail request kind",
                         cap: mailevents::MAX_KIND_BYTES,
+                        exact: false,
                         probe: Arc::new(mail::conformance::conformance_kind_rejected),
                     },
                     CapCase {
                         name: "cp.invoke mail input value",
                         cap: mail::conformance::CP_INVOKE_INPUT_VALUE_BYTES,
+                        exact: false,
                         probe: Arc::new(mail::conformance::conformance_cp_invoke_input_rejected),
                     },
                     CapCase {
                         name: "mail admin send-test key",
                         cap: mail::conformance::TEST_KEY_BYTES,
+                        exact: false,
                         probe: Arc::new(mail::conformance::conformance_test_key_rejected),
                     },
                     CapCase {
                         name: "mail admin bound message id",
                         cap: mail::conformance::OUTBOX_ID_SHAPE_BYTES,
+                        exact: true,
                         probe: Arc::new(mail::conformance::conformance_outbox_id_rejected),
                     },
                 ])),
@@ -1025,16 +1071,19 @@ fn match_module() -> Entry {
                     CapCase {
                         name: "match report id",
                         cap: 128,
+                        exact: false,
                         probe: Arc::new(match_module::conformance::conformance_report_id_rejected),
                     },
                     CapCase {
                         name: "match winner",
                         cap: 128,
+                        exact: false,
                         probe: Arc::new(match_module::conformance::conformance_winner_rejected),
                     },
                     CapCase {
                         name: "match loser",
                         cap: 128,
+                        exact: false,
                         probe: Arc::new(match_module::conformance::conformance_loser_rejected),
                     },
                 ])),
@@ -1094,31 +1143,37 @@ fn notifications() -> Entry {
                     CapCase {
                         name: "notifications message title",
                         cap: notificationsapi::MAX_TITLE_BYTES,
+                        exact: false,
                         probe: Arc::new(notifications::conformance::conformance_title_rejected),
                     },
                     CapCase {
                         name: "notifications message body",
                         cap: notificationsapi::MAX_BODY_BYTES,
+                        exact: false,
                         probe: Arc::new(notifications::conformance::conformance_body_rejected),
                     },
                     CapCase {
                         name: "notifications message kind",
                         cap: notificationsapi::MAX_KIND_BYTES,
+                        exact: false,
                         probe: Arc::new(notifications::conformance::conformance_kind_rejected),
                     },
                     CapCase {
                         name: "notifications dedup key",
                         cap: notifications::conformance::MAX_DEDUP_KEY_BYTES,
+                        exact: false,
                         probe: Arc::new(notifications::conformance::conformance_dedup_key_rejected),
                     },
                     CapCase {
                         name: "notifications list cursor",
                         cap: notificationsapi::MAX_CURSOR_BYTES,
+                        exact: false,
                         probe: Arc::new(notifications::conformance::conformance_cursor_rejected),
                     },
                     CapCase {
                         name: "cp.invoke notifications input value",
                         cap: notifications::conformance::CP_INVOKE_INPUT_VALUE_BYTES,
+                        exact: false,
                         probe: Arc::new(notifications::conformance::conformance_cp_invoke_input_rejected),
                     },
                 ])),
@@ -1189,6 +1244,7 @@ fn party() -> Entry {
                 Stance::Applies(Fixture::InputByteCaps(vec![CapCase {
                     name: "party invite target handle",
                     cap: accountsapi::MAX_HANDLE_BYTES,
+                    exact: false,
                     probe: Arc::new(party::conformance::conformance_target_handle_rejected),
                 }])),
             ),
@@ -1244,21 +1300,25 @@ fn storage() -> Entry {
                     CapCase {
                         name: "storage put collection",
                         cap: storageapi::MAX_COLLECTION_BYTES,
+                        exact: false,
                         probe: Arc::new(storage::conformance::conformance_collection_rejected),
                     },
                     CapCase {
                         name: "storage put key",
                         cap: storageapi::MAX_KEY_BYTES,
+                        exact: false,
                         probe: Arc::new(storage::conformance::conformance_key_rejected),
                     },
                     CapCase {
                         name: "storage put value",
                         cap: storageapi::MAX_VALUE_BYTES,
+                        exact: false,
                         probe: Arc::new(storage::conformance::conformance_value_rejected),
                     },
                     CapCase {
                         name: "storage list cursor",
                         cap: storageapi::MAX_CURSOR_BYTES,
+                        exact: false,
                         probe: Arc::new(storage::conformance::conformance_cursor_rejected),
                     },
                 ])),
@@ -1293,41 +1353,49 @@ fn wallet() -> Entry {
                     CapCase {
                         name: "wallet movement idempotency key",
                         cap: walletapi::MAX_IDEMPOTENCY_KEY_BYTES,
+                        exact: false,
                         probe: Arc::new(wallet::conformance::conformance_idempotency_key_rejected),
                     },
                     CapCase {
                         name: "wallet movement currency code",
                         cap: walletapi::MAX_CURRENCY_CODE_BYTES,
+                        exact: false,
                         probe: Arc::new(wallet::conformance::conformance_currency_code_rejected),
                     },
                     CapCase {
                         name: "wallet movement reason",
                         cap: walletapi::MAX_REASON_BYTES,
+                        exact: false,
                         probe: Arc::new(wallet::conformance::conformance_reason_rejected),
                     },
                     CapCase {
                         name: "cp.invoke wallet input value",
                         cap: wallet::conformance::CP_INVOKE_INPUT_VALUE_BYTES,
+                        exact: false,
                         probe: Arc::new(wallet::conformance::conformance_cp_invoke_input_rejected),
                     },
                     CapCase {
                         name: "wallet admin grant key",
                         cap: walletapi::MAX_IDEMPOTENCY_KEY_BYTES,
+                        exact: false,
                         probe: Arc::new(wallet::conformance::conformance_admin_key_rejected),
                     },
                     CapCase {
                         name: "wallet admin create code",
                         cap: walletapi::MAX_CURRENCY_CODE_BYTES,
+                        exact: false,
                         probe: Arc::new(wallet::conformance::conformance_create_code_rejected),
                     },
                     CapCase {
                         name: "wallet admin create name",
                         cap: wallet::conformance::CREATE_NAME_BYTES,
+                        exact: false,
                         probe: Arc::new(wallet::conformance::conformance_create_name_rejected),
                     },
                     CapCase {
                         name: "wallet admin create kind",
                         cap: wallet::conformance::CREATE_KIND_BYTES,
+                        exact: false,
                         probe: Arc::new(wallet::conformance::conformance_create_kind_rejected),
                     },
                 ])),

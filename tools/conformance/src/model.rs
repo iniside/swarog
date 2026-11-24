@@ -76,6 +76,9 @@ pub struct CapCase {
     pub name: &'static str,
     pub cap: usize,
     pub probe: Arc<dyn Fn(usize) -> bool + Send + Sync>,
+    /// The value has one admitted length, not a ceiling (a uuid): `cap - 1` bytes must be
+    /// rejected too.
+    pub exact: bool,
 }
 
 #[derive(Clone, Debug)]

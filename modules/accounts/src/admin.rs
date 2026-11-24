@@ -665,9 +665,11 @@ impl AccountsAdmin {
     }
 
     /// Revokes one login of the bound player: the family in `req.item`, its refresh
-    /// tokens and access sessions, under the player row lock, so a refresh rotating inside
-    /// it either landed before and goes with it or finds its token gone. A family holding
-    /// nothing, or not this player's, is NoOp.
+    /// tokens and access sessions, under the player row lock taken first
+    /// (`Store::lock_player_row_tx`). A refresh takes that row before its token too, so
+    /// one rotating inside the family either committed before and goes with it, or waits
+    /// and then finds its token gone. A family holding nothing, or not this player's, is
+    /// NoOp.
     async fn revoke_session(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
         let player = bound_player(req.entity.as_ref())?;
         let family = match req.item.as_deref() {
@@ -688,13 +690,14 @@ impl AccountsAdmin {
         Ok(done("Session revoked"))
     }
 
-    /// Revokes every login of the bound player in one transaction
-    /// (`Store::kill_player_families_tx`). A player with no token or session left is NoOp.
+    /// Revokes every login of the bound player that still grants access, in one
+    /// transaction (`Store::revoke_player_families_tx`). A player with no such family is
+    /// NoOp, the same set the modal counts.
     async fn revoke_all(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
         let player = bound_player(req.entity.as_ref())?;
         let store = &self.svc.store;
         let mut tx = store.pool.begin().await.map_err(internal)?;
-        match store.kill_player_families_tx(&mut tx, player).await.map_err(internal)? {
+        match store.revoke_player_families_tx(&mut tx, player).await.map_err(internal)? {
             None => Err(Error::not_found(format!("accounts: no player {player}"))),
             Some(0) => {
                 tx.rollback().await.map_err(internal)?;
@@ -707,7 +710,8 @@ impl AccountsAdmin {
         }
     }
 
-    /// The Revoke all modal, naming the player and counting its live sessions.
+    /// The Revoke all modal, naming the player and counting the families Revoke all would
+    /// end (`Store::revocable_families_tx`, the set the action deletes).
     async fn prepare_revoke_all(&self, req: &PrepareCall) -> Result<Then, Error> {
         let player = bound_player(req.entity.as_ref())?;
         let store = &self.svc.store;
@@ -716,7 +720,8 @@ impl AccountsAdmin {
             .await
             .map_err(internal)?
             .ok_or_else(|| Error::not_found(format!("accounts: no player {player}")))?;
-        let (_, live) = store.live_families(player, 1).await.map_err(internal)?;
+        let mut conn = store.pool.acquire().await.map_err(internal)?;
+        let live = store.revocable_families_tx(&mut conn, player).await.map_err(internal)?.len();
         let handle = render_handle(&row.display_name, &row.discriminator);
         let impact = vec![("Active sessions".to_string(), text(CellKind::Text, live.to_string()))];
         Ok(Then::Confirm(revoke_all_spec(format!("Revoke all sessions of {handle}?"), impact)))

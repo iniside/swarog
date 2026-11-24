@@ -12,7 +12,8 @@ use crate::model::{
 
 use crate::checks::{
     argon_parity_findings, completeness_findings, control_plane_cap_findings,
-    credential_cap_findings, drift_findings, eval_cap_probe, input_policy_prose_findings,
+    credential_cap_findings, drift_findings, eval_cap_probe, eval_exact_floor_probe,
+    input_policy_prose_findings,
     CORE_INFRA_MODULES,
 };
 use crate::input_inventory::{Exposure, InputKey};
@@ -130,7 +131,7 @@ fn na(why: &'static str) -> Stance {
 // or deliberately diverge from — that fixed table rather than a synthetic one.
 
 fn cap_case(name: &'static str, cap: usize) -> CapCase {
-    CapCase { name, cap, probe: Arc::new(move |len| len > cap) }
+    CapCase { name, cap, probe: Arc::new(move |len| len > cap), exact: false }
 }
 
 /// The registry `checks::CREDENTIAL_CAPS` states today: `epic`/`google` at 65536,
@@ -469,6 +470,14 @@ fn cap_probe_accepting_over_the_cap_fails_as_unenforced() {
 }
 
 #[test]
+fn exact_floor_probe_rejecting_under_the_length_passes_accepting_it_fails() {
+    assert!(eval_exact_floor_probe("uuid", 36, true).is_none());
+    let f = eval_exact_floor_probe("uuid", 36, false).expect("must fail");
+    assert!(f.contains("35 bytes"));
+    assert!(f.contains("ACCEPTED"));
+}
+
+#[test]
 fn argon_parity_equal_and_single_are_clean_mismatch_fails() {
     let a = ArgonParams {
         m_cost: 65536,
@@ -578,6 +587,7 @@ fn cap_case_probe_plumbing_smoke() {
         name: "smoke",
         cap: 8,
         probe: Arc::new(|len| len > 8),
+        exact: false,
     };
     assert!(!(case.probe)(case.cap));
     assert!((case.probe)(case.cap + 1));

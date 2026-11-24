@@ -827,12 +827,27 @@ impl Store {
     ///
     /// The predicate is the whole concurrency story: two dials with the same token
     /// serialize on this row, and only the one that finds `used_at IS NULL` rotates.
+    ///
+    /// Lock order: the token's player row FOR KEY SHARE first, then the token row. The
+    /// successor and access-session inserts that follow need that player row too, and
+    /// an operator revocation ([`Store::lock_player_row_tx`]) and a self-delete take the
+    /// player row before the token rows; a refresh holding its token while it waits for
+    /// the player would deadlock with them.
     pub async fn rotate_refresh_tx(
         &self,
         conn: &mut PgConnection,
         token: &str,
         successor: &str,
     ) -> Result<Option<(String, String)>, sqlx::Error> {
+        sqlx::query(
+            "SELECT 1 FROM accounts.players p \
+               JOIN accounts.refresh_tokens t ON t.player_id = p.id \
+              WHERE t.token = $1 \
+                FOR KEY SHARE OF p",
+        )
+        .bind(token)
+        .execute(&mut *conn)
+        .await?;
         sqlx::query_as(
             "UPDATE accounts.refresh_tokens \
                 SET used_at = now(), replaced_by = $2 \
@@ -925,8 +940,10 @@ impl Store {
 
     /// Takes the player row FOR UPDATE on the caller's tx, answering whether the player
     /// exists. FOR UPDATE conflicts with the FOR KEY SHARE every login and refresh takes on
-    /// that row through its family, token or session insert, so a login either commits
-    /// before the lock is granted or waits until the locking transaction ends.
+    /// that row as its FIRST lock (a login through its family insert's FK, a refresh in
+    /// [`Store::rotate_refresh_tx`] before it touches its token), so either one commits
+    /// before the lock is granted or waits for the locking transaction to end while it
+    /// holds nothing the locker needs next.
     pub async fn lock_player_row_tx(
         &self,
         conn: &mut PgConnection,
@@ -968,13 +985,10 @@ impl Store {
     /// deleted, tokens and sessions together.
     ///
     /// Lock order: the player row first ([`Store::lock_player_row_tx`]), then its token
-    /// and session rows — the order a login takes them (FOR KEY SHARE on the player by its
-    /// family insert, then its own rows) and the order [`Store::delete_player_tx`] takes
-    /// them through this function. Holding the player row makes the two deletes one cut:
-    /// a login racing this either committed before the lock was granted and both deletes
-    /// see its rows, or waits on the lock and commits after, whole. A refresh that already
-    /// holds its token row when this takes the player row deadlocks with it; Postgres
-    /// aborts one of the two, whole, never half.
+    /// and session rows — the order every login and refresh takes them (FOR KEY SHARE on
+    /// the player, then their own rows). Holding the player row makes the two deletes one
+    /// cut: a login or refresh racing this either committed before the lock was granted
+    /// and both deletes see its rows, or waits on the lock and commits after, whole.
     pub async fn kill_player_families_tx(
         &self,
         conn: &mut PgConnection,
@@ -992,6 +1006,47 @@ impl Store {
             .execute(&mut *conn)
             .await?;
         Ok(Some(tokens.rows_affected() + sessions.rows_affected()))
+    }
+
+    /// The refresh families of a player that still grant access: those holding an
+    /// unexpired refresh token or an unexpired access session. A family past both expiries
+    /// grants nothing; the prune sweeps remove its rows.
+    pub async fn revocable_families_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT family_id::text FROM accounts.refresh_tokens \
+              WHERE player_id = $1::uuid AND expires_at > now() \
+             UNION \
+             SELECT family_id::text FROM accounts.sessions \
+              WHERE player_id = $1::uuid AND expires_at > now() AND family_id IS NOT NULL",
+        )
+        .bind(player_id)
+        .fetch_all(&mut *conn)
+        .await
+    }
+
+    /// Revokes every family of a player that still grants access
+    /// ([`Store::revocable_families_tx`]) on the caller's tx: `None` when there is no
+    /// such player, otherwise how many families it revoked. The set it counts is the set
+    /// it deletes, read after the player row lock ([`Store::lock_player_row_tx`], the
+    /// lock order of [`Store::kill_player_families_tx`]), so no login or refresh can add a
+    /// family between the two.
+    pub async fn revoke_player_families_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<Option<usize>, sqlx::Error> {
+        if !self.lock_player_row_tx(conn, player_id).await? {
+            return Ok(None);
+        }
+        let families = self.revocable_families_tx(conn, player_id).await?;
+        for family in &families {
+            self.kill_family_tx(conn, family).await?;
+        }
+        Ok(Some(families.len()))
     }
 
     /// Resolves a bearer token to its player, ignoring expired sessions. `Ok(None)`
