@@ -279,6 +279,12 @@ impl Service {
     /// minted through as last used. All three commit with whatever else that
     /// transaction carries (the player row, the `player.registered` append); a refresh
     /// rotates inside a family and never comes here, so it never stamps.
+    ///
+    /// Lock order: the player row (FOR KEY SHARE, taken by the family insert's FK)
+    /// comes BEFORE the identity row (the stamp's UPDATE), the same order
+    /// `delete_player_tx` locks them in (player, then its identities by cascade). The
+    /// stamp must stay after the first statement that references `players`, or a login
+    /// racing the same player's self-delete can deadlock.
     async fn issue_session_tx(
         &self,
         conn: &mut PgConnection,
@@ -287,10 +293,6 @@ impl Service {
         subject: &str,
         token: String,
     ) -> Result<accountsapi::Session, Error> {
-        self.store
-            .stamp_identity_used_tx(conn, provider, subject, &p.id)
-            .await
-            .map_err(internal)?;
         let refresh_token = store::new_token();
         let family_id = self
             .store
@@ -299,6 +301,10 @@ impl Service {
             .map_err(internal)?;
         self.store
             .insert_session_tx(conn, &p.id, &token, &family_id)
+            .await
+            .map_err(internal)?;
+        self.store
+            .stamp_identity_used_tx(conn, provider, subject, &p.id)
             .await
             .map_err(internal)?;
         Ok(accountsapi::Session {
