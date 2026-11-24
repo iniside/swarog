@@ -403,29 +403,17 @@ fn two_providers_of_one_module_panic_at_construction() {
     let _ = LocalFace::new(twice.iter().map(as_provider).collect());
 }
 
-/// The write gate of `LocalFace::invoke`: a refused invoke is Forbidden and never
-/// reaches the provider. `write_refusal_is_the_module_writes_and_the_contributions_readonly`
-/// pins the rule; this pins that the face applies it.
+/// The module-writes half of `LocalFace::invoke`'s write gate: every invoke of a module
+/// declaring `writes: false`, a declared action or not, is Forbidden and never reaches the
+/// provider. `write_refusal_is_the_module_writes_and_the_contributions_readonly` pins the
+/// rule; the read-only contribution half is
+/// `admin::tests::the_local_face_refuses_a_write_on_a_readonly_contribution`.
 #[tokio::test]
-async fn local_face_refuses_an_invoke_the_write_rule_refuses_before_the_provider() {
+async fn local_face_refuses_every_invoke_of_a_module_without_writes() {
     let mut quiet = writer("quiet");
     quiet.writes = false;
     let quiet = Echo::new(quiet);
-    let mut locked = writer("locked");
-    locked.contributions = vec![ContributionDecl {
-        id: "saves".into(),
-        point: Point::Page("p".into()),
-        order: 0,
-        title: String::new(),
-        icon: String::new(),
-        min_role: Role::Viewer,
-        cache_ttl_s: None,
-        deadline_ms: 0,
-        readonly: Some("inspection only".into()),
-    }];
-    locked.actions.push(invoke_decl("wipe", ActionPoint::PanelTool("saves".into())));
-    let locked = Echo::new(locked);
-    let face = LocalFace::new(vec![as_provider(&quiet), as_provider(&locked)]);
+    let face = LocalFace::new(vec![as_provider(&quiet)]);
 
     for action in ["kick", "ghost"] {
         let err = face.invoke(invoke_call("quiet", action)).await.expect_err("writes: false refuses");
@@ -433,13 +421,6 @@ async fn local_face_refuses_an_invoke_the_write_rule_refuses_before_the_provider
         assert!(err.msg.contains("does not declare writes"), "{action}: {}", err.msg);
     }
     assert_eq!(quiet.calls(), Vec::<&str>::new(), "a refused invoke reached the provider");
-
-    let err = face.invoke(invoke_call("locked", "wipe")).await.expect_err("a read-only contribution refuses");
-    assert_eq!(err.status, opsapi::Status::Forbidden);
-    assert!(err.msg.contains("\"saves\""), "{}", err.msg);
-    assert_eq!(locked.calls(), Vec::<&str>::new());
-    face.invoke(invoke_call("locked", "kick")).await.expect("a writing module's other action runs");
-    assert_eq!(locked.calls(), ["invoke"]);
 }
 
 // ---------------------------------------------------------------------------
