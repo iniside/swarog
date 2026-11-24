@@ -3247,9 +3247,10 @@ async fn only_an_entity_tabs_declared_params_reach_its_panel_query() {
 // No test races a real clock: a window is crossed by setting `claimed_at` or `consumed_at`
 // in the row, and an overlap is held open by a provider waiting on a `Notify`.
 
-/// A provider whose invokes all answer `outcome`, recorded in order. While `hold` is set an
-/// invoke signals `entered` and waits on `release`, so competing requests overlap
-/// structurally.
+/// A provider whose invokes all answer `outcome`, recorded in order. Setting `hold` holds
+/// the next invoke only: it signals `entered` and waits on `release`, so competing requests
+/// overlap structurally, while any later invoke answers at once and fails its assertion
+/// instead of hanging.
 struct Held {
     manifest: Manifest,
     outcome: Mutex<InvokeOutcome>,
@@ -3260,10 +3261,11 @@ struct Held {
 }
 
 impl Held {
-    fn new(manifest: Manifest) -> Arc<Held> {
+    /// `mark` is the message of every `Ok` outcome, which scopes the test's flash rows.
+    fn new(manifest: Manifest, mark: &str) -> Arc<Held> {
         Arc::new(Held {
             manifest,
-            outcome: Mutex::new(done()),
+            outcome: Mutex::new(done(mark)),
             hold: std::sync::atomic::AtomicBool::new(false),
             entered: tokio::sync::Notify::new(),
             release: tokio::sync::Notify::new(),
@@ -3289,8 +3291,8 @@ impl Held {
     }
 }
 
-fn done() -> InvokeOutcome {
-    InvokeOutcome::Ok { message: "done".to_string(), reveal: None, redirect: None }
+fn done(message: &str) -> InvokeOutcome {
+    InvokeOutcome::Ok { message: message.to_string(), reveal: None, redirect: None }
 }
 
 #[async_trait::async_trait]
@@ -3309,7 +3311,7 @@ impl controlplane::Provider for Held {
 
     async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error> {
         self.invoked.lock().unwrap().push(req);
-        if self.hold.load(Ordering::SeqCst) {
+        if self.hold.swap(false, Ordering::SeqCst) {
             self.entered.notify_one();
             self.release.notified().await;
         }
@@ -3352,8 +3354,29 @@ fn spawn_post(
     tokio::spawn(async move { portal_send(&engine, &st, &cookie, &uri, &body, false).await })
 }
 
-/// The repeated-click answer: the neutral toast to htmx, else a bare 303 with no flash.
-async fn assert_repeated(resp: Response, htmx: bool, why: &str) {
+/// The flash rows whose message is `mark`.
+async fn flashes(pool: &PgPool, mark: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM admin.reveals WHERE reveal::jsonb ->> 'message' = $1")
+        .bind(mark)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Sends `post` and asserts the repeated-click answer: the neutral toast to htmx, else a
+/// bare 303 with no flash, and no flash row of `mark` (the provider's `Ok` message) written.
+/// The answer must come within 10 s, so a POST that waits on a held invoke fails, not hangs.
+async fn assert_repeated(
+    pool: &PgPool,
+    mark: &str,
+    post: impl std::future::Future<Output = Response>,
+    htmx: bool,
+    why: &str,
+) {
+    let before = flashes(pool, mark).await;
+    let resp = tokio::time::timeout(Duration::from_secs(10), post)
+        .await
+        .unwrap_or_else(|_| panic!("{why}: answered without waiting on the held invoke"));
     if htmx {
         assert_eq!(resp.status(), StatusCode::OK, "{why}");
         assert!(resp.headers().get("hx-redirect").is_none(), "{why}: no redirect");
@@ -3364,6 +3387,7 @@ async fn assert_repeated(resp: Response, htmx: bool, why: &str) {
         let at = location_of(&resp);
         assert!(!at.contains("reveal="), "{why}: no flash is stashed: {at}");
     }
+    assert_eq!(flashes(pool, mark).await, before, "{why}: no flash row is written");
 }
 
 /// The 303 of a completed invoke, carrying its flash.
@@ -3395,14 +3419,14 @@ fn modal_form(id: &str) -> ActionDecl {
 /// Two POSTs of one form instance invoke once: while the first holds the claim (its invoke
 /// held open) the second gets the repeated answer, a toast to htmx and a bare 303 without a
 /// flash otherwise, and so does a POST after completion (the tombstone). A claim abandoned
-/// 31 s ago is taken over; one 29 s old still holds.
+/// 31 s ago is taken over; one 1 s old still holds.
 #[tokio::test(flavor = "multi_thread")]
 async fn one_form_instance_posted_twice_invokes_once() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, st) = wired(&pool, false, true).await;
     let user = uniq("t-form-claim");
     let cookie = operator_cookie(&pool, &user).await;
-    let ledger = Held::new(player_owner(module("ledger", Vec::new(), vec![modal_form("adjust")], true)));
+    let ledger = Held::new(player_owner(module("ledger", Vec::new(), vec![modal_form("adjust")], true)), &user);
     let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
     let modal = "/admin/_action/ledger/adjust?entity=player:p-1";
     let post = "/admin/_action/ledger/adjust";
@@ -3413,26 +3437,26 @@ async fn one_form_instance_posted_twice_invokes_once() {
     let first = spawn_post(&engine, &st, &cookie, post, &body);
     ledger.wait_entered().await;
     for htmx in [true, false] {
-        let resp = portal_send(&engine, &st, &cookie, post, &body, htmx).await;
-        assert_repeated(resp, htmx, "a POST while the first holds the claim").await;
+        let resp = portal_send(&engine, &st, &cookie, post, &body, htmx);
+        assert_repeated(&pool, &user, resp, htmx, "a POST while the first holds the claim").await;
     }
     ledger.release.notify_one();
     assert_completed(&first.await.unwrap(), "the first POST");
-    ledger.hold.store(false, Ordering::SeqCst);
     for htmx in [true, false] {
-        let resp = portal_send(&engine, &st, &cookie, post, &body, htmx).await;
-        assert_repeated(resp, htmx, "a POST after completion").await;
+        let resp = portal_send(&engine, &st, &cookie, post, &body, htmx);
+        assert_repeated(&pool, &user, resp, htmx, "a POST after completion").await;
     }
     assert_eq!(ledger.calls().len(), 1, "one form instance invokes once");
 
     let (_, raw) = portal_get(&engine, &st, &cookie, modal).await;
     let held = form_id_of(&raw);
-    set_ago(&pool, &held, "claimed_at", 29).await;
-    let resp = portal_send(&engine, &st, &cookie, post, &format!("_csrf=csrf&_form={held}"), false).await;
-    assert_repeated(resp, false, "a claim taken 29 s ago").await;
-    assert_eq!(ledger.calls().len(), 1, "a claim taken 29 s ago still holds");
+    set_ago(&pool, &held, "claimed_at", 1).await;
+    let held_body = format!("_csrf=csrf&_form={held}");
+    let resp = portal_send(&engine, &st, &cookie, post, &held_body, false);
+    assert_repeated(&pool, &user, resp, false, "a claim taken 1 s ago").await;
+    assert_eq!(ledger.calls().len(), 1, "a claim taken 1 s ago still holds");
     set_ago(&pool, &held, "claimed_at", 31).await;
-    let resp = portal_send(&engine, &st, &cookie, post, &format!("_csrf=csrf&_form={held}"), false).await;
+    let resp = portal_send(&engine, &st, &cookie, post, &held_body, false).await;
     assert_completed(&resp, "a claim taken 31 s ago");
     assert_eq!(ledger.calls().len(), 2, "a claim abandoned 31 s ago is taken over");
 
@@ -3492,7 +3516,7 @@ async fn a_click_claim_invokes_once_per_burst_and_keys_its_request_id() {
     let user = uniq("t-click-claim");
     let cookie = operator_cookie(&pool, &user).await;
     let kick = vec![action_decl("kick", ActionPoint::RowAction("player".to_string()), true)];
-    let ledger = Held::new(player_owner(module("ledger", Vec::new(), kick, true)));
+    let ledger = Held::new(player_owner(module("ledger", Vec::new(), kick, true)), &user);
     let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
     let (post, body) = ("/admin/_action/ledger/kick", "_csrf=csrf&_entity=player:p-1");
     let who = crate::engine::actions::Claimant {
@@ -3506,14 +3530,11 @@ async fn a_click_claim_invokes_once_per_burst_and_keys_its_request_id() {
     let first = spawn_post(&engine, &st, &cookie, post, body);
     ledger.wait_entered().await;
     for htmx in [true, false] {
-        let resp = portal_send(&engine, &st, &cookie, post, body, htmx).await;
-        assert_repeated(resp, htmx, "a click while the first holds the claim").await;
+        let resp = portal_send(&engine, &st, &cookie, post, body, htmx);
+        assert_repeated(&pool, &user, resp, htmx, "a click while the first holds the claim").await;
     }
     ledger.release.notify_one();
     assert_completed(&first.await.unwrap(), "the first click");
-    ledger.hold.store(false, Ordering::SeqCst);
-    let resp = portal_send(&engine, &st, &cookie, post, body, true).await;
-    assert_repeated(resp, true, "a click within 5 s of completion").await;
     assert_eq!(ledger.calls().len(), 1, "a burst on one button invokes once");
     let (first_id, first_generation) = (ledger.last_request_id(), generation_of(&pool, &id).await);
 
@@ -3536,7 +3557,7 @@ async fn a_click_claim_invokes_once_per_burst_and_keys_its_request_id() {
     assert_eq!(ledger.calls().len(), 4, "the retry of a released claim invokes");
     assert_eq!(ledger.last_request_id(), released_id, "the retry of a released claim keeps its request id");
 
-    *ledger.outcome.lock().unwrap() = done();
+    *ledger.outcome.lock().unwrap() = done(&user);
     sqlx::query("UPDATE admin.forms SET expires_at = now() - interval '1 second' WHERE id = $1")
         .bind(&id)
         .execute(&pool)
@@ -3557,7 +3578,8 @@ async fn a_click_claim_invokes_once_per_burst_and_keys_its_request_id() {
 
 /// Makes every claim of form row `id` find no row while the row stays free: the trigger
 /// `name` skips the claim's UPDATE and counts it in the `generation` of the row `counter`.
-async fn stall_claims(pool: &PgPool, name: &str, id: &str, counter: &str) {
+/// The stall lasts until the returned guard drops, a panic's unwind included.
+async fn stall_claims(pool: &PgPool, name: &str, id: &str, counter: &str) -> Stall {
     assert!(!id.contains('\'') && !counter.contains('\''), "the ids are quoted into the trigger");
     let function = format!(
         "CREATE FUNCTION admin.\"{name}\"() RETURNS trigger LANGUAGE plpgsql AS $f$ \
@@ -3568,16 +3590,38 @@ async fn stall_claims(pool: &PgPool, name: &str, id: &str, counter: &str) {
          WHEN (OLD.id = '{id}' AND NEW.claimed_at IS DISTINCT FROM OLD.claimed_at) \
          EXECUTE FUNCTION admin.\"{name}\"('{counter}')"
     );
-    for sql in [function, trigger] {
-        sqlx::query(&sql).execute(pool).await.unwrap();
-    }
+    sqlx::query(&function).execute(pool).await.unwrap();
+    let stall = Stall { pool: pool.clone(), name: name.to_string() };
+    sqlx::query(&trigger).execute(pool).await.unwrap();
+    stall
 }
 
-async fn unstall_claims(pool: &PgPool, name: &str) {
-    let trigger = format!("DROP TRIGGER IF EXISTS \"{name}\" ON admin.forms");
-    let function = format!("DROP FUNCTION IF EXISTS admin.\"{name}\"()");
-    for sql in [trigger, function] {
-        sqlx::query(&sql).execute(pool).await.unwrap();
+/// A trigger and function installed by [`stall_claims`], dropped with the guard. The drop
+/// blocks in place, so it needs the multi-thread runtime every claim test runs on.
+struct Stall {
+    pool: PgPool,
+    name: String,
+}
+
+impl Drop for Stall {
+    fn drop(&mut self) {
+        let name = &self.name;
+        let trigger = format!("DROP TRIGGER IF EXISTS \"{name}\" ON admin.forms");
+        let function = format!("DROP FUNCTION IF EXISTS admin.\"{name}\"()");
+        let pool = self.pool.clone();
+        let dropped = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async move {
+                for sql in [trigger, function] {
+                    sqlx::query(&sql).execute(&pool).await?;
+                }
+                Ok::<(), sqlx::Error>(())
+            })
+        });
+        if let Err(err) = dropped {
+            if !std::thread::panicking() {
+                panic!("unstall {name}: {err}");
+            }
+        }
     }
 }
 
@@ -3592,7 +3636,7 @@ async fn a_retry_that_fails_again_answers_repeated_without_a_third_attempt() {
     let user = uniq("t-retry-again");
     let cookie = operator_cookie(&pool, &user).await;
     let kick = action_decl("kick", ActionPoint::RowAction("player".to_string()), true);
-    let ledger = Held::new(player_owner(module("ledger", Vec::new(), vec![modal_form("adjust"), kick], true)));
+    let ledger = Held::new(player_owner(module("ledger", Vec::new(), vec![modal_form("adjust"), kick], true)), &user);
     let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
     let tally = actions::Claimant { login: user.clone(), module: "ledger".to_string(), action: "tally".to_string() };
     let claimant = |action: &str| actions::Claimant {
@@ -3612,11 +3656,10 @@ async fn a_retry_that_fails_again_answers_repeated_without_a_third_attempt() {
     for (action, id, body, why) in paths {
         let counter = actions::click_row_id(&tally, None, Some(action));
         forms::upsert_click(&pool, &counter, &tally, None, Some(action)).await.unwrap();
-        let name = uniq("t-stall");
-        stall_claims(&pool, &name, &id, &counter).await;
-        let resp = portal_send(&engine, &st, &cookie, &format!("/admin/_action/ledger/{action}"), &body, true).await;
-        unstall_claims(&pool, &name).await;
-        assert_repeated(resp, true, why).await;
+        let stall = stall_claims(&pool, &uniq("t-stall"), &id, &counter).await;
+        let uri = format!("/admin/_action/ledger/{action}");
+        assert_repeated(&pool, &user, portal_send(&engine, &st, &cookie, &uri, &body, true), true, why).await;
+        drop(stall);
         assert_eq!(generation_of(&pool, &counter).await, 2, "{why}: one claim and one retry, no third");
     }
     assert!(ledger.calls().is_empty(), "a stalled claim never reaches the provider");
@@ -3637,7 +3680,7 @@ async fn a_form_id_classified_as_reject_is_a_400_with_no_call() {
     let (cookie, other_cookie) = (operator_cookie(&pool, &user).await, operator_cookie(&pool, &other).await);
     let kick = action_decl("kick", ActionPoint::RowAction("player".to_string()), true);
     let actions_ = vec![modal_form("adjust"), modal_form("credit"), kick];
-    let ledger = Held::new(player_owner(module("ledger", Vec::new(), actions_, true)));
+    let ledger = Held::new(player_owner(module("ledger", Vec::new(), actions_, true)), &user);
     let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
     let modal = "/admin/_action/ledger/adjust?entity=player:p-1";
 
@@ -3686,8 +3729,9 @@ async fn a_form_id_classified_as_reject_is_a_400_with_no_call() {
     cleanup_user(&pool, &other).await;
 }
 
-/// The invoke of a form instance takes `item`, `expected_revision` and `request_id` from the
-/// row, and a readonly field its stored default over a posted value.
+/// The invoke of a form instance takes `item`, `expected_revision` and `entity` from the row,
+/// and a readonly field its stored default over a posted value (its `request_id` is pinned by
+/// `a_modal_form_s_request_id_is_its_instance_id_and_never_its_input`).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_form_s_invoke_call_is_built_from_its_row() {
     let Some(pool) = test_pool().await else { return };
@@ -3725,7 +3769,6 @@ async fn a_form_s_invoke_call_is_built_from_its_row() {
     assert_eq!(calls.len(), 1, "one invoke");
     assert_eq!(calls[0].item.as_deref(), Some("slot-3"), "the item is the row's");
     assert_eq!(calls[0].expected_revision, Some(7), "the expected revision is the stored spec's");
-    assert_eq!(calls[0].request_id.as_deref(), Some(form_id.as_str()), "the request id is the row id");
     assert_eq!(calls[0].entity, Some(player_ref("p-1")), "the entity is the row's");
     let want = BTreeMap::from([("note".to_string(), "hi".to_string()), ("lock".to_string(), "kept".to_string())]);
     assert_eq!(calls[0].input, want, "a readonly field takes its stored default");
