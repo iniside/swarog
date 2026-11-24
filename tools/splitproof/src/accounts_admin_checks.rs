@@ -33,8 +33,15 @@ type Button = (String, BTreeMap<String, String>);
 /// `admin.forms` past that window, as [A9] ages a consumed refresh row, so the repeat is a
 /// deliberate second click that accounts must answer NoOp, not a race against the clock.
 ///
-/// Break runs (each a full splitproof run, then reverted): see the admin-second-pass step 19a
-/// commit.
+/// Break runs (each a full splitproof run, then reverted):
+/// - `writes: false` in the accounts provider's manifest (`modules/accounts/src/admin.rs`):
+///   AR1-AR5 and AR1m-AR5m red as new (the panel draws `readonly` with no Revoke buttons, both
+///   POSTs answer 403 read-only with every row and token untouched, the revoke-all modal answers
+///   403), 0 changed and 0 stale (2026-11-24, step 19a).
+/// - the `REVOKE_SESSION` and `REVOKE_ALL` arms of the provider's `invoke` answering
+///   `forbidden("not implemented yet")`: AR1/AR1m green, AR2-AR5 and AR2m-AR5m red as new (each
+///   POST 403, the family's rows kept, its refresh token and bearer still 200), 0 changed and 0
+///   stale (2026-11-24, step 19a).
 pub(super) async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &reqwest::Client, tag: &str) -> Result<()> {
     if let Err(e) = checks(ctx, pool, p, front, admin, tag).await {
         p.check(&format!("[AR0{tag}] accounts admin writes pass completes"), false, format!("{e:#}"));
