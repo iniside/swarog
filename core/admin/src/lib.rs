@@ -91,7 +91,7 @@ const MAX_BACKOFF_SECS: i64 = 900;
 
 /// Byte caps on the login form inputs, enforced BEFORE any argon2 work (the hash's
 /// cost scales with input length — an unauthenticated caller must not choose it).
-pub(crate) const MAX_USERNAME_BYTES: usize = 128;
+pub(crate) const MAX_USERNAME_BYTES: usize = controlplane::MAX_OPERATOR_BYTES;
 pub(crate) const MAX_PASSWORD_BYTES: usize = 1024;
 
 /// The SHARED cap checks — the login handler and factual conformance probes
@@ -116,13 +116,13 @@ pub(crate) fn password_within_cap(password: &str) -> bool {
 /// account defect this fn closes. `pub` (not `pub(crate)`): `adminctl` is a
 /// different crate and is the ONLY enforcement point for `install.sh`/`install.ps1`,
 /// which pass argv straight through.
-pub fn normalize_username(input: &str) -> Result<String, &'static str> {
+pub fn normalize_username(input: &str) -> Result<String, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
-        return Err("username must not be empty");
+        return Err("username must not be empty".to_string());
     }
     if !username_within_cap(trimmed) {
-        return Err("username exceeds the 128-byte cap");
+        return Err(format!("username exceeds the {MAX_USERNAME_BYTES}-byte cap"));
     }
     Ok(trimmed.to_string())
 }

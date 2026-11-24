@@ -107,7 +107,7 @@ fn exact_positionals(verb: &str, rest: &[String], count: usize) -> Result<(), St
 }
 
 fn username_arg(raw: &str) -> Result<String, String> {
-    admin::normalize_username(raw).map_err(str::to_string)
+    admin::normalize_username(raw)
 }
 
 fn role_arg(raw: &str) -> Result<String, String> {

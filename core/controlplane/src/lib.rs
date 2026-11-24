@@ -483,8 +483,8 @@ pub struct InvokeCall {
     pub input: BTreeMap<String, String>,
     pub expected_revision: Option<u64>,
     pub reason: Option<String>,
-    /// The calling operator's login, set by the portal from the session. A provider may
-    /// store it as the author of what the call writes.
+    /// The calling operator's login, set by the portal from the session, at most
+    /// [`MAX_OPERATOR_BYTES`]. A provider may store it as the author of what the call writes.
     pub operator: String,
     /// The bound element: a `PropertyList::item` or a `QueueItem::id`. Unverified: the
     /// module checks it against its own data.
@@ -493,6 +493,11 @@ pub struct InvokeCall {
     /// a deliberate repeat.
     pub request_id: Option<String>,
 }
+
+/// The upper bound, in bytes, of an operator login: enforced at login creation by
+/// `core/admin`, so every `InvokeCall::operator` / `PrepareCall::operator` fits. A provider
+/// that stores the operator sizes its column check by this constant.
+pub const MAX_OPERATOR_BYTES: usize = 128;
 
 /// Asks for the spec of a `prepare: true` action's modal, bound to the element the
 /// operator opened it on.
@@ -504,7 +509,8 @@ pub struct PrepareCall {
     /// As `InvokeCall::item`; the provider builds the text from it, never from a fresh read
     /// of the element current now.
     pub item: Option<String>,
-    /// The calling operator's login, set by the portal from the session.
+    /// The calling operator's login, set by the portal from the session, at most
+    /// [`MAX_OPERATOR_BYTES`].
     pub operator: String,
 }
 

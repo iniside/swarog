@@ -112,7 +112,7 @@ pub(crate) const KEY_NAME: ColumnCap = ColumnCap {
 };
 pub(crate) const KEY_CREATOR: ColumnCap = ColumnCap {
     what: "key creator",
-    max_bytes: MAX_NAME_BYTES,
+    max_bytes: controlplane::MAX_OPERATOR_BYTES,
     constraint: "keys_created_by_len_check",
 };
 const ROLE_POLICY: ColumnCap = ColumnCap {
