@@ -103,9 +103,13 @@ fn call(action: &str, input: &[(&str, &str)], item: Option<&str>, request_id: Op
 }
 
 fn prepare(item: Option<&str>) -> PrepareCall {
+    prepare_action("cancel", item)
+}
+
+fn prepare_action(action: &str, item: Option<&str>) -> PrepareCall {
     PrepareCall {
         module: "mail".to_string(),
-        action: "cancel".to_string(),
+        action: action.to_string(),
         entity: None,
         item: item.map(str::to_string),
         operator: "admin_tests".to_string(),
@@ -184,8 +188,9 @@ fn the_attention_tab_counts_retrying_and_parked() {
 async fn refusals_decided_before_the_store() {
     let p = offline();
     let status = |r: Result<InvokeOutcome, opsapi::Error>| r.expect_err("refused").status;
-    for action in ["pause-sending", "retry-now", "park", "cancel-parked"] {
-        assert_eq!(status(p.invoke(call(action, &[], Some(ID), None)).await), Status::Forbidden, "{action}");
+    assert_eq!(status(p.invoke(call("pause-sending", &[], Some(ID), None)).await), Status::Forbidden);
+    for action in ["retry-now", "park", "cancel-parked"] {
+        assert_eq!(status(p.invoke(call(action, &[], None, None)).await), Status::Invalid, "{action} needs a row");
     }
     assert_eq!(status(p.invoke(call("nope", &[], None, None)).await), Status::NotFound);
     assert_eq!(status(p.invoke(call("cancel", &[], None, None)).await), Status::Invalid);
@@ -474,4 +479,238 @@ async fn a_row_claimed_for_its_first_send_is_pending_until_an_attempt_fails() {
         assert_eq!(item.actions, ["retry-now", "park", "cancel"]);
         assert_eq!(item.last_error.as_deref(), Some("mail provider unavailable: transient error (421)"));
     }
+}
+
+/// Puts a row in a state the drain would leave it in, by SQL: a failed attempt (`last_error`,
+/// two burnt attempts) backed off an hour, so only an operator move can make it due.
+async fn backed_off_failure(pool: &sqlx::PgPool, key: &str, state: &str) {
+    sqlx::query(
+        "UPDATE mail.outbox SET state = $2, attempts = 2, last_error = 'relay refused (421)', \
+                next_attempt_at = now() + interval '1 hour' WHERE idempotency_key = $1",
+    )
+    .bind(key)
+    .bind(state)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn is_due(pool: &sqlx::PgPool, key: &str) -> bool {
+    let (due,): (bool,) = sqlx::query_as("SELECT next_attempt_at <= now() FROM mail.outbox WHERE idempotency_key = $1")
+        .bind(key)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    due
+}
+
+/// Claims this test's one row, as the drain does.
+async fn claim(pool: &sqlx::PgPool, key: &str) -> crate::store::Claimed {
+    quarantine_foreign_pending(pool, key).await;
+    crate::tests::expire_lease(pool, key).await;
+    let mut tx = bounded_tx(pool, std::time::Duration::from_secs(5)).await.unwrap();
+    let claimed = Store.claim_due_tx(&mut tx, 30.0).await.unwrap().expect("this test's row is due");
+    tx.commit().await.unwrap();
+    assert_eq!(claimed.id, id_of(pool, key).await, "the claim took this test's row");
+    claimed
+}
+
+async fn finish_sent(pool: &sqlx::PgPool, claimed: &crate::store::Claimed) -> u64 {
+    let mut tx = bounded_tx(pool, std::time::Duration::from_secs(5)).await.unwrap();
+    let hit = Store.finish_tx(&mut tx, claimed, &Disposition::Sent, "fake").await.unwrap();
+    tx.commit().await.unwrap();
+    hit
+}
+
+fn is_noop(outcome: InvokeOutcome) -> bool {
+    matches!(outcome, InvokeOutcome::NoOp { .. })
+}
+
+fn is_ok(outcome: InvokeOutcome) -> bool {
+    matches!(outcome, InvokeOutcome::Ok { .. })
+}
+
+#[test]
+fn the_row_actions_are_implemented_and_cancel_parked_confirms() {
+    let manifest = super::manifest();
+    let decl = |id: &str| manifest.actions.iter().find(|a| a.id == id).unwrap_or_else(|| panic!("no action {id}"));
+    for id in ["retry-now", "park", "cancel-parked", "cancel", "resume"] {
+        assert!(decl(id).implemented, "{id}");
+    }
+    assert!(!decl("pause-sending").implemented, "pause sending stays disabled");
+    for id in ["cancel", "cancel-parked"] {
+        assert!(decl(id).prepare, "{id} prepares its confirm from the bound row");
+        assert!(matches!(decl(id).then, Then::Confirm(_)), "{id}");
+    }
+}
+
+/// Retry now brings a FAILED pending row forward and bumps `generation`; a row that has not
+/// failed, or that left pending, answers no-op and is left exactly as it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retry_now_makes_a_failed_pending_row_due_and_bumps_its_generation() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let svc = wired(&pool).await;
+    let p = admin(svc.clone());
+    let key = unique_key(&pool, "admin-retry-now").await;
+    let _cleanup = cleanup(&pool, &[&key]);
+    enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
+    let id = id_of(&pool, &key).await;
+    let retry = || p.invoke(call("retry-now", &[], Some(&id), None));
+
+    // Pending with no failed attempt: not retrying, so nothing to bring forward.
+    sqlx::query("UPDATE mail.outbox SET next_attempt_at = now() + interval '1 hour' WHERE idempotency_key = $1")
+        .bind(&key)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let before = row_of(&pool, &key).await;
+    assert!(is_noop(retry().await.unwrap()));
+    assert_eq!(row_of(&pool, &key).await, before, "a no-op writes nothing");
+    assert!(!is_due(&pool, &key).await);
+
+    // Rows that left pending: no-op, whatever their last_error.
+    for state in [STATE_PARKED, STATE_CANCELLED, STATE_SENT] {
+        backed_off_failure(&pool, &key, state).await;
+        let before = row_of(&pool, &key).await;
+        assert!(is_noop(retry().await.unwrap()), "{state}");
+        assert_eq!(row_of(&pool, &key).await, before, "{state}: nothing written");
+        assert!(!is_due(&pool, &key).await, "{state}");
+    }
+
+    backed_off_failure(&pool, &key, STATE_PENDING).await;
+    let (_, _, attempts, generation, last_error) = row_of(&pool, &key).await;
+    assert!(!is_due(&pool, &key).await);
+    assert!(is_ok(retry().await.unwrap()));
+    let (state, _, now_attempts, now_generation, now_error) = row_of(&pool, &key).await;
+    assert_eq!(state, STATE_PENDING);
+    assert!(is_due(&pool, &key).await, "the row is due now");
+    assert_eq!(now_generation, generation + 1, "an in-flight attempt must lose its write");
+    assert_eq!((now_attempts, now_error), (attempts, last_error), "the ladder and the failure stay visible");
+}
+
+/// The reason for the generation bump: an attempt claimed before the operator's retry must not
+/// record its outcome over the fresh one the retry made due.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_attempt_in_flight_when_retry_now_lands_loses_its_status_write() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let svc = wired(&pool).await;
+    let p = admin(svc.clone());
+    let key = unique_key(&pool, "admin-retry-race").await;
+    let _cleanup = cleanup(&pool, &[&key]);
+    enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
+    let id = id_of(&pool, &key).await;
+    backed_off_failure(&pool, &key, STATE_PENDING).await;
+    let claimed = claim(&pool, &key).await;
+
+    assert!(is_ok(p.invoke(call("retry-now", &[], Some(&id), None)).await.unwrap()));
+    assert_eq!(finish_sent(&pool, &claimed).await, 0, "the superseded attempt's write is a CAS miss");
+    let (state, body, ..) = row_of(&pool, &key).await;
+    assert_eq!((state.as_str(), body.as_str()), (STATE_PENDING, "hello"), "still queued, body intact");
+}
+
+/// Park stops the retries and keeps the failure; only a pending row can be parked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn park_moves_a_pending_row_once_keeps_its_error_and_bumps_its_generation() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let svc = wired(&pool).await;
+    let p = admin(svc.clone());
+    let key = unique_key(&pool, "admin-park").await;
+    let _cleanup = cleanup(&pool, &[&key]);
+    enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
+    let id = id_of(&pool, &key).await;
+    let park = || p.invoke(call("park", &[], Some(&id), None));
+
+    // Rows outside pending: no-op, nothing written.
+    for state in [STATE_PARKED, STATE_CANCELLED, STATE_SENT] {
+        backed_off_failure(&pool, &key, state).await;
+        let before = row_of(&pool, &key).await;
+        assert!(is_noop(park().await.unwrap()), "{state}");
+        assert_eq!(row_of(&pool, &key).await, before, "{state}: nothing written");
+    }
+
+    backed_off_failure(&pool, &key, STATE_PENDING).await;
+    let (_, _, attempts, generation, last_error) = row_of(&pool, &key).await;
+    assert!(is_ok(park().await.unwrap()));
+    let (state, body, now_attempts, now_generation, now_error) = row_of(&pool, &key).await;
+    assert_eq!(state, STATE_PARKED);
+    assert_eq!(now_generation, generation + 1, "an in-flight attempt must lose its write");
+    assert_eq!((now_attempts, now_error.as_str()), (attempts, "relay refused (421)"), "the failure is kept");
+    assert_eq!((now_error, body.as_str()), (last_error, "hello"));
+    assert!(is_noop(park().await.unwrap()), "a second park finds the row parked");
+    assert_eq!(row_of(&pool, &key).await.3, now_generation, "the no-op did not bump again");
+
+    // Pending with no failed attempt parks too: park is not limited to the Retrying tab.
+    let fresh = unique_key(&pool, "admin-park-fresh").await;
+    let _cleanup_fresh = cleanup(&pool, &[&fresh]);
+    enqueue(&svc, &pool, &mail_of(&fresh, "hello")).await;
+    let fresh_id = id_of(&pool, &fresh).await;
+    assert!(is_ok(p.invoke(call("park", &[], Some(&fresh_id), None)).await.unwrap()));
+    let (state, _, _, _, last_error) = row_of(&pool, &fresh).await;
+    assert_eq!((state.as_str(), last_error.as_str()), (STATE_PARKED, ""));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_attempt_in_flight_when_the_row_is_parked_loses_its_status_write() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let svc = wired(&pool).await;
+    let p = admin(svc.clone());
+    let key = unique_key(&pool, "admin-park-race").await;
+    let _cleanup = cleanup(&pool, &[&key]);
+    enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
+    let id = id_of(&pool, &key).await;
+    let claimed = claim(&pool, &key).await;
+
+    assert!(is_ok(p.invoke(call("park", &[], Some(&id), None)).await.unwrap()));
+    assert_eq!(finish_sent(&pool, &claimed).await, 0, "the parked row is not flipped to sent");
+    let (state, body, ..) = row_of(&pool, &key).await;
+    assert_eq!((state.as_str(), body.as_str()), (STATE_PARKED, "hello"));
+}
+
+/// Cancel parked prepares the same confirm as cancel, moves ONLY a parked row, and leaves the
+/// body and the failure that parked it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancel_parked_moves_a_parked_row_once_and_keeps_its_body() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let svc = wired(&pool).await;
+    let p = admin(svc.clone());
+    let key = unique_key(&pool, "admin-cancel-parked").await;
+    let _cleanup = cleanup(&pool, &[&key]);
+    enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
+    let id = id_of(&pool, &key).await;
+    let cancel_parked = || p.invoke(call("cancel-parked", &[], Some(&id), None));
+
+    match p.prepare(prepare_action("cancel-parked", Some(&id))).await.unwrap() {
+        Then::Confirm(spec) => {
+            let impact: Vec<_> = spec.impact.iter().map(|(k, c)| (k.as_str(), c.value.as_str())).collect();
+            assert_eq!(impact, [("Recipient", "player@example.com"), ("Template", "verification")]);
+        }
+        other => panic!("cancel-parked prepares a confirm, got {other:?}"),
+    }
+
+    // Rows outside parked: no-op, nothing written.
+    for state in [STATE_PENDING, STATE_CANCELLED, STATE_SENT] {
+        backed_off_failure(&pool, &key, state).await;
+        let before = row_of(&pool, &key).await;
+        assert!(is_noop(cancel_parked().await.unwrap()), "{state}");
+        assert_eq!(row_of(&pool, &key).await, before, "{state}: nothing written");
+    }
+
+    backed_off_failure(&pool, &key, STATE_PARKED).await;
+    let (_, _, attempts, generation, last_error) = row_of(&pool, &key).await;
+    assert!(is_ok(cancel_parked().await.unwrap()));
+    assert_eq!(
+        row_of(&pool, &key).await,
+        (STATE_CANCELLED.to_string(), "hello".to_string(), attempts, generation, last_error),
+        "only the state moved: body kept (a replay compares equal), failure kept"
+    );
+    assert!(is_noop(cancel_parked().await.unwrap()), "a second cancel finds it cancelled");
+
+    // The pending-only cancel still refuses a parked row.
+    backed_off_failure(&pool, &key, STATE_PARKED).await;
+    assert!(is_noop(p.invoke(call("cancel", &[], Some(&id), None)).await.unwrap()));
 }

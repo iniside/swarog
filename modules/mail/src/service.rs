@@ -224,6 +224,30 @@ impl Service {
         Ok(cancelled)
     }
 
+    /// Rows made due now — `0` means the row was not retrying (moved, or never failed).
+    pub(crate) async fn retry_now(&self, id: &str) -> Result<u64, Error> {
+        let mut tx = bounded_tx(&self.pool, ADMIN_BUDGET).await.map_err(crate::internal)?;
+        let moved = self.store.retry_now_tx(&mut tx, id).await.map_err(crate::internal)?;
+        tx.commit().await.map_err(crate::internal)?;
+        Ok(moved)
+    }
+
+    /// Rows parked — `0` means the row was not pending when the statement ran.
+    pub(crate) async fn park(&self, id: &str) -> Result<u64, Error> {
+        let mut tx = bounded_tx(&self.pool, ADMIN_BUDGET).await.map_err(crate::internal)?;
+        let parked = self.store.park_tx(&mut tx, id).await.map_err(crate::internal)?;
+        tx.commit().await.map_err(crate::internal)?;
+        Ok(parked)
+    }
+
+    /// Rows cancelled — `0` means the row was not parked when the statement ran.
+    pub(crate) async fn cancel_parked(&self, id: &str) -> Result<u64, Error> {
+        let mut tx = bounded_tx(&self.pool, ADMIN_BUDGET).await.map_err(crate::internal)?;
+        let cancelled = self.store.cancel_parked_tx(&mut tx, id).await.map_err(crate::internal)?;
+        tx.commit().await.map_err(crate::internal)?;
+        Ok(cancelled)
+    }
+
     /// An operator's test message through the SAME [`Service::enqueue_on`] authority, run
     /// on a pool transaction: the admin form cannot acquire an input rule — or an
     /// idempotency semantic — the durable ingress does not have.

@@ -48,15 +48,6 @@ modules/mail/src/admin.rs landed in 544dd4e5; the line numbers are its committed
   ADMIN2-13. Mockup: the outbox "Pause sending" tool. Action `PAUSE_SENDING`,
   `implemented: false`: modules/mail/src/admin.rs:289-300, refused at :568; the drain has
   no pause switch. Replaced by: a persisted pause flag the drain honours.
-- [ ] **Retry now**
-  ADMIN2-14. Mockup: the per-row "Retry". Action `RETRY_NOW`, `implemented: false`:
-  modules/mail/src/admin.rs:302-303; the drain owns every retry time. Replaced by: a
-  per-row "due now" operation on the outbox.
-- [ ] **Park and cancel parked**
-  ADMIN2-15. Mockup: "Park: keep but stop retrying" and the parked row's "Cancel".
-  Actions `PARK` and `CANCEL_PARKED`, `implemented: false`: modules/mail/src/admin.rs:304-306
-  and :313; no operator park exists (resume parked is real) and `cancel` refuses a row
-  that is not pending. Replaced by: an operator park transition and a cancel for parked rows.
 
 ### Not-implemented actions
 

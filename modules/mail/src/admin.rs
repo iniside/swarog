@@ -319,18 +319,20 @@ fn manifest() -> Manifest {
                 )
                 .decl(false, Emphasis::Default, false)
             },
-            // NEW: the drain owns every retry time.
-            act(RETRY_NOW, row(), "Retry", "refresh", 10, Then::Invoke).decl(false, Emphasis::Default, false),
-            // NEW: no operator park exists.
+            act(RETRY_NOW, row(), "Retry", "refresh", 10, Then::Invoke).decl(false, Emphasis::Default, true),
             act(PARK, row(), "Park: keep but stop retrying", "park", 20, Then::Invoke)
-                .decl(false, Emphasis::Ghost, false),
+                .decl(false, Emphasis::Ghost, true),
             ActionDecl {
                 prepare: true,
-                ..act(CANCEL, row(), "Cancel", "x", 30, Then::Confirm(cancel)).decl(true, Emphasis::Ghost, true)
+                ..act(CANCEL, row(), "Cancel", "x", 30, Then::Confirm(cancel.clone())).decl(true, Emphasis::Ghost, true)
             },
             act(RESUME, row(), "Resume", "play", 40, Then::Invoke).decl(false, Emphasis::Default, true),
-            // NEW: cancel refuses a row that is not pending.
-            act(CANCEL_PARKED, row(), "Cancel", "x", 50, Then::Invoke).decl(true, Emphasis::Ghost, false),
+            // Its own action because `cancel` is guarded on `state = 'pending'`; the same
+            // confirm, prepared for the bound row the same way.
+            ActionDecl {
+                prepare: true,
+                ..act(CANCEL_PARKED, row(), "Cancel", "x", 50, Then::Confirm(cancel)).decl(true, Emphasis::Ghost, true)
+            },
         ],
         search: Vec::new(),
         writes: true,
@@ -549,14 +551,26 @@ impl Provider for MailAdmin {
                 0 => Ok(noop("Nothing resumed: the message is no longer parked; refresh")),
                 _ => Ok(done("Resumed")),
             },
-            PAUSE_SENDING | RETRY_NOW | PARK | CANCEL_PARKED => Err(Error::forbidden("not implemented yet")),
+            RETRY_NOW => match self.svc.retry_now(outbox_id(req.item.as_deref())?).await? {
+                0 => Ok(noop("Nothing retried: the message is no longer retrying; refresh")),
+                _ => Ok(done("Retry queued")),
+            },
+            PARK => match self.svc.park(outbox_id(req.item.as_deref())?).await? {
+                0 => Ok(noop("Nothing parked: the message is no longer pending; refresh")),
+                _ => Ok(done("Message parked")),
+            },
+            CANCEL_PARKED => match self.svc.cancel_parked(outbox_id(req.item.as_deref())?).await? {
+                0 => Ok(noop("Nothing cancelled: the message is no longer parked; refresh")),
+                _ => Ok(done("Message cancelled")),
+            },
+            PAUSE_SENDING => Err(Error::forbidden("not implemented yet")),
             other => Err(Error::not_found(format!("{MODULE} has no action {other:?}"))),
         }
     }
 
     async fn prepare(&self, req: PrepareCall) -> Result<Then, Error> {
         match req.action.as_str() {
-            CANCEL => self.prepare_cancel(&req).await,
+            CANCEL | CANCEL_PARKED => self.prepare_cancel(&req).await,
             other => Err(Error::not_found(format!("{MODULE} prepares no action {other:?}"))),
         }
     }

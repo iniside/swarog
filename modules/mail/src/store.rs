@@ -633,6 +633,81 @@ impl Store {
         Ok((moved, still_parked))
     }
 
+    /// Makes ONE retrying row due now: an operator's "retry" does not wait out the backoff.
+    /// Only a row that has failed an attempt qualifies (`state = 'pending' AND last_error IS
+    /// NOT NULL`, the Retrying tab, plan D6): a pending row with no `last_error` is already
+    /// due or still on its first send, so there is nothing to bring forward.
+    ///
+    /// `attempts` and `last_error` are kept (the ladder and the failure stay visible until the
+    /// next attempt rewrites them). `generation` is bumped the way [`Store::requeue_parked_tx`]
+    /// bumps it: an attempt in flight right now is claimed under the old generation and
+    /// loses its status write, so the fresh attempt this statement makes due is the only one
+    /// that records an outcome. The message can therefore go out twice (the in-flight one may
+    /// already have reached the relay); delivery is at-least-once by contract.
+    ///
+    /// A row that moved (sent, parked, cancelled) or never failed matches zero rows, which
+    /// the caller reports as a stale form.
+    pub(crate) async fn retry_now_tx(
+        &self,
+        conn: &mut PgConnection,
+        id: &str,
+    ) -> Result<u64, sqlx::Error> {
+        let done = sqlx::query(
+            "UPDATE mail.outbox \
+                SET next_attempt_at = now(), generation = generation + 1, updated_at = now() \
+              WHERE id = $1::uuid AND state = 'pending' AND last_error IS NOT NULL",
+        )
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+        Ok(done.rows_affected())
+    }
+
+    /// Parks ONE pending row on the operator's say: kept, but no longer retried until a
+    /// resume. `last_error` is KEPT (it is why the operator parked it, and what the Parked
+    /// tab shows); `attempts` stays too, since a resume resets the ladder
+    /// ([`Store::requeue_parked_tx`]).
+    ///
+    /// `generation` is bumped so an attempt in flight right now loses its status write
+    /// whatever the row does next: `finish_tx`'s `state = 'pending'` leg already refuses it
+    /// while the row stays parked, and the bump keeps it refused if the row is resumed to
+    /// pending before that attempt finishes. The in-flight message may still reach the relay
+    /// (as with a cancel); the park only stops the next one.
+    ///
+    /// The `state = 'pending'` leg is the whole guard; any other state matches zero rows.
+    pub(crate) async fn park_tx(&self, conn: &mut PgConnection, id: &str) -> Result<u64, sqlx::Error> {
+        let done = sqlx::query(
+            "UPDATE mail.outbox \
+                SET state = 'parked', generation = generation + 1, updated_at = now() \
+              WHERE id = $1::uuid AND state = 'pending'",
+        )
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+        Ok(done.rows_affected())
+    }
+
+    /// Cancels ONE parked row. A parked row is not leased (the drain claims only pending
+    /// rows), so no attempt is in flight to race and no `generation` bump is needed.
+    ///
+    /// `body` is NOT blanked, for the reason [`Store::cancel_pending_tx`] gives; `last_error`
+    /// stays as the record of why it was parked. Any other state matches zero rows.
+    pub(crate) async fn cancel_parked_tx(
+        &self,
+        conn: &mut PgConnection,
+        id: &str,
+    ) -> Result<u64, sqlx::Error> {
+        let done = sqlx::query(
+            "UPDATE mail.outbox \
+                SET state = 'cancelled', updated_at = now() \
+              WHERE id = $1::uuid AND state = 'parked'",
+        )
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+        Ok(done.rows_affected())
+    }
+
     /// Takes one pending row out of the drain's reach. BEST EFFORT against an attempt
     /// already in flight: the row may be leased right now, and the relay may already have
     /// accepted the message — but [`Store::finish_tx`]'s `state = 'pending'` CAS leg means

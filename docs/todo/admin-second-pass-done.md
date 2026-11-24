@@ -2,6 +2,17 @@
 
 Last updated: 2026-11-24
 
+- [x] **Park and cancel parked** (2026-11-24, admin-second-pass step 16)
+  ADMIN2-15. `PARK` (pending to parked, `last_error` kept, `generation` bumped) and
+  `CANCEL_PARKED` (a Confirm prepared like `CANCEL`; parked to cancelled, body kept) are
+  implemented: modules/mail/src/store.rs `park_tx`, `cancel_parked_tx`. A row in the wrong state
+  answers no-op.
+
+- [x] **Retry now** (2026-11-24, admin-second-pass step 16)
+  ADMIN2-14. `RETRY_NOW` makes a retrying row (`state = 'pending' AND last_error IS NOT NULL`)
+  due now and bumps `generation`, so an attempt in flight loses its write
+  (modules/mail/src/store.rs `retry_now_tx`). A pending row with no `last_error` answers no-op.
+
 - [x] **`INVOKE_DEADLINE` doc separates prepare from invoke** (2026-11-24, admin-second-pass step 15)
   ADMIN2-72. The doc on `controlplane::INVOKE_DEADLINE` no longer promises "outcome unknown"
   for every call past the deadline: a prepare is answered as retryable (the 504 "try again"),
