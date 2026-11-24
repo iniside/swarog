@@ -9,8 +9,32 @@ use std::collections::HashSet;
 use serde_json::{json, Value};
 use sqlx::PgPool;
 
+use controlplane::events::AdminAction;
+use serde::Serialize;
+
 use super::*;
 use crate::{Audit, Context, Module};
+
+/// A fixture payload as the producer writes it: the contract struct serialized, so a
+/// renamed contract field breaks the derivation here instead of drawing "—" on the page.
+fn payload(event: impl Serialize) -> Value {
+    serde_json::to_value(event).expect("a contract event serializes")
+}
+
+fn admin(actor: &str, action: &str, target: &str, detail: &str) -> Value {
+    payload(AdminAction { actor: actor.into(), action: action.into(), target: target.into(), detail: detail.into() })
+}
+
+fn wallet(player_id: &str, currency: &str, delta: i64, balance_after: i64, reason: &str, ledger_id: &str) -> Value {
+    payload(walletevents::Changed {
+        player_id: player_id.into(),
+        currency: currency.into(),
+        delta,
+        balance_after,
+        reason: reason.into(),
+        ledger_id: ledger_id.into(),
+    })
+}
 
 async fn test_pool() -> Option<PgPool> {
     let pool = testdb::test_pool().await?;
@@ -98,82 +122,136 @@ async fn derives_every_logged_topic() {
     let cases: Vec<(&str, Value, [String; 4])> = vec![
         (
             "admin.action",
-            json!({"actor": format!("op-{m}"), "action": "wallet.credit", "target": format!("player:{p}"), "detail": "ok"}),
+            admin(&format!("op-{m}"), "wallet.credit", &format!("player:{p}"), "ok"),
             [format!("op-{m}"), "wallet.credit".into(), format!("player:{p}"), "ok".into()],
         ),
         (
             "character.created",
-            json!({"character_id": format!("c-{m}"), "player_id": p, "name": "Aria", "class": "mage"}),
+            payload(charactersevents::Created {
+                character_id: format!("c-{m}"),
+                player_id: p.clone(),
+                name: "Aria".into(),
+                class: "mage".into(),
+            }),
             [SYSTEM_ACTOR.into(), "created".into(), format!("character:c-{m}"), "Aria · mage".into()],
         ),
         (
             "character.deleted",
-            json!({"character_id": format!("c-{m}"), "player_id": p}),
+            payload(charactersevents::Deleted { character_id: format!("c-{m}"), player_id: p.clone() }),
             [SYSTEM_ACTOR.into(), "deleted".into(), format!("character:c-{m}"), format!("player:{p}")],
         ),
         (
             "player.registered",
-            json!({"player_id": p, "display_name": "Neo", "provider": "guest"}),
+            payload(accountsevents::PlayerRegistered {
+                player_id: p.clone(),
+                display_name: "Neo".into(),
+                provider: "guest".into(),
+            }),
             [SYSTEM_ACTOR.into(), "registered".into(), format!("player:{p}"), "Neo · guest".into()],
         ),
         (
             "player.promoted",
-            json!({"player_id": p, "from_provider": "guest", "to_provider": "epic"}),
+            payload(accountsevents::PlayerPromoted {
+                player_id: p.clone(),
+                from_provider: "guest".into(),
+                to_provider: "epic".into(),
+            }),
             [SYSTEM_ACTOR.into(), "promoted".into(), format!("player:{p}"), "guest → epic".into()],
         ),
         (
             "player.deleted",
-            json!({"player_id": p, "handle": "Neo#1234"}),
+            payload(accountsevents::PlayerDeleted { player_id: p.clone(), handle: "Neo#1234".into() }),
             [SYSTEM_ACTOR.into(), "deleted".into(), format!("player:{p}"), "Neo#1234".into()],
         ),
         (
             "config.changed",
-            json!({"namespace": format!("ns-{m}"), "key": "motd", "value": "SECRET-VALUE", "operation": "update", "revision": 42}),
+            payload(configevents::Changed {
+                namespace: format!("ns-{m}"),
+                key: "motd".into(),
+                value: Some("SECRET-VALUE".into()),
+                operation: "update".into(),
+                revision: 42,
+            }),
             [SYSTEM_ACTOR.into(), "changed".into(), format!("ns-{m}/motd"), "update · rev 42".into()],
         ),
         (
             "match.finished",
-            json!({"match_id": format!("mt-{m}"), "winner": "red", "loser": "blue"}),
+            payload(matchevents::Finished { match_id: format!("mt-{m}"), winner: "red".into(), loser: "blue".into() }),
             [SYSTEM_ACTOR.into(), "finished".into(), format!("match:mt-{m}"), "winner red · loser blue".into()],
         ),
         (
             "wallet.changed",
-            json!({"player_id": p, "currency": "gold", "delta": 50, "balance_after": 150, "reason": "quest", "ledger_id": "l1"}),
+            wallet(&p, "gold", 50, 150, "quest", "l1"),
             [SYSTEM_ACTOR.into(), "changed".into(), format!("player:{p}"), "+50 gold · quest".into()],
         ),
         (
             "friend.requested",
-            json!({"edge_id": format!("e-{m}"), "requester_id": p, "requester_handle": "A#1", "addressee_id": "q", "addressee_handle": "B#2"}),
+            payload(friendsevents::Requested {
+                edge_id: format!("e-{m}"),
+                requester_id: p.clone(),
+                requester_handle: "A#1".into(),
+                addressee_id: "q".into(),
+                addressee_handle: "B#2".into(),
+            }),
             [SYSTEM_ACTOR.into(), "requested".into(), format!("friendship:e-{m}"), "A#1 → B#2".into()],
         ),
         (
             "friend.accepted",
-            json!({"edge_id": format!("e-{m}"), "requester_id": p, "requester_handle": "A#1", "addressee_id": "q", "addressee_handle": "B#2"}),
+            payload(friendsevents::Accepted {
+                edge_id: format!("e-{m}"),
+                requester_id: p.clone(),
+                requester_handle: "A#1".into(),
+                addressee_id: "q".into(),
+                addressee_handle: "B#2".into(),
+            }),
             [SYSTEM_ACTOR.into(), "accepted".into(), format!("friendship:e-{m}"), "A#1 → B#2".into()],
         ),
         (
             "friend.removed",
-            json!({"edge_id": format!("e-{m}"), "actor_id": p, "actor_handle": "A#1", "other_id": "q", "other_handle": "B#2", "reason": "unfriend"}),
+            payload(friendsevents::Removed {
+                edge_id: format!("e-{m}"),
+                actor_id: p.clone(),
+                actor_handle: "A#1".into(),
+                other_id: "q".into(),
+                other_handle: "B#2".into(),
+                reason: "unfriend".into(),
+            }),
             [SYSTEM_ACTOR.into(), "removed".into(), format!("friendship:e-{m}"), "unfriend · A#1 → B#2".into()],
         ),
         (
             "group.created",
-            json!({"group_id": format!("g-{m}"), "name": "Guild", "creator_id": p, "join_policy": "open"}),
+            payload(groupsevents::Created {
+                group_id: format!("g-{m}"),
+                name: "Guild".into(),
+                creator_id: p.clone(),
+                join_policy: "open".into(),
+            }),
             [SYSTEM_ACTOR.into(), "created".into(), format!("group:g-{m}"), "Guild · open".into()],
         ),
         (
             "group.member_joined",
-            json!({"group_id": format!("g-{m}"), "player_id": p, "role": "member"}),
+            payload(groupsevents::MemberJoined { group_id: format!("g-{m}"), player_id: p.clone(), role: "member".into() }),
             [SYSTEM_ACTOR.into(), "member_joined".into(), format!("group:g-{m}"), format!("player:{p} · member")],
         ),
         (
             "group.member_left",
-            json!({"group_id": format!("g-{m}"), "player_id": p, "actor_id": p, "reason": "left"}),
+            payload(groupsevents::MemberLeft {
+                group_id: format!("g-{m}"),
+                player_id: p.clone(),
+                actor_id: p.clone(),
+                reason: "left".into(),
+            }),
             [SYSTEM_ACTOR.into(), "member_left".into(), format!("group:g-{m}"), format!("player:{p} · left")],
         ),
         (
             "group.role_changed",
-            json!({"group_id": format!("g-{m}"), "player_id": p, "role": "officer", "actor_kind": "operator", "actor_id": "op"}),
+            payload(groupsevents::RoleChanged {
+                group_id: format!("g-{m}"),
+                player_id: p.clone(),
+                role: "officer".into(),
+                actor_kind: "operator".into(),
+                actor_id: "op".into(),
+            }),
             [SYSTEM_ACTOR.into(), "role_changed".into(), format!("group:g-{m}"), format!("player:{p} → officer")],
         ),
     ];
@@ -186,7 +264,7 @@ async fn derives_every_logged_topic() {
         ids.push(insert(&pool, topic, payload, 0.0).await);
     }
     // A negative wallet delta keeps its own sign.
-    let debit = json!({"player_id": p, "currency": "gems", "delta": -20, "balance_after": 0, "reason": "shop", "ledger_id": "l2"});
+    let debit = wallet(&p, "gems", -20, 0, "shop", "l2");
     let debit_id = insert(&pool, "wallet.changed", &debit, 0.0).await;
     let mut got = Vec::new();
     for id in &ids {
@@ -220,7 +298,7 @@ async fn malformed_payloads_derive_dashes() {
     }
     let unknown = format!("test.{m}");
     ids.push((unknown.as_str(), insert(&pool, &unknown, &json!({"player_id": "x"}), 0.0).await));
-    let empty_admin = json!({"actor": "", "action": "", "target": "", "detail": ""});
+    let empty_admin = admin("", "", "", "");
     ids.push(("admin.action", insert(&pool, "admin.action", &empty_admin, 0.0).await));
     let mut got = Vec::new();
     for (topic, id) in &ids {
@@ -255,7 +333,7 @@ async fn time_shows_clock_today_and_date_before() {
     let m = marker(&pool).await;
     for _ in 0..3 {
         let day = utc_today(&pool).await;
-        let payload = json!({"actor": format!("op-{m}"), "action": "a", "target": "t", "detail": "d"});
+        let payload = admin(&format!("op-{m}"), "a", "t", "d");
         let today = insert(&pool, "admin.action", &payload, 0.0).await;
         let older = insert(&pool, "admin.action", &payload, 3.0 * 86400.0).await;
         let (today_text, older_text) = (derived(&pool, today).await.0, derived(&pool, older).await.0);
@@ -291,7 +369,7 @@ async fn keyset_pager_walks_every_row_once() {
     let Some(pool) = test_pool().await else { return };
     let m = marker(&pool).await;
     let actor = format!("op-{m}");
-    let payload = json!({"actor": actor, "action": "a", "target": m, "detail": "d"});
+    let payload = admin(&actor, "a", &m, "d");
     let mut ids = Vec::new();
     for age in [240.0, 180.0, 120.0, 120.0, 60.0] {
         ids.push(insert(&pool, "admin.action", &payload, age).await);
@@ -340,10 +418,15 @@ async fn filters_narrow_the_page_and_the_total() {
     let Some(pool) = test_pool().await else { return };
     let m = marker(&pool).await;
     let (op, op2) = (format!("op-{m}"), format!("op2-{m}"));
-    let r1 = insert(&pool, "admin.action", &json!({"actor": op, "action": "wallet.credit", "target": format!("player:alpha-{m}"), "detail": "ok"}), 40.0).await;
-    let r2 = insert(&pool, "admin.action", &json!({"actor": op2, "action": "x", "target": "", "detail": format!("failed: beta-{m}")}), 30.0).await;
-    let r3 = insert(&pool, "wallet.changed", &json!({"player_id": format!("alpha-{m}"), "currency": "gold", "delta": 5, "balance_after": 5, "reason": "q", "ledger_id": "l"}), 20.0).await;
-    let r4 = insert(&pool, "group.created", &json!({"group_id": format!("gamma-{m}"), "name": format!("BETA-{m} guild"), "creator_id": "c", "join_policy": "open"}), 10.0).await;
+    let r1 = insert(&pool, "admin.action", &admin(&op, "wallet.credit", &format!("player:alpha-{m}"), "ok"), 40.0).await;
+    let r2 = insert(&pool, "admin.action", &admin(&op2, "x", "", &format!("failed: beta-{m}")), 30.0).await;
+    let r3 = insert(&pool, "wallet.changed", &wallet(&format!("alpha-{m}"), "gold", 5, 5, "q", "l"), 20.0).await;
+    let r4 = insert(&pool, "group.created", &payload(groupsevents::Created {
+            group_id: format!("gamma-{m}"),
+            name: format!("BETA-{m} guild"),
+            creator_id: "c".into(),
+            join_policy: "open".into(),
+        }), 10.0).await;
     let store = Store::new(pool.clone());
     let upper_alpha = format!("ALPHA-{}", m.to_uppercase());
     let beta = format!("beta-{m}");
@@ -387,11 +470,19 @@ async fn actor_options_are_operator_logins_then_system() {
     let Some(pool) = test_pool().await else { return };
     let m = marker(&pool).await;
     let op = format!("op-{m}");
+    // Byte order differs from a linguistic collation for these: an upper-case login sorts
+    // before every lower-case one, and a hyphen is not skipped ("op-z" before "opa").
+    let upper = format!("Pz-{m}");
+    let hyphen = format!("op-z{m}");
+    let plain = format!("opa-{m}");
     let not_op = format!("notop-{m}");
     let ids = vec![
-        insert(&pool, "admin.action", &json!({"actor": op, "action": "a", "target": "", "detail": ""}), 0.0).await,
-        insert(&pool, "admin.action", &json!({"actor": op, "action": "b", "target": "", "detail": ""}), 0.0).await,
-        insert(&pool, "admin.action", &json!({"actor": "", "action": "c", "target": "", "detail": ""}), 0.0).await,
+        insert(&pool, "admin.action", &admin(&op, "a", "", ""), 0.0).await,
+        insert(&pool, "admin.action", &admin(&op, "b", "", ""), 0.0).await,
+        insert(&pool, "admin.action", &admin("", "c", "", ""), 0.0).await,
+        insert(&pool, "admin.action", &admin(&upper, "d", "", ""), 0.0).await,
+        insert(&pool, "admin.action", &admin(&hyphen, "e", "", ""), 0.0).await,
+        insert(&pool, "admin.action", &admin(&plain, "f", "", ""), 0.0).await,
         insert(&pool, "wallet.changed", &json!({"actor": not_op, "player_id": "x"}), 0.0).await,
     ];
     let options = Store::new(pool.clone()).actor_options().await.unwrap();
@@ -401,6 +492,9 @@ async fn actor_options_are_operator_logins_then_system() {
     assert_eq!(options.iter().filter(|a| **a == op).count(), 1, "{options:?}");
     assert!(!options.contains(&not_op), "{options:?}");
     assert!(!options.iter().any(String::is_empty), "{options:?}");
+    for login in [&upper, &hyphen, &plain] {
+        assert!(options.contains(login), "{login} missing from {options:?}");
+    }
     let logins = &options[..options.len() - 1];
     let mut sorted = logins.to_vec();
     sorted.sort();

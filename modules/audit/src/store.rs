@@ -306,11 +306,12 @@ impl Store {
     }
 
     /// The actor filter's options: up to [`ACTOR_OPTIONS_LIMIT`] distinct operator logins
-    /// from `admin.action` rows, sorted, then [`SYSTEM_ACTOR`]. Unindexed: no index on
+    /// from `admin.action` rows in byte order (`COLLATE "C"`: the same on every platform,
+    /// whatever the database's collation), then [`SYSTEM_ACTOR`]. Unindexed: no index on
     /// `topic` or `payload->>'actor'`, so this scans the retained rows.
     pub(crate) async fn actor_options(&self) -> Result<Vec<String>, sqlx::Error> {
         let mut actors: Vec<String> = sqlx::query_scalar(
-            "SELECT DISTINCT payload->>'actor' AS actor \
+            "SELECT DISTINCT payload->>'actor' COLLATE \"C\" AS actor \
                FROM audit.log \
               WHERE topic = 'admin.action' AND nullif(payload->>'actor', '') IS NOT NULL \
               ORDER BY actor \

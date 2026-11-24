@@ -305,6 +305,28 @@ async fn invoke_refuses_every_action() {
     assert_eq!(p.panel(query("nope")).await.unwrap_err().status, Status::NotFound);
 }
 
+/// An over-long search or actor filter is refused before any query: the pool here has no
+/// database, so a request that got past its check would fail `Internal`, not `Invalid`.
+#[tokio::test(flavor = "multi_thread")]
+async fn over_long_search_and_actor_are_refused() {
+    let p = AuditAdmin::new(PgPool::connect_lazy("postgres://localhost/unused").unwrap());
+    let long_search = "x".repeat(MAX_NEEDLE_BYTES + 1);
+    let long_actor = "a".repeat(MAX_ACTOR_BYTES + 1);
+    let search = p.panel(log_query(&long_search, &[])).await;
+    let actor = p.panel(log_query("", &[(PARAM_ACTOR, long_actor.as_str())])).await;
+    assert_eq!(search.unwrap_err().status, Status::Invalid);
+    assert_eq!(actor.unwrap_err().status, Status::Invalid);
+}
+
+/// A cursor past the largest real `at` is refused even when its digits fit the length
+/// check; the largest allowed one parses.
+#[test]
+fn cursor_past_the_largest_at_is_refused() {
+    assert_eq!(parse_cursor("9007199254740993.1").unwrap_err().status, Status::Invalid);
+    let max = parse_cursor("9007199254740992.1").unwrap();
+    assert_eq!((max.at_us, max.id), (1 << 53, 1));
+}
+
 // --- live Postgres ----------------------------------------------------------
 
 async fn test_pool() -> Option<PgPool> {
@@ -385,6 +407,28 @@ async fn filter_params_narrow_the_page_and_the_total() {
         assert_eq!(table(body).filters.len(), 3, "{params:?}");
     }
     assert_eq!(unknown.unwrap_err().status, Status::Invalid);
+}
+
+/// The search is trimmed: a padded marker finds its row, a whitespace-only search longer
+/// than the cap is no search at all, and a search or actor exactly at its cap is served.
+#[tokio::test(flavor = "multi_thread")]
+async fn search_is_trimmed_and_caps_are_inclusive() {
+    let Some(pool) = test_pool().await else { return };
+    let m = marker(&pool).await;
+    let op = format!("op-{m}");
+    let target = format!("player:{m}");
+    let id = insert(&pool, "admin.action", &json!({"actor": op, "action": "a", "target": target, "detail": "ok"}), 0.0).await;
+    let p = AuditAdmin::new(pool.clone());
+    let padded = p.panel(log_query(&format!("  {m}  "), &[])).await;
+    let blank = p.panel(log_query(&" ".repeat(MAX_NEEDLE_BYTES + 1), &[(PARAM_ACTOR, op.as_str())])).await;
+    let at_cap_search = p.panel(log_query(&"x".repeat(MAX_NEEDLE_BYTES), &[])).await;
+    let at_cap_actor = p.panel(log_query("", &[(PARAM_ACTOR, "a".repeat(MAX_ACTOR_BYTES).as_str())])).await;
+    delete(&pool, &[id]).await;
+
+    assert_eq!(ids_and_total(&padded.unwrap()), (vec![target.clone()], Some(1)));
+    assert_eq!(ids_and_total(&blank.unwrap()), (vec![target], Some(1)));
+    assert_eq!(ids_and_total(&at_cap_search.unwrap()).1, Some(0));
+    assert_eq!(ids_and_total(&at_cap_actor.unwrap()).1, Some(0));
 }
 
 /// The pager's cursor reaches the store: the second page holds the rest, the total is
