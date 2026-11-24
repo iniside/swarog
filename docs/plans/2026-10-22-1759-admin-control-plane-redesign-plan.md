@@ -2475,7 +2475,8 @@ The ports:
     24.t, before 24.b.
   - **24t** (owner, 2026-11-24; `[opus]` test-author, proof-auditor audits): the audit
     splitproof of the checklist's §9, after 24.a2.
-  - **24.b**: the view part.
+  - **24.b**: the view part. Closed with no commit (owner, 2026-11-24): the generic macros
+    draw the page and panel, and no template change was needed.
   - **24.a4 lane** (owner, 2026-11-24): a code-scout inventory of the store/service items
     no port reused, then `[mechanical]` core-implementer `sonnet`.
 

@@ -24,6 +24,25 @@ _None._
   (`primitives.html.tmpl:416`, `hx-swap-oob`), so the first-render colour can differ from the
   swapped one, and a mixed-case id gives another colour (review of 2fdcfd93).
 
+### Known limits (admin-control-plane-redesign step 24)
+
+- [ ] **admincheck passes a self-dial**
+  If admin-svc dialled peer "admin", `dialled_peers` (`tools/admincheck/src/checks.rs`) finds
+  admin-svc itself, which hosts providers, so no finding fires; the portal would dial an edge to
+  providers it serves locally. Fix: a finding for `peer == peer_of(PORTAL_PROCESS)` plus a fixture
+  (proof audit of 9f691d5a).
+- [ ] **admincheck drops a duplicate dial**
+  The dial list is collected into a `BTreeSet` (`tools/admincheck/src/checks.rs` `dialled_peers`),
+  so two `peer_face` lines for one peer in `cmd/admin-svc/src/lib.rs` give no finding
+  (proof audit of 9f691d5a).
+- [ ] **drawn_orders is not part of admincheck --strict**
+  `tools/admincheck/src/drawn_orders.rs` is `#[cfg(test)]` only (`main.rs:4-5`), so the verifyctl
+  admincheck stage never runs it.
+- [ ] **No core test hides an empty Timeline**
+  `core/admin/src/engine/panels.rs:214` treats a Timeline with no entries as empty and
+  `core/admin/src/render/panel.rs:160` draws it hidden; no core test runs an empty Timeline
+  through to the hidden state (only the audit provider tests reach it).
+
 ### Known limits (admin-control-plane-redesign step 23)
 
 - [ ] **admindiff tests red on the new redesign screens**
