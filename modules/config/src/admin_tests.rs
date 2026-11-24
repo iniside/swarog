@@ -553,6 +553,20 @@ fn the_input_cap_is_the_first_check() {
     assert!(crate::conformance::conformance_cp_invoke_input_rejected(cap + 1));
 }
 
+/// The cap covers every field, the key too: one byte over it, a create is refused before the
+/// key's own check, which at the cap answers a field error, and before the lazy pool connects.
+#[tokio::test]
+async fn the_input_cap_covers_the_key() {
+    let pool = sqlx::postgres::PgPoolOptions::new().connect_lazy("postgres://x@127.0.0.1:1/x").unwrap();
+    let admin = ConfigAdmin::new(pool);
+    let cap = controlplane::MAX_INPUT_VALUE_BYTES;
+    let create = |key: String| call(CREATE, &[("key", &key), ("type", "int"), ("value", "1")], None);
+    let over = admin.invoke(create("a".repeat(cap + 1))).await.unwrap_err();
+    assert_eq!(over.status, opsapi::Status::Invalid);
+    let at = field_errors(admin.invoke(create("a".repeat(cap))).await.unwrap());
+    assert_eq!(at.keys().collect::<Vec<_>>(), ["key"]);
+}
+
 /// Refusals that answer before any statement: the lazy pool never connects.
 #[tokio::test]
 async fn invoke_refuses_bad_input_before_the_store() {
@@ -615,6 +629,30 @@ async fn save_compares_and_swaps_on_the_revision() {
     let missing = format!("{ns}.missing");
     let gone = admin.invoke(call(SAVE, &[("key", &missing), ("value", "1")], Some(now as u64))).await.unwrap_err();
     assert_eq!(gone.status, opsapi::Status::Conflict);
+    assert_eq!(stored(&pool, &ns, "missing").await, None);
+    cleanup(&pool, &ns).await;
+}
+
+/// The write after the revision check, reached when another write lands between the two: the
+/// answer is the key's revision now, or `Conflict` once the key is gone, and the row is left.
+#[tokio::test]
+async fn a_write_between_the_check_and_the_update_is_a_conflict() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    let svc = Service::new(pool.clone());
+    svc.set(&ns, "k", "1").await.unwrap();
+    let (_, checked) = stored(&pool, &ns, "k").await.unwrap();
+    svc.set(&ns, "k", "2").await.unwrap();
+    let (_, now) = stored(&pool, &ns, "k").await.unwrap();
+    assert!(now > checked);
+
+    let raced = swap(&pool, &ns, "k", "3", checked).await.unwrap();
+    assert_eq!(raced, InvokeOutcome::Conflict { current_revision: now as u64 });
+    assert_eq!(stored(&pool, &ns, "k").await, Some(("2".to_string(), now)));
+
+    let vanished = swap(&pool, &ns, "missing", "3", now).await.unwrap_err();
+    assert_eq!(vanished.status, opsapi::Status::Conflict);
     assert_eq!(stored(&pool, &ns, "missing").await, None);
     cleanup(&pool, &ns).await;
 }

@@ -170,8 +170,8 @@ impl ConfigAdmin {
             .expected_revision
             .and_then(|r| i64::try_from(r).ok())
             .ok_or_else(|| Error::invalid(format!("{MODULE}: saving a value needs the form's revision")))?;
-        let gone = || Error::conflict(format!("{MODULE}: key {ns}.{key} no longer exists"));
-        let current = store::selected(&self.pool, Some((ns, key))).await.map_err(internal)?.ok_or_else(gone)?;
+        let current =
+            store::selected(&self.pool, Some((ns, key))).await.map_err(internal)?.ok_or_else(|| gone(ns, key))?;
         if current.row.revision != expected {
             return Ok(InvokeOutcome::Conflict { current_revision: current.row.revision.max(0) as u64 });
         }
@@ -182,17 +182,7 @@ impl ConfigAdmin {
             Ok(value) => value,
             Err(msg) => return Ok(field_error(FIELD_VALUE, msg)),
         };
-        match store::update(&self.pool, ns, key, &value, expected).await.map_err(internal)? {
-            Some(revision) => Ok(InvokeOutcome::Ok {
-                message: format!("Saved {ns}.{key} at rev {revision}"),
-                reveal: None,
-                redirect: None,
-            }),
-            None => {
-                let now = store::selected(&self.pool, Some((ns, key))).await.map_err(internal)?.ok_or_else(gone)?;
-                Ok(InvokeOutcome::Conflict { current_revision: now.row.revision.max(0) as u64 })
-            }
-        }
+        swap(&self.pool, ns, key, &value, expected).await
     }
 
     /// Inserts a new key; an existing key is the key field's error and is left as it is.
@@ -231,6 +221,27 @@ impl ConfigAdmin {
         };
         store::selected(&self.pool, id).await.map_err(internal)
     }
+}
+
+/// The write of a save whose revision check passed. The update compares the revision again,
+/// so a write that landed in between matches no row: the answer is then the key's revision
+/// now, or `Conflict` when the key is gone.
+async fn swap(pool: &PgPool, ns: &str, key: &str, value: &str, expected: i64) -> Result<InvokeOutcome, Error> {
+    match store::update(pool, ns, key, value, expected).await.map_err(internal)? {
+        Some(revision) => Ok(InvokeOutcome::Ok {
+            message: format!("Saved {ns}.{key} at rev {revision}"),
+            reveal: None,
+            redirect: None,
+        }),
+        None => {
+            let now = store::selected(pool, Some((ns, key))).await.map_err(internal)?.ok_or_else(|| gone(ns, key))?;
+            Ok(InvokeOutcome::Conflict { current_revision: now.row.revision.max(0) as u64 })
+        }
+    }
+}
+
+fn gone(ns: &str, key: &str) -> Error {
+    Error::conflict(format!("{MODULE}: key {ns}.{key} no longer exists"))
 }
 
 /// The posted `namespace.key`, split at its one '.', or the key field's error.
