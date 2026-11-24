@@ -142,7 +142,7 @@ Per-module mechanics live in each `modules/<name>/src/lib.rs` header and the
 - **friends** — `request` resolves a target by handle (`Name#1234`) via the wire-only
   `accountsapi::Directory`. Another player's edge is `NotFound`, never `Forbidden`.
   Three durable topics (`friend.requested/accepted/removed`, `Removed.reason`
-  folding decline/unfriend/withdraw), each denormalizing both parties' handles
+  folding decline/unfriend/withdraw/operator-removed), each denormalizing both parties' handles
   because `notifications`' handler runs inside the delivery transaction with no
   accounts stub available. Presence is session-derived `online_until` (RFC3339,
   empty = no live session), a timestamp rather than an `online` bool, since a quit

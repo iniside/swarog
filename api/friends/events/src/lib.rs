@@ -49,6 +49,13 @@ pub const REASON_ACCOUNT_DELETED: &str = "account-deleted";
 /// keeping a pending-vs-friends count has to decrement a different number for each.
 pub const REASON_WITHDRAWN: &str = "withdrawn";
 
+/// [`Removed::reason`] when an operator ended an ACCEPTED friendship from the admin
+/// portal. Neither party acted, so `actor_id`/`actor_handle` are the edge's original
+/// REQUESTER and `other_id`/`other_handle` its ADDRESSEE; the operator is not in the event
+/// (both party slots must name the edge's players), only in the portal's `admin.action`
+/// row. Counts as the end of an accepted friendship, like [`REASON_UNFRIENDED`].
+pub const REASON_OPERATOR_REMOVED: &str = "operator-removed";
+
 /// One player asked another to be friends; the relation exists and is unanswered.
 ///
 /// `requester_id` authored it and `addressee_id` is the only party who can accept or
@@ -99,6 +106,9 @@ pub struct Accepted {
 /// - [`REASON_UNFRIENDED`] — either party ended an accepted friendship.
 /// - [`REASON_ACCOUNT_DELETED`] — `actor_id`'s account was deleted and the purge swept the
 ///   relation; `other_handle` is empty.
+/// - [`REASON_OPERATOR_REMOVED`] — an operator ended an accepted friendship; NEITHER
+///   party acted, so `actor_id` is the edge's requester and `other_id` its addressee, and
+///   a consumer must not read the actor as the one who chose to leave.
 ///
 /// The first two both end a PENDING edge and differ only in which side acted, which
 /// `actor_id` already says; they are separate values anyway because a consumer counting
@@ -174,6 +184,19 @@ pub fn golden_samples() -> Vec<(&'static str, u32, serde_json::Value)> {
                 other_id: "player-1".to_string(),
                 other_handle: "Alice#1234".to_string(),
                 reason: REASON_UNFRIENDED.to_string(),
+            })
+            .expect("Removed serializes to json"),
+        ),
+        (
+            "friend.removed",
+            1,
+            serde_json::to_value(Removed {
+                edge_id: "edge-1".to_string(),
+                actor_id: "player-1".to_string(),
+                actor_handle: "Alice#1234".to_string(),
+                other_id: "player-2".to_string(),
+                other_handle: "Bob#5678".to_string(),
+                reason: REASON_OPERATOR_REMOVED.to_string(),
             })
             .expect("Removed serializes to json"),
         ),

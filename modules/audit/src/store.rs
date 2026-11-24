@@ -20,6 +20,11 @@ pub(crate) const SYSTEM_ACTOR: &str = "system";
 /// is not a JSON object.
 pub(crate) const MISSING: &str = "—";
 
+/// `friend.removed` `reason` of an operator's removal (`friendsevents::REASON_OPERATOR_REMOVED`;
+/// audit imports no contract, a test pins the two equal). Neither party acted, so its
+/// summary says so instead of the usual `<reason> · <actor> → <other>`.
+pub(crate) const OPERATOR_REMOVED: &str = "operator-removed";
+
 /// How many distinct operator logins the actor filter offers.
 const ACTOR_OPTIONS_LIMIT: i64 = 50;
 
@@ -166,7 +171,9 @@ fn derived_columns() -> String {
          WHEN 'wallet.changed' THEN {wallet_delta} || ' ' || {currency} || ' · ' || {reason} \
          WHEN 'friend.requested' THEN {requester_handle} || ' → ' || {addressee_handle} \
          WHEN 'friend.accepted' THEN {requester_handle} || ' → ' || {addressee_handle} \
-         WHEN 'friend.removed' THEN {reason} || ' · ' || {actor_handle} || ' → ' || {other_handle} \
+         WHEN 'friend.removed' THEN CASE WHEN payload->>'reason' = '{OPERATOR_REMOVED}' \
+              THEN 'removed by operator · ' || {actor_handle} || ' ↔ ' || {other_handle} \
+              ELSE {reason} || ' · ' || {actor_handle} || ' → ' || {other_handle} END \
          WHEN 'group.created' THEN {name} || ' · ' || {join_policy} \
          WHEN 'group.member_joined' THEN {member} || ' · ' || {role} \
          WHEN 'group.member_left' THEN {member} || ' · ' || {reason} \

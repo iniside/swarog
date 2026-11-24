@@ -282,6 +282,34 @@ async fn derives_every_logged_topic() {
     assert_eq!(debit_row.5, "-20 gems · shop");
 }
 
+/// D7: a `friend.removed` with `reason = "operator-removed"` reads "removed by operator" and
+/// names both players (neither acted); every other reason keeps `<reason> · <actor> → <other>`.
+#[tokio::test(flavor = "multi_thread")]
+async fn friend_removed_operator_reason_names_both_players() {
+    assert_eq!(OPERATOR_REMOVED, friendsevents::REASON_OPERATOR_REMOVED, "audit's literal drifted");
+    let Some(pool) = test_pool().await else { return };
+    let m = marker(&pool).await;
+    let removed = |reason: &str| {
+        payload(friendsevents::Removed {
+            edge_id: format!("e-{m}"),
+            actor_id: "p1".into(),
+            actor_handle: "A#1".into(),
+            other_id: "p2".into(),
+            other_handle: "B#2".into(),
+            reason: reason.into(),
+        })
+    };
+    let operator = insert(&pool, "friend.removed", &removed(friendsevents::REASON_OPERATOR_REMOVED), 0.0).await;
+    let unfriended = insert(&pool, "friend.removed", &removed(friendsevents::REASON_UNFRIENDED), 0.0).await;
+    let (operator_row, unfriended_row) = (derived(&pool, operator).await, derived(&pool, unfriended).await);
+    delete(&pool, &[operator, unfriended]).await;
+
+    assert_eq!(operator_row.5, "removed by operator · A#1 ↔ B#2");
+    assert_eq!(operator_row.3, "removed");
+    assert_eq!(operator_row.4, format!("friendship:e-{m}"));
+    assert_eq!(unfriended_row.5, "unfriended · A#1 → B#2");
+}
+
 /// H11: a payload missing its keys, with empty keys, or not an object at all derives "—"
 /// for each missing value instead of failing the read; a topic with no derivation arm
 /// shows "—" target and detail.
