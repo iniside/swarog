@@ -6,7 +6,6 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use charactersapi::Character;
 use controlplane::{
     Align, CellKind, EntityRef, Link, PanelBody, PanelQuery, Point, Primitive, Provider as _,
     EVENT_LOG_PAGE, EVENT_LOG_PAGE_MODULE, MAX_PANEL_REFS, PAGE_PARAM_SEARCH,
@@ -19,20 +18,19 @@ use testdb::test_pool;
 use super::{
     characters_body, column_cells, count_cell, fact_text, label_cells, manifest, purges_body, CharactersAdmin,
 };
-use crate::store::Store;
+use crate::store::{PanelCharacter, Store};
 use crate::tests::{cleanup, unique_player, wired};
 use crate::Service;
 
 const FIRST: &str = "00000000-0000-4000-8000-000000000001";
 const SECOND: &str = "00000000-0000-4000-8000-000000000002";
 
-fn character(id: &str, name: &str, class: &str) -> Character {
-    Character {
+fn character(id: &str, name: &str, class: &str) -> PanelCharacter {
+    PanelCharacter {
         id: id.to_string(),
-        player_id: "00000000-0000-4000-8000-0000000000ff".to_string(),
         name: name.to_string(),
         class: class.to_string(),
-        created_at: "2026-11-21 10:00:00+00".to_string(),
+        created: "2026-11-21T10:00:00Z".to_string(),
     }
 }
 
@@ -79,7 +77,7 @@ fn tab_panel_maps_each_character_to_the_four_cells_in_the_given_order() {
         heads,
         [
             ("Name", CellKind::Text),
-            ("Class", CellKind::Text),
+            ("Class", CellKind::Ref),
             ("Created", CellKind::MonoMuted),
             ("Character id", CellKind::MonoMuted),
         ]
@@ -98,14 +96,14 @@ fn tab_panel_maps_each_character_to_the_four_cells_in_the_given_order() {
         [
             vec![
                 ("Bram", CellKind::Text),
-                ("rogue", CellKind::Text),
-                ("2026-11-21 10:00:00+00", CellKind::MonoMuted),
+                ("rogue", CellKind::Ref),
+                ("2026-11-21T10:00:00Z", CellKind::MonoMuted),
                 (SECOND, CellKind::MonoMuted),
             ],
             vec![
                 ("Aiko", CellKind::Text),
-                ("mage", CellKind::Text),
-                ("2026-11-21 10:00:00+00", CellKind::MonoMuted),
+                ("mage", CellKind::Ref),
+                ("2026-11-21T10:00:00Z", CellKind::MonoMuted),
                 (FIRST, CellKind::MonoMuted),
             ],
         ],
@@ -309,7 +307,7 @@ async fn panels_answer_a_players_characters_fact_and_count() {
     let ids: Vec<&str> = table(&tab).rows.iter().map(|r| r.cells[3].value.as_str()).collect();
     assert_eq!(ids, [early.as_str(), middle.as_str(), late.as_str()], "rows in created_at order");
     let created: Vec<&str> = table(&tab).rows.iter().map(|r| r.cells[2].value.as_str()).collect();
-    assert_eq!(created, ["2026-11-21 10:00:00", "2026-11-21 11:00:00", "2026-11-21 12:00:00"], "created is the UTC day-time from SQL");
+    assert_eq!(created, ["2026-11-21T10:00:00Z", "2026-11-21T11:00:00Z", "2026-11-21T12:00:00Z"], "created is the UTC RFC3339 instant from SQL");
     let empty = empty.unwrap();
     assert_eq!(empty.meta.as_deref(), Some("0"));
     assert!(table(&empty).rows.is_empty());

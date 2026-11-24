@@ -21,6 +21,16 @@ const COLS: &str = "id::text, player_id::text, name, class, created_at::text";
 /// One scanned row — the five text columns of [`COLS`], in order.
 type Row = (String, String, String, String, String);
 
+/// One row of the Characters tab: what the panel draws, not the wire `Character`, whose
+/// `created_at` is the `timestamptz::text` rendering.
+pub(crate) struct PanelCharacter {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) class: String,
+    /// UTC RFC3339 instant, `YYYY-MM-DDTHH:MM:SSZ`.
+    pub(crate) created: String,
+}
+
 fn to_character((id, player_id, name, class, created_at): Row) -> Character {
     Character { id, player_id, name, class, created_at }
 }
@@ -103,18 +113,22 @@ impl Store {
         Ok(rows.into_iter().map(to_character).collect())
     }
 
-    /// The Characters tab's rows: like list_by_player, with created_at as a UTC YYYY-MM-DD HH24:MI:SS day-time.
-    pub(crate) async fn list_for_panel(&self, player_id: &str) -> Result<Vec<Character>, sqlx::Error> {
-        let rows: Vec<Row> = sqlx::query_as(&format!(
-            "SELECT id::text, player_id::text, name, class, \
-             to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') \
+    /// The Characters tab's rows, ordered like list_by_player, with created_at as the UTC
+    /// RFC3339 instant `YYYY-MM-DDTHH:MM:SSZ` the accounts panels draw.
+    pub(crate) async fn list_for_panel(&self, player_id: &str) -> Result<Vec<PanelCharacter>, sqlx::Error> {
+        let rows: Vec<(String, String, String, String)> = sqlx::query_as(&format!(
+            "SELECT id::text, name, class, \
+             to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') \
              FROM characters.characters WHERE player_id = $1::uuid \
              ORDER BY created_at, id LIMIT {LIST_HARD_LIMIT}"
         ))
         .bind(player_id)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(to_character).collect())
+        Ok(rows
+            .into_iter()
+            .map(|(id, name, class, created)| PanelCharacter { id, name, class, created })
+            .collect())
     }
 
     /// Fetches one character. A malformed id (22P02) is treated as `Ok(None)`, like a

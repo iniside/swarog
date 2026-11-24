@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use charactersapi::Character;
 use controlplane::{
     Align, Cell, CellKind, Column, ContributionDecl, DataTable, EntityKindDecl, InvokeCall, InvokeOutcome,
     Manifest, PageInfo, PanelBody, PanelQuery, Point, Primitive, Provider, Role, Row, SearchHit, SearchQuery,
@@ -16,6 +15,7 @@ use controlplane::{
 use controlplane::order;
 use opsapi::Error;
 
+use crate::store::PanelCharacter;
 use crate::Service;
 
 const MODULE: &str = "characters";
@@ -176,13 +176,13 @@ pub(crate) fn purges_body(pending: i64, oldest: &str) -> PanelBody {
     controlplane::purge_backlog_body("Character purges pending", pending, oldest, crate::projection::PURGE_SWEEP_SUB.id)
 }
 
-fn character_row(c: &Character) -> Row {
+fn character_row(c: &PanelCharacter) -> Row {
     Row {
         entity: None,
         cells: vec![
             text(CellKind::Text, c.name.clone()),
-            text(CellKind::Text, c.class.clone()),
-            text(CellKind::MonoMuted, c.created_at.clone()),
+            text(CellKind::Ref, c.class.clone()),
+            text(CellKind::MonoMuted, c.created.clone()),
             text(CellKind::MonoMuted, c.id.clone()),
         ],
         highlight: false,
@@ -193,11 +193,11 @@ fn character_row(c: &Character) -> Row {
 
 /// The Characters tab panel: one row per character in the given order, no toolbar and no
 /// pager; `meta` is the row count. Zero rows draws the portal's empty state.
-pub(crate) fn characters_body(characters: &[Character]) -> PanelBody {
+pub(crate) fn characters_body(characters: &[PanelCharacter]) -> PanelBody {
     let table = DataTable {
         columns: vec![
             column("name", "Name", CellKind::Text, Align::Left),
-            column("class", "Class", CellKind::Text, Align::Left),
+            column("class", "Class", CellKind::Ref, Align::Left),
             column("created", "Created", CellKind::MonoMuted, Align::Left),
             column("id", "Character id", CellKind::MonoMuted, Align::Left),
         ],

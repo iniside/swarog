@@ -126,7 +126,7 @@ window.PAGES = window.PAGES || {};
     return panel({ c: { module: "characters", point: "entity.user.tab", prim: "DataTable" }, title: "Characters", meta: P.plural(list.length, "character", "characters"), flush: true,
       emptyTitle: "No characters", emptyDetail: "This player has not created a character.",
       body: table({ pager: false, cols: [{ label: "Name" }, { label: "Class" }, { label: "Created" }, { label: "Character id" }],
-        rows: list.map(c => ({ id: c.id, href: `character.html?c=${c.id}`, cells: [P.charLink(c), P.classTag(c.class), P.when(c.created_at), `<span class="mono muted">${c.id}</span>`] })),
+        rows: list.map(c => ({ id: c.id, cells: [esc(c.name), P.classTag(c.class), P.when(c.created_at), `<span class="mono muted">${c.id}</span>`] })),
         rowMenu: r => rowMenuBtn("character", r.id) }) });
   };
   tabRender.wallet = () => `<div class="grid g-tiles" style="margin-bottom:12px">${["Embers (EMB)", "Gold (GLD)", "Reroll tokens (TOK)"].map(l => kpi({ c: { module: "wallet", point: "entity.user.tab", prim: "KpiTile" }, label: l, value: "—", state: "error" })).join("")}</div>` +
