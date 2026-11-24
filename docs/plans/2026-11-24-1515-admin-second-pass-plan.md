@@ -301,7 +301,7 @@ mockup registry.js top bar and the dashboard subtitle.
 (b) After Step 2 (same goldens).
 (c) D12. Subtitle "<name> · Swarog <version>"; no process count, no topology. Golden harness
 passes a fixed name.
-(d) [independent] core-implementer.
+(d) [sonnet] core-implementer.
 
 ### Step 12: identity Last used (22)
 (a) modules/accounts/src/lib.rs:164-171 (identities DDL), 279-300 (issue_session_tx), 360,
@@ -360,7 +360,7 @@ service.rs:181-220, admin_tests.rs. Mail already has writes: true and its CapCas
 (c) Retry now: pending AND last_error IS NOT NULL to next_attempt_at = now(), generation + 1
 (D6). Park: pending to parked. Cancel parked: Confirm, parked to cancelled, body kept. Each
 answers NoOp on 0 rows. Pause sending stays disabled.
-(d) [independent] core-implementer.
+(d) [sonnet] core-implementer. Waits for the owner ruling on what a resume from parked does with last_error (Step 6 review).
 
 ### Step 17a: friend.removed reason operator-removed
 (a) api/friends/events/src/lib.rs (reason constant, Removed doc, golden_samples),
@@ -369,7 +369,7 @@ modules/audit/src/store.rs:143-169 and store_tests.rs.
 (b) Before 17b: the contract and its one consumer land before anything emits the value.
 (c) D7. Additive reason value; audit summarises it as "removed by operator" naming both
 players. Nothing emits it yet. No DDL, no DROP.
-(d) [independent] core-implementer; proof-auditor (contract golden, public-api).
+(d) [sonnet] core-implementer; proof-auditor (contract golden, public-api).
 
 ### Step 17b: friends Remove friend (FRIENDS-08)
 (a) modules/friends/src/service.rs:590, store.rs:213,367, admin.rs:153,249-263,
@@ -445,7 +445,7 @@ Round-trip test: a client-supplied body field cannot set it.
 (b) After 21a, before Step 23a puts the parameter on a real trait.
 (c) Each tool skips the parameter the way it skips Identity; a test per tool feeds a trait
 method with an Origin parameter and asserts the generated output is unchanged.
-(d) [independent] core-implementer.
+(d) [sonnet] core-implementer.
 
 ### Step 22a: gateway HTTP and push pass Origin
 (a) modules/gateway/src/lib.rs:808,1297,1921-2009, push_ws.rs:107,1364-1417,1817, backend.rs,
@@ -517,3 +517,5 @@ item for the download carrier plan with its five buttons (D1).
 
 Released so far: "zrob kroki 1-5" (Steps 1, 2, 3, 4, 5a, 5b); "kroki 6-10" (Steps 6, 7a, 7b, 8a,
 8b, 9, 10).
+Lane changes (owner, 2026-11-24, "ok to zmien"): Steps 11, 16, 17a and 21b moved from
+[independent] to [sonnet]; every step keeps its opus core-reviewer.
