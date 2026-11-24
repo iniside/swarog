@@ -410,6 +410,45 @@ async fn snapshot_reports_revision_and_settings() {
     cleanup(&pool, &ns).await;
 }
 
+/// `set_tx` labels only its own write: a plain write later in the same caller transaction
+/// records the database role, not "system".
+#[tokio::test]
+async fn set_tx_writer_label_does_not_leak_into_later_writes() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    let svc = Service::new(pool.clone());
+
+    let mut tx = pool.begin().await.unwrap();
+    svc.set_tx(&mut *tx, &ns, "k", "1").await.unwrap();
+    sqlx::query("UPDATE config.settings SET value = '2' WHERE namespace = $1 AND key = 'k'")
+        .bind(&ns)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT operation, by FROM config.setting_history WHERE namespace = $1 ORDER BY revision",
+    )
+    .bind(&ns)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let (role,): (String,) = sqlx::query_as("SELECT session_user::text")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            ("insert".to_string(), SYSTEM_WRITER.to_string()),
+            ("update".to_string(), role),
+        ]
+    );
+    cleanup(&pool, &ns).await;
+}
+
 /// A raw SQL write (the psql / another-service path — NOT `Service::set`) still fires
 /// the trigger: it produces the durable event AND a `config_changed` NOTIFY, so a
 /// config cache LISTENing on the invalidation channel refreshes regardless of who wrote.

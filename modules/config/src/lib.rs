@@ -381,7 +381,12 @@ impl Service {
             .bind(key)
             .bind(value)
             .bind(SYSTEM_WRITER)
-            .execute(conn)
+            .execute(&mut *conn)
+            .await?;
+        // `set_config(.., true)` lasts until the CALLER's transaction ends, so clear the label
+        // here: a later plain write in the same transaction records its database role.
+        sqlx::query("SELECT set_config('config.writer', '', true)")
+            .execute(&mut *conn)
             .await?;
         Ok(())
     }

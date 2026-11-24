@@ -288,7 +288,8 @@ revision is the one the settings_stamp trigger assigned. Admin writes pass req.o
 Service::set / set_tx write "system". Revisions panel reads the newest N rows for the key and
 drops fake_by / fake_prior. Invariant test: after k writes of a key the history holds k rows
 with strictly increasing revisions and the newest equals config.settings. A delete's row
-carries the deleted row's revision plus one and operation delete. The history records writes
+carries the next global revision (greater than the deleted row's revision, equal to the
+config.changed revision) and operation delete; operations are insert, update, delete. The history records writes
 made through the module; a hand edit in psql is outside it, like every other invariant.
 Rollout: DROP SCHEMA
 config CASCADE.

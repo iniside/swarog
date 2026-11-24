@@ -102,6 +102,7 @@
         { t: sel.at, html: `rev ${sel.rev} by ${P.actor(sel.by)}`, meta: `<span class="mono">${esc(sel.value)}</span>`, icon: "edit", tone: "accent" },
         { t: "Oct 14", html: `rev ${sel.rev - 1} by ${userCell("marta.k")}`, meta: `<span class="mono">["frost_warden"]</span> <a href="#">restore</a>`, icon: "edit" },
         { t: "Sep 30", html: `rev ${sel.rev - 2} by ${userCell("jonas.l")}`, meta: `<span class="mono">[]</span> <a href="#">restore</a>`, icon: "edit" },
+        { t: "Sep 12", html: `rev ${sel.rev - 3} deleted by ${userCell("jonas.l")}`, icon: "edit" },
       ]) });
       return P.head("Config & flags", "Typed runtime configuration. Every save creates a revision.", `<button class="btn primary">${icon("plus")} Key</button>`) + `<div class="grid g-21">${t}<div class="stack">${e}${h}</div></div>`;
     },
