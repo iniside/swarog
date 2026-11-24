@@ -6,7 +6,7 @@
 
 use controlplane::{
     ActionDecl, ActionPoint, ContributionDecl, EntityKindDecl, Emphasis, Field, FieldKind, FormMode, FormSpec, Layout,
-    Manifest, NavEntry, NavSection, PageDecl, Point, Role, Then,
+    Manifest, NavEntry, NavSection, PageDecl, Point, Role, SearchDecl, Then,
 };
 
 use checkmodules::ProcessControlPlane;
@@ -355,6 +355,58 @@ fn a_request_id_field_with_a_default_is_refused() {
     assert_eq!(findings(&[with(Some("grant-7c1e0a"))]), vec![line.to_string()]);
 }
 
+/// `moded` with no modes, its `adjust` form carrying `fields` and `hidden`.
+fn fielded(fields: Vec<Field>, hidden: &[(&str, &str)]) -> Manifest {
+    let mut m = moded(Vec::new());
+    let adjust = m.actions.iter_mut().find(|a| a.id == "adjust").unwrap();
+    let Then::Form(spec) = &mut adjust.then else { unreachable!() };
+    spec.fields = fields;
+    spec.hidden = hidden.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    m
+}
+
+fn field(key: &str, kind: FieldKind, default: Option<&str>) -> Field {
+    Field {
+        key: key.into(),
+        label: key.into(),
+        kind,
+        required: false,
+        help: None,
+        default: default.map(Into::into),
+        readonly: false,
+        mono: false,
+        placeholder: None,
+    }
+}
+
+/// A plain key beside a distinct hidden key is clean; a key with `__` or a leading `_`, or
+/// one a hidden key repeats, is refused through `controlplane::form_spec_errors`.
+#[test]
+fn a_reserved_or_hidden_field_key_is_refused() {
+    let prefix = r#"mail: action "adjust" form: "#;
+    let clean = fielded(vec![field("amount", FieldKind::Int, None)], &[("currency", "gold")]);
+    assert_eq!(findings(&[clean]), Vec::<String>::new());
+
+    for key in ["gold__amount", "_amount"] {
+        let refused = fielded(vec![field(key, FieldKind::Int, None)], &[]);
+        let line = format!("{prefix}field key {key:?} contains `__` or starts with `_`");
+        assert_eq!(findings(&[refused]), vec![line], "{key}");
+    }
+
+    let hidden = fielded(vec![field("currency", FieldKind::String, None)], &[("currency", "gold")]);
+    let line = format!(r#"{prefix}field key "currency" is also a hidden key"#);
+    assert_eq!(findings(&[hidden]), vec![line]);
+}
+
+/// A default its kind decodes is clean; one it does not is refused with the codec's reason.
+#[test]
+fn an_undecodable_form_default_is_refused() {
+    let with = |default: &str| fielded(vec![field("amount", FieldKind::Int, Some(default))], &[]);
+    assert_eq!(findings(&[with("10")]), Vec::<String>::new());
+    let line = r#"mail: action "adjust" form: field "amount" default does not decode: must be an integer"#;
+    assert_eq!(findings(&[with("ten")]), vec![line.to_string()]);
+}
+
 /// The clean head-action fixture with `p` added by `p`, from a prepared `PanelTool("queue")`
 /// Confirm: the one point and variant (with `Then::Form`) a `prepare` call is valid on.
 fn prepared(p: impl FnOnce(ActionDecl) -> ActionDecl) -> Manifest {
@@ -496,16 +548,28 @@ fn a_module_declared_by_two_providers_is_refused() {
     assert_eq!(findings(&[m.clone(), m]), vec!["mail: two providers declare this module".to_string()]);
 }
 
+/// Each of the six id lists of a manifest refuses a repeat, one finding per list, in order.
 #[test]
-fn a_repeated_contribution_or_action_id_is_refused() {
-    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+fn a_repeated_id_in_any_id_list_is_refused() {
+    let mut m = navigated();
+    let search = SearchDecl { kind: "message".into(), label: "Messages".into(), icon: "mail".into(), deadline_ms: 800 };
+    m.search.push(search);
+    assert_eq!(findings(&[m.clone()]), Vec::<String>::new());
     m.contributions.push(m.contributions[0].clone());
     m.actions.push(m.actions[0].clone());
+    m.pages.push(m.pages[1].clone());
+    m.entries.push(m.entries[0].clone());
+    m.search.push(m.search[0].clone());
+    m.entity_kinds.push(m.entity_kinds[0].clone());
     assert_eq!(
         findings(&[m]),
         vec![
             r#"mail: duplicate contribution id "queue""#.to_string(),
             r#"mail: duplicate action id "act""#.to_string(),
+            r#"mail: duplicate page id "other-page""#.to_string(),
+            r#"mail: duplicate nav entry id "outbox""#.to_string(),
+            r#"mail: duplicate search kind id "message""#.to_string(),
+            r#"mail: duplicate entity kind id "message""#.to_string(),
         ]
     );
 }
@@ -527,10 +591,14 @@ fn an_id_longer_than_the_limit_is_refused() {
     let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
     let at_limit = "a".repeat(super::MAX_ID_BYTES);
     m.actions.push(action(&at_limit, ActionPoint::PanelTool("queue".into())));
+    m.contributions.push(contribution(&at_limit, Point::DashboardTile));
     assert_eq!(findings(&[m.clone()]), Vec::<String>::new());
     let over = format!("{at_limit}b");
-    m.actions[1].id = over.clone();
-    assert_eq!(findings(&[m]), vec![format!(r#"mail: action id "{over}" is longer than 64 bytes"#)]);
+    let mut action_over = m.clone();
+    action_over.actions[1].id = over.clone();
+    assert_eq!(findings(&[action_over]), vec![format!(r#"mail: action id "{over}" is longer than 64 bytes"#)]);
+    m.contributions[1].id = over.clone();
+    assert_eq!(findings(&[m]), vec![format!(r#"mail: contribution id "{over}" is longer than 64 bytes"#)]);
 }
 
 /// The clean fixture with nav entry `outbox` in section `platform` opening page `outbox`,
@@ -595,6 +663,22 @@ fn a_section_declared_unlike_its_winner_is_refused() {
     m.sections[0].label = "Ops".into();
     let line = r#"mail: section "platform" is declared as ("Ops", 40) but controlplane::SECTIONS declares it as ("Platform", 40)"#;
     assert_eq!(findings(&[m]), vec![line.to_string()]);
+}
+
+/// Two manifests declaring one section not in `SECTIONS`: the first by module name wins and
+/// owns it; the other is clean when it declares it alike and refused, naming the owner, when
+/// not.
+#[test]
+fn a_section_declared_unlike_another_modules_winner_is_refused() {
+    let ops = |label: &str| NavSection { id: "ops".into(), label: label.into(), order: 50 };
+    let mut bank = provider("bank");
+    bank.sections.push(ops("Ops"));
+    let mut mail = navigated();
+    mail.sections.push(ops("Ops"));
+    assert_eq!(findings(&[mail.clone(), bank.clone()]), Vec::<String>::new());
+    mail.sections[0].label = "Operations".into();
+    let line = r#"mail: section "ops" is declared as ("Operations", 50) but bank declares it as ("Ops", 50)"#;
+    assert_eq!(findings(&[mail, bank]), vec![line.to_string()]);
 }
 
 /// A provider manifest for `module`; `peer_findings` reads only the module name.
