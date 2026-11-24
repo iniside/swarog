@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use controlplane::{
     order, ActionPoint, CellKind, DataTable, FilterKind, Layout, PanelBody, PanelQuery, Point, Primitive, Provider,
-    Role, SortDir, Then, TimeRange,
+    Role, SortDir, Then,
 };
 use opsapi::Status;
 use serde_json::{json, Value};
@@ -467,7 +467,7 @@ async fn cursor_walks_to_the_next_page() {
 /// rows, newest first, skipping a newer domain row, with an RFC 3339 UTC `at`; every
 /// dashboard range (and none) answers the same seven.
 #[tokio::test(flavor = "multi_thread")]
-async fn activity_is_the_seven_newest_operator_rows_whatever_the_range() {
+async fn activity_is_the_seven_newest_operator_rows() {
     let Some(pool) = test_pool().await else { return };
     let m = marker(&pool).await;
     // Ten years ahead, so no other row of this or an earlier run is newer.
@@ -480,21 +480,17 @@ async fn activity_is_the_seven_newest_operator_rows_whatever_the_range() {
     let domain = json!({"group_id": format!("g-{m}"), "name": "g", "creator_id": "c", "join_policy": "open"});
     ids.push(insert(&pool, "group.created", &domain, ahead).await);
     let p = AuditAdmin::new(pool.clone());
-    let mut got = Vec::new();
-    for range in [None, Some(TimeRange::H1), Some(TimeRange::H24), Some(TimeRange::D7)] {
-        got.push((range, p.panel(PanelQuery { range, ..query(ACTIVITY) }).await));
-    }
+    // The range is ignored by construction: activity() takes no PanelQuery.
+    let got = p.panel(query(ACTIVITY)).await;
     delete(&pool, &ids).await;
 
     let want: Vec<String> = (1..8).rev().map(|i| format!("a{i}-{m}")).collect();
-    for (range, body) in &got {
-        let body = body.as_ref().unwrap();
-        let e = entries(body);
-        let verbs: Vec<String> = e.iter().map(|e| e.verb.clone()).collect();
-        assert_eq!(verbs, want, "{range:?}");
-        assert_eq!(body.meta.as_deref(), Some("audit"), "{range:?}");
-        let at = e[0].at.as_bytes();
-        assert_eq!((at.len(), at[10], at[19]), (20, b'T', b'Z'), "{:?}", e[0].at);
-        assert_eq!(e[0].detail.as_deref(), Some("ok"), "an empty target is dropped");
-    }
+    let body = got.as_ref().unwrap();
+    let e = entries(body);
+    let verbs: Vec<String> = e.iter().map(|e| e.verb.clone()).collect();
+    assert_eq!(verbs, want);
+    assert_eq!(body.meta.as_deref(), Some("audit"));
+    let at = e[0].at.as_bytes();
+    assert_eq!((at.len(), at[10], at[19]), (20, b'T', b'Z'), "{:?}", e[0].at);
+    assert_eq!(e[0].detail.as_deref(), Some("ok"), "an empty target is dropped");
 }
