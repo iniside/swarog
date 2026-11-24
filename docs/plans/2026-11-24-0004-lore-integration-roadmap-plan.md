@@ -143,7 +143,7 @@ Sources:
 
 ## Order
 
-Fifteen phases in four groups, A–D. The identity work (A) gates everything, because
+Sixteen phases in four groups, A–D. The identity work (A) gates everything, because
 loreserver accepts nothing without a token. The `lore` module (B) gates review
 (C), because review subscribes to `lore.*`. The portal (D) comes last, because it
 consumes the public surface of A, B and C. Each phase keeps both topologies working
@@ -188,8 +188,8 @@ split proof checks its endpoints through gateway-svc.
 - (b) Every later grant signs with these keys.
 - (c) Keys live in the shared Postgres, so every accounts-svc replica signs and
   serves the same JWKS. Rotation keeps a retiring key in the JWKS until its last
-  token expires. Schema changes are wipe (P1); a wipe invalidates outstanding
-  tokens, which is acceptable.
+  token expires. Schema changes are wipe (DROP + boot fresh, `AGENTS.md` Non-Negotiables); a
+  wipe invalidates outstanding tokens, which is acceptable.
 - (d) `[opus]`.
 
 **Step 3: Clients, authorization code + PKCE, refresh, revocation.**
@@ -230,14 +230,19 @@ split proof checks its endpoints through gateway-svc.
 - (a) Built per `add-game-module`: `api/authz/{api,rpc,events}`,
   `modules/authz` and `cmd/authz-svc`, plus every registration point.
   - Schema `authz`:
-    - `catalog` (kind → actions), declared by each consuming module at boot
-      through `authzapi` as an idempotent upsert;
+    - `catalog` (kind → owning module, actions), declared by the owning module
+      at boot (semantics in (c));
     - `roles` (kind, name, actions[]), operator data;
     - `global_roles` (kind, user, role);
     - `grants` (kind, resource, user, role);
     - purge tombstones.
-  - Wire API:
-    - `actions(user, kind, resource)`;
+  - Wire API (all wire-only, no `#[http]`, the wallet precedent):
+    - `actions(user, kind, resource?)`: with no resource, the global actions
+      only (for `create-repo`);
+    - `resources_for(user, kind, action)`: the resources a user can act on
+      (filters `RepositoryList`);
+    - `holders(kind, resource)` and `holders_of_kind(kind)`: the Access tab
+      and billing seats;
     - `grant`/`revoke`;
     - `drop_resource(kind, resource)`;
     - `declare_kind(kind, actions)`.
@@ -252,6 +257,19 @@ split proof checks its endpoints through gateway-svc.
   conditions or inheritance until a real need appears. Changing a role re-scopes
   every holder at once. Already issued Lore tokens keep their actions until they
   expire, so per-repo tokens are short-lived (5–15 min, fixed in the 5c plan).
+  **Catalog semantics:**
+  - a kind has one owning module; a `declare_kind` for a kind from another
+    module is refused;
+  - a declaration replaces the action set, but the answer to `actions` is
+    always filtered by the current catalog, so a role holding a removed action
+    keeps the row and loses the effect (no cascade delete). During a rolling
+    deploy, mixed replicas may flip the set; filtering at answer time makes
+    that harmless;
+  - roles cannot be created for a kind that was never declared;
+  - the owning module declares in `start` and retries in the background while
+    `authz` is down, with its readiness red until the declaration lands.
+  **Deletion:** `grant` refuses a tombstoned user under the same lock as the
+  `player-purge` sweep, so a late grant cannot resurrect after the sweep.
 - (d) `[opus]`.
 
 **Step 5b: `lore` skeleton and repositories.**
@@ -262,6 +280,10 @@ split proof checks its endpoints through gateway-svc.
   - Schema `lore`: `repositories` (id, name, description, default branch).
     It holds no permission tables.
   - Typed config: loreserver gRPC address, service client id and secret.
+  - Split wiring: `cmd/lore-svc` gets `remote::Stub` entries for `authz` and
+    `accounts` and declares them in `requires()`; `cmd/accounts-svc` gets
+    `authz` (for 5c). With `authz` down, lore ops that need a decision answer
+    unavailable, never allow.
   - Declares kind `lore` in `authz` at boot.
   - A repository's creator gets an `owner` grant through `authzapi`. Creating a
     repository requires the `create-repo` action. Removing a repository calls
@@ -275,11 +297,30 @@ split proof checks its endpoints through gateway-svc.
 - (a) RFC 8693 exchange with RFC 8707 `resource` in `accounts`. The exchange
   maps the resource (`urc-42`) to kind `lore` and resource `42` and asks
   `authzapi::actions`.
-- (b) It needs `authz` (5a) and repositories (5b). Splitting it from Step 4
-  lets the split proof run accounts-svc against a real authz-svc.
+  - Subject tokens accepted: a Lore-audience JWT (the Lore CLI sends one,
+    `lore-transport/src/auth/oidc/exchange.rs:131-137`) and the opaque Swarog
+    session of a registered portal client.
+  - The minted `aud` comes from a resource registration in `accounts`
+    (`urc-*` → Lore audience), not from the requesting client.
+  - A resource-less exchange from the portal client yields a Lore-audience token
+    with an empty `resources` claim. loreserver accepts any verified token for
+    repository lookup (`resource_grants_authorizer.rs:147-157`) and forwards
+    it to `user_url` for `RepositoryList` (`repository/v1/repository_list.rs:54-70`),
+    where `lore` filters by `authzapi::resources_for`.
+  - The token emits only Lore's own actions; `create-repo` is a Swarog-side
+    global action and never goes into `resources`.
+  - The exchange requires a live subject: the session or refresh family is not
+    revoked (Lore JWTs carry a session id) and the user exists and is not
+    tombstoned. The Lore login JWT lifetime is fixed in the 5c plan.
+- (b) It needs `authz` (5a). Repositories (5b) give the operator something to
+  grant on, but their inventory only feeds loreserver from Step 6. Splitting it
+  from Step 4 lets the split proof run accounts-svc against a real authz-svc.
 - (c) Error answers:
   - `authz` absent: `invalid_target`, so accounts boots without it (optional
-    lookup `registry::try_require`, `core/registry/src/lib.rs:103`);
+    lookup `registry::try_require`, `core/registry/src/lib.rs:103`). This only
+    happens in a build without the `authz` stub: in the split `try_require`
+    sees the stub at init (`modules/gateway/src/verifier.rs:120-133`), and a
+    down peer is the next case;
   - `authz` unreachable: `temporarily_unavailable`. Never a token without
     grants;
   - empty action list: `access_denied`.
@@ -296,8 +337,12 @@ split proof checks its endpoints through gateway-svc.
   - Step 8: notification, revision `BranchList`, `urc.lock`;
   - Step 9: `BranchProtect`, force unlock;
   - Step 10: `RevisionList`;
-  - Step 12: thin_client and storage. It depends on tonic and
-  prost without tonic's `router` feature.
+  - Step 12: thin_client, storage and `lore.repository.v1`
+    (`RepositoryList`/`RepositoryGet`).
+
+  The crate depends on tonic, prost and `tonic-prost` (the generated code
+  calls `tonic_prost::ProstCodec`, `lore-proto/src/grpc/lore.user.v1.rs:339`),
+  without tonic's `router` feature.
   - Service impl in `modules/lore`: `UserGet`/`UserFind` via
     `accountsapi::Directory`; `RepositoryList`/`Register`/`Unregister` over
     `lore.repositories`.
@@ -307,7 +352,9 @@ split proof checks its endpoints through gateway-svc.
 - (c) **Authentication.** Every `lore.user.v1` RPC carries the caller's bearer
   token (`user.proto:5-7`). lore checks it against the Swarog JWKS through a
   new wire contract in `accountsapi` (lore → accounts, the allowed direction):
-  `verify_lore_token`. `RepositoryRegister` needs the `create-repo` action
+  `verify_lore_token`. It checks the signature and that the user exists and is
+  not tombstoned, so a deleted user's still-valid token cannot register a
+  repository. `RepositoryRegister` needs the `create-repo` action
   and makes the caller the owner. `RepositoryUnregister` answers
   `PERMISSION_DENIED` itself unless the caller has `owner`.
   **`UserFind`** by display name: the phase plan decides between an empty
@@ -362,14 +409,16 @@ split proof checks its endpoints through gateway-svc.
 **Step 9: Admin pages for lore.**
 - (a) `modules/lore/src/admin.rs` `Provider`, ported from `UILayout/redesign/lore-*.html`:
   - repos and repo tabs (branches + protect, locks, access, events);
-  - the repo Access tab reads effective actions from `authz` and links to the
+  - the repo Access tab reads holders and effective actions from `authz`
+    (`holders`) and links to the
     `authz` permissions page (Step 5a); lore itself has no permissions page;
   - locks with force unlock;
   - events;
   - server (HTTP health probe only, no process control: Weles is excluded);
-  - billing (seats = users with a Lore grant, store size if loreserver reports it,
+  - billing (seats = `authz` `holders_of_kind(lore)`, store size if loreserver reports it,
     hourly `lore.billing_snapshot` schedule).
-- (b) Operators assign grants before studio members can work. It can run in
+- (b) Operators see repositories and their access before studio members work
+  (grant assignment itself is the `authz` page, Step 5a). It can run in
   parallel with Step 8 after Step 5b.
 - (c) Writes such as force unlock and BranchProtect call loreserver with the
   service token. Mockup items that need process control (restart) are dropped and
@@ -386,12 +435,17 @@ split proof checks its endpoints through gateway-svc.
     thread, resolved), viewed files.
   - `#[http]` player ops for list, create, comment, review, close and reopen.
   - Durable `review.*` topics, each with its audit sink in this step.
-  - `player.deleted` subscription: Genesis tombstone + `player-purge` sweep,
-    the same as `lore`.
+  - `player.deleted` subscription: Genesis tombstone + `player-purge` sweep
+    (the `authz` precedent from Step 5a).
+  - Split wiring: `cmd/review-svc` gets `remote::Stub` entries for `authz`
+    and `lore` and declares them in `requires()`. With either down, review ops
+    answer unavailable.
 - (b) The portal's review screens need it.
 - (c) Merged detection: a `lore.branch_pushed` subscription marks an open MR
-  merged when the target's new head contains the source head (ancestry checked
-  over loreserver `RevisionList` with a service token). Authorization: the caller
+  merged when the target's new head contains the source head. The ancestry
+  check is a `loreapi` wire method (review → lore, the allowed direction);
+  `lore` answers it over loreserver `RevisionList` with its own service token,
+  so `review` needs no Lore client. Authorization: the caller
   needs `read` on the repo, resolved over `authzapi` (kind `lore`), never by import. Approvals are advisory ("2 approvals expected", lore repo
   setting).
 - (d) `[opus]`.
@@ -417,8 +471,13 @@ split proof checks its endpoints through gateway-svc.
   - Repositories list, Files with folder view, file view (text; binaries as
     metadata), History, Revision, Branches.
   - The design-system primitives from the v2 delta.
+  - An apikeys role for the portal (used by Step 13).
+  - `accounts` player ops for the profile: list and revoke own refresh
+    families (devices); PAT create/list/revoke (their grant model follows
+    owner question 5).
 - (b) It consumes everything above.
-- (c) The BFF holds the user's Swarog token and exchanges it per repo (Step 4) for
+- (c) The BFF holds the user's Swarog session and exchanges it (Step 5c): once
+  without a resource for the repositories list, and per repo for
   loreserver calls (ThinClient `RevisionTree`/`RevisionInfo`/`RevisionDiff`,
   `StorageService.Get`, `BranchList`, `RevisionList`, `LockService.Query`).
   Text diff is computed in the BFF (`ContentDiff` is unimplemented in Lore).
@@ -433,8 +492,10 @@ split proof checks its endpoints through gateway-svc.
 - (b) It needs Steps 10–12.
 - (c) The BFF calls Swarog `review` ops through the gateway with the user's
   session plus an `X-Api-Key` (`modules/gateway/src/lib.rs:21-25`). Step 12
-  creates an apikeys role for the portal, covering the review and lore methods,
-  and the key comes from the portal's config.
+  creates an apikeys role for the portal, covering the `review` methods and the
+  `accounts` player ops for devices and PATs (listed in Step 12's (a)), and the
+  key comes from the portal's config. The portal never calls `lore` ops
+  (owner question 4).
 - (d) `[opus]` BFF + `mockup-implementer` views.
 
 **Step 14: Docs, tracker, verify gates.**
@@ -476,6 +537,21 @@ Resolved 2026-11-24: grants live in a separate `authz` module (Step 5a).
    straight from loreserver. The portal's archcheck rule allows exactly this one
    repo dependency. The portal uses the Swarog API only for login, review, MRs
    and comments.
+
+5. **Service and PAT grants (Step 4, structural).** Step 4 still has confidential
+   clients carry their own `resources` grants, set in the accounts admin. That
+   is a second source of truth beside `authz`. Proposal: service clients and
+   PATs become `authz` principals; `client_credentials` asks `authzapi` for them
+   exactly as the exchange does for users, and the per-client grant column and
+   form go away. Step 4 then splits: the device grant stays in A, and
+   `client_credentials` moves after 5a (as 5d). OK?
+6. **Creator grant vs "modules never see role names" (Step 5b).** `lore` gives a
+   repository's creator an `owner` grant, but `grant` takes a role. Options:
+   - **(A, recommended)** `authzapi::grant_creator(kind, resource, user)`:
+     `authz` resolves an operator-configured creator role per kind (default a
+     role holding the full catalog). `lore` never names a role.
+   - **(B)** Grants by action set instead of by role. Simpler for modules, but
+     operators lose "change the role, re-scope every holder" for these grants.
 
 ## Not in this roadmap
 
