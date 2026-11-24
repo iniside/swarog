@@ -1,28 +1,31 @@
 use anyhow::{bail, Context, Result};
 use sqlx::PgPool;
 
+use crate::apikeys_admin_checks::patient;
 use crate::characters_admin_checks::{attr, attr_values, cut, get, table, text};
-use crate::{friends_call, friends_player, pass_nonce, Ctx, Proof};
+use crate::{extract_form_fields, friends_call, friends_player, pass_nonce, Ctx, Proof};
 
 /// The banner the Cloud saves tab draws, verbatim from `modules/storage/src/admin.rs`
 /// `READONLY_TEXT` (the mockup's pages-core.js:160).
 const READONLY_TEXT: &str =
     "Read-only: storage exposes saves for inspection; edits and deletes are not remotely supported.";
 
-/// The storage provider's Cloud saves tab on the player entity page, the absence of any download or
-/// Delete control on it and on the player row menu, and the dashboard's "Cloud saves used" tile, drawn and posted through the portal that `admin` holds a session on, over one
-/// pass-minted player B who writes `saves/slot-1` through the public player API. In the split
-/// the portal is admin-svc: the storage manifest (tab and tile), the tab
-/// panel and the tile are all built in storage-svc and reach admin-svc only
-/// through its `storage` peer.
+/// The storage provider's Cloud saves tab on the player entity page, the absence of any
+/// download or Delete control on it and on the player row menu, and the dashboard's "Cloud
+/// saves used" tile, drawn and posted through the portal that `admin` holds a session on, over
+/// one pass-minted player B who writes `saves/slot-1` through the public player API. In the
+/// split the portal is admin-svc: the storage manifest (tab and tile), the tab panel and the
+/// tile are all built in storage-svc and reach admin-svc only through its `storage` peer.
 ///
 /// "Storage purges pending" is not checked here: it shows only between a player's deletion and
 /// the next purge sweep, so a portal read races the sweep; `modules/storage/src/admin_tests.rs`
 /// proves it over the live tables instead.
 ///
 /// Break run (a full splitproof run, then reverted):
-/// - admin-svc without its `storage` peer (`cmd/admin-svc/src/lib.rs`): SA1-SA3 red as new in
-///   the split, SA1m-SA3m green, 0 changed and 0 stale (2026-11-22, step 19t).
+/// - admin-svc without its `storage` peer (`cmd/admin-svc/src/lib.rs`): SA1 and SA3 red as new in
+///   the split, SA1m-SA3m green, 0 changed and 0 stale (2026-11-22, step 19t); SA2 is red there
+///   too since step 8b, because it requires the panel and the row menu to have loaded
+///   (not re-run since).
 pub(super) async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &reqwest::Client, tag: &str) -> Result<()> {
     if let Err(e) = checks(ctx, pool, p, front, admin, tag).await {
         p.check(&format!("[SA0{tag}] storage admin pass completes"), false, format!("{e:#}"));
@@ -100,7 +103,9 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
 
     // [SA2] storage draws no control: the panel has no Download all, Delete or row download
     // button, the player row menu has no "Download cloud saves" item, neither declares a refused
-    // action of the storage module, and B's object is untouched.
+    // action of the storage module nor wires any /admin/_action/storage/ request, both were
+    // loaded (not an error state or a missing peer), a direct POST of the removed
+    // storage/save.download is the portal's 404, and B's object is untouched.
     let refused = |html: &str| -> Vec<String> {
         attr_values(html, "data-refused-action").into_iter().filter(|a| a.starts_with("storage/")).collect()
     };
@@ -108,16 +113,42 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
     let panel_text = text(&s_body);
     let panel_ok = panel_refused.is_empty()
         && !panel_text.contains("Download")
-        && !panel_text.contains("Delete");
+        && !panel_text.contains("Delete")
+        && storage_actions(&s_body).is_empty()
+        && !named_control(&s_body);
     let (menu_code, menu) = get(admin, &format!("{front}/admin/_menu/player/{}", b.player_id)).await?;
     let menu_refused = refused(&menu);
-    let menu_ok = menu_refused.is_empty() && !text(&menu).contains("Download cloud saves");
+    // Loaded, not just absent: a failed provider call is still served 200 as an error state, and
+    // a missing storage peer leaves no menu item, so absence alone passes vacuously.
+    let panel_loaded = attr(&s_body, "data-state") == "readonly" && !drawn.is_empty();
+    let menu_loaded = text(&menu).contains("Suspend");
+    let menu_ok = menu_refused.is_empty()
+        && !text(&menu).contains("Download cloud saves")
+        && storage_actions(&menu).is_empty()
+        && !named_control(&menu)
+        && menu_loaded;
+    // An undeclared action id is the portal's 404 naming it; nothing reaches storage.
+    let csrf = extract_form_fields(&page).into_iter().find(|(k, _)| k == "_csrf").map(|(_, v)| v).unwrap_or_default();
+    if csrf.is_empty() {
+        bail!("no _csrf on B's entity page: {}", cut(&page));
+    }
+    let post_url = format!("{front}/admin/_action/storage/save.download");
+    let r = patient(|| admin.post(&post_url).form(&[("_csrf", csrf.as_str())])).await?;
+    let post_code = r.status().as_u16();
+    let post_text = text(&r.text().await.unwrap_or_default());
     let after = version().await?;
     p.check(
         &format!("[SA2{tag}] storage draws no download or Delete control on the tab or the player row menu"),
-        s_code == 200 && panel_ok && menu_code == 200 && menu_ok && after == Some(1),
+        s_code == 200
+            && panel_loaded
+            && panel_ok
+            && menu_code == 200
+            && menu_ok
+            && post_code == 404
+            && post_text.contains("storage/save.download")
+            && after == Some(1),
         format!(
-            "panel_refused={panel_refused:?} panel_ok={panel_ok} menu={menu_code} menu_refused={menu_refused:?} menu_ok={menu_ok} version_after={after:?}"
+            "panel_refused={panel_refused:?} panel_loaded={panel_loaded} panel_ok={panel_ok} menu={menu_code} menu_refused={menu_refused:?} menu_loaded={menu_loaded} menu_ok={menu_ok} post={post_code} {post_text:?} version_after={after:?}"
         ),
     );
 
@@ -146,6 +177,21 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
         ),
     );
     Ok(())
+}
+
+/// Whether an aria-label in `html` names a download or Delete control: an icon-only action
+/// carries its label there and nowhere in the visible text.
+fn named_control(html: &str) -> bool {
+    attr_values(html, "aria-label").iter().any(|l| l.contains("Download") || l.contains("Delete"))
+}
+
+/// Every hx-get, hx-post and data-menu-url value in `html` that targets a storage action.
+fn storage_actions(html: &str) -> Vec<String> {
+    ["hx-get", "hx-post", "data-menu-url"]
+        .into_iter()
+        .flat_map(|k| attr_values(html, k))
+        .filter(|u| u.starts_with("/admin/_action/storage/"))
+        .collect()
 }
 
 /// The raw html of the entity page's tab button whose label starts with `label`, none when

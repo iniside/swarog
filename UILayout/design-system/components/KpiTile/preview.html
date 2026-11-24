@@ -17,7 +17,7 @@
   var S = window.Swarog;
   var c = { module: "lore", point: "dashboard.tile", prim: "KpiTile" };
   document.getElementById("root").innerHTML = '<div class="pv-row">' +
-    S.KpiTile({ c: { module: "storage", point: "dashboard.tile", prim: "KpiTile" }, noForce: true, label: "Cloud saves used", value: "1.82", unit: "TB", delta: "64 MB quota / player" }) +
+    S.KpiTile({ c: { module: "storage", point: "dashboard.tile", prim: "KpiTile" }, noForce: true, label: "Cloud saves used", value: "1.82", unit: "TB", delta: "10,000 slots / player" }) +
     S.KpiTile({ c: { module: "accounts", point: "dashboard.tile", prim: "KpiTile" }, noForce: true, label: "Active players (24 h)", value: "38,412" }) +
     S.KpiTile({ c: { module: "wallet", point: "dashboard.tile", prim: "KpiTile" }, noForce: true, label: "Embers spent (24 h)", value: "1.94 M", state: "error" }) +
     S.KpiTile({ c: c, noForce: true, label: "Pushes (24 h)", value: "41", state: "loading" }) + '</div>';

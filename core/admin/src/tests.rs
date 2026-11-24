@@ -2476,7 +2476,7 @@ async fn a_readonly_decl_forces_the_readonly_state_with_its_text() {
     let (_ctx, st) = wired(&pool, false, true).await;
     let user = uniq("t-readonly-decl");
     let cookie = operator_cookie(&pool, &user).await;
-    let reason = "Read-only: storage exposes saves for inspection and download.";
+    let reason = "Read-only: storage exposes saves for inspection only.";
     let saves = ContributionDecl { readonly: Some(reason.to_string()), ..player_tab("saves", "saves") };
     let storage = player_owner(module("storage", vec![saves, player_tab("quota", "quota")], Vec::new(), true));
     let props = || {
@@ -2579,6 +2579,29 @@ async fn a_tool_on_a_readonly_contribution_is_disabled_and_its_post_refused() {
     assert_eq!(status, StatusCode::FORBIDDEN, "{raw}");
     assert!(raw.contains(reason), "{raw}");
     assert_eq!(storage.invokes.load(Ordering::SeqCst), 0, "a refused write never reaches the provider");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A POST of an action id its module never declared is the portal's 404 naming
+/// `<module>/<action>`, and the provider is never invoked: the portal's own lookup is the
+/// only guard, controlplane does not refuse an undeclared id.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_post_of_an_undeclared_action_is_a_404_and_never_reaches_the_provider() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-undeclared-action");
+    let cookie = operator_cookie(&pool, &user).await;
+    let wipe = action_decl("wipe", ActionPoint::PanelTool("saves".to_string()), true);
+    let storage = player_owner(module("storage", vec![player_tab("saves", "saves")], vec![wipe], true));
+    let storage = Recording::new(storage, &[]);
+    let engine = Arc::new(sourced(vec![storage.clone() as Arc<dyn controlplane::Provider>]).await);
+
+    let (status, raw) =
+        portal_post(&engine, &st, &cookie, "/admin/_action/storage/save.download", "_csrf=csrf").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{raw}");
+    assert!(raw.contains("storage&#x2f;save.download: not found"), "{raw}");
+    assert_eq!(storage.invokes.load(Ordering::SeqCst), 0, "an undeclared action never reaches the provider");
 
     cleanup_user(&pool, &user).await;
 }

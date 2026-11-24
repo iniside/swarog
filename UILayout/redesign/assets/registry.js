@@ -47,7 +47,7 @@ window.REG = (() => {
   // dashboard.tile
   const tiles = [
     { module: "accounts", label: "Active players (24 h)", value: "38,412", href: "players.html" },
-    { module: "storage", label: "Cloud saves used", value: "1.82", unit: "TB", delta: "64 MB quota / player" },
+    { module: "storage", label: "Cloud saves used", value: "1.82", unit: "TB", delta: "10,000 slots / player" },
     { module: "mail", label: "Mail queue", value: "312", href: "mail.html" },
     { module: "core.events", label: "Paused subscriptions", value: "1", unit: "/ 7", delta: '<span class="down">inventory.character-created.v1</span>', href: "events.html" },
     { module: "wallet", label: "Embers spent (24 h)", value: "1.94 M", state: "error" },
