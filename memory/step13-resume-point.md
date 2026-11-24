@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-24T13:17:45.108Z
+  modified: 2026-11-24T13:58:31.925Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -143,3 +143,5 @@ a9094615 ("any" = no filter in core filter_views) review REJECT structural S1: "
 - 25a c2383d34+a39c0962; 25b 0e679031+c5cb42c4; 25c 9a16b3dc+4314c825, 9479d4fb, 1e9636d5; 25d1 0ad28c24; 25d2 7bbcda4f+c3311d72; 25d3 95d7f638+6c944209; 25d4 e39f6ff1, 7ae5022b (ACCEPT); 25e1 55a81cb2; 25f1 b4eee17e+eed9ecf5; 25f2 deaf5bb0+8a8585f4; 25g1 38a51fdf+48ad61fc; 25g2 13a3201a+295a41dd; 25h DROPPED (c73b119e). Step 26 done (471666ea, 348cb795, f018531f, memory).
 - Remaining: 25e2 (owner lane sonnet/opus pending; recommended opus), Step 27 (verifyctl --all --strict + owner browser check of 25b; admindiff skipped). Workspace suite not re-run since Step 24.
 - Owner questions open: 24a S1 VerbError eventctl wording; 25f1 mail counters need admin.rs pure fns; 25g2 typed Finding enum; 25g1 conformance zero-writer floor; panels cache is fallback-only (plan text implied cache hit skips provider).
+
+- 2026-11-24 (final): owner dropped 25e2 and Step 27 ("weles zostaw w spokoju"); plan marked Status: done. verifyctl --all --strict never ran; admin-refactor-red-gates-expected memory NOT retired (its retire condition was a green Step 27).
