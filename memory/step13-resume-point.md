@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-24T12:17:39.867Z
+  modified: 2026-11-24T12:31:24.099Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -135,3 +135,5 @@ a9094615 ("any" = no filter in core filter_views) review REJECT structural S1: "
 - Step 24 todo 1b999b4b (24.b closed, no commit). 24a 8ac46dab (VerbError: NotFound/Retired/Healthy/NothingToSkip/Db; state_of pre-read gone); core-reviewer ACCEPT.
 - Owner open (24a review): S1 VerbError Display carries eventctl wording ("eventctl: no such subscription" now shown in portal); L1 prepare_skip NotFound says "no subscription" (second text); L3 poison_event mixes "asyncevents:"/"eventctl:" prefixes. L1/L3 depend on S1.
 - 25a (migrate race + release undecodable claimed row) dispatched to core-implementer opus. Next: 25b (pageshow, mockup-implementer), 25c1-3, 25d1-4, 25e (owner lane decision before 25e2), 25f, 25g, 25h (owner approves per-group assertion lines before 25h1).
+- Owner 2026-11-24 ("ten split proof to zostaw ... nie duplikuj"): Step 25h DROPPED (c73b119e, groups in docs/todo/splitproof.md); backfill adds only uncovered items, never duplicates. Owner also impatient with Step 25 length — keep it moving.
+- Landed: 25a c2383d34 + a39c0962, 25b 0e679031 + c5cb42c4 (all ACCEPT), 25c3 1e9636d5 (review pending). 25c1/25c2 running.
