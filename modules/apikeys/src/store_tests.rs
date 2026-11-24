@@ -110,7 +110,8 @@ async fn lookup_known_unknown_revoked() {
     let role = format!("{base}-role");
     let key = format!("{base}-key");
     store.create_role(&role, "full").await.unwrap();
-    let (secret, _prefix) = store.create_key(&key, &role).await.unwrap();
+    let (secret, _prefix) = store.create_key(&key, &role, "tester").await.unwrap();
+    assert_eq!(key_summary(&store, &key).await.unwrap().created_by, "tester");
 
     // Known → the record with the resolved ROLE policy.
     assert_eq!(
@@ -138,7 +139,7 @@ async fn role_policy_edit_changes_effective_key_policy() {
     let role = format!("{base}-role");
     let key = format!("{base}-key");
     store.create_role(&role, "accounts.login").await.unwrap();
-    let (secret, _p) = store.create_key(&key, &role).await.unwrap();
+    let (secret, _p) = store.create_key(&key, &role, "tester").await.unwrap();
     assert_eq!(store.lookup(&secret).await.unwrap().unwrap().policy, "accounts.login");
 
     // Edit the role policy under its current revision → lookup reflects it immediately.
@@ -182,7 +183,7 @@ async fn stale_revision_set_key_role_conflicts_without_writing() {
     let key = format!("{base}-key");
     store.create_role(&r1, "full").await.unwrap();
     store.create_role(&r2, "accounts.login").await.unwrap();
-    store.create_key(&key, &r1).await.unwrap();
+    store.create_key(&key, &r1, "tester").await.unwrap();
     let before = key_summary(&store, &key).await.unwrap();
 
     assert_conflict(store.set_key_role(&key, before.revision + 999, &r2).await);
@@ -205,7 +206,7 @@ async fn set_key_role_on_a_revoked_key_conflicts_without_writing() {
     let key = format!("{base}-key");
     store.create_role(&r1, "full").await.unwrap();
     store.create_role(&r2, "accounts.login").await.unwrap();
-    store.create_key(&key, &r1).await.unwrap();
+    store.create_key(&key, &r1, "tester").await.unwrap();
     assert_eq!(store.revoke_key(&key).await.unwrap(), Revoke::Revoked);
     let before = key_summary(&store, &key).await.unwrap();
 
@@ -229,7 +230,7 @@ async fn revoke_twice_is_already_revoked_without_writing() {
     let role = format!("{base}-role");
     let key = format!("{base}-key");
     store.create_role(&role, "full").await.unwrap();
-    let (secret, _p) = store.create_key(&key, &role).await.unwrap();
+    let (secret, _p) = store.create_key(&key, &role, "tester").await.unwrap();
     let fresh = key_summary(&store, &key).await.unwrap();
 
     assert_eq!(store.revoke_key(&key).await.unwrap(), Revoke::Revoked);
@@ -281,7 +282,7 @@ async fn delete_role_used_only_by_a_revoked_key_conflicts_with_the_count() {
     let role = format!("{base}-role");
     let key = format!("{base}-key");
     store.create_role(&role, "full").await.unwrap();
-    store.create_key(&key, &role).await.unwrap();
+    store.create_key(&key, &role, "tester").await.unwrap();
     assert_eq!(store.revoke_key(&key).await.unwrap(), Revoke::Revoked);
 
     match store.delete_role(&role).await {
@@ -305,7 +306,7 @@ async fn key_and_role_read_one_row_or_none() {
     let role = format!("{base}-role");
     let key = format!("{base}-key");
     store.create_role(&role, "accounts.login").await.unwrap();
-    let (_, prefix) = store.create_key(&key, &role).await.unwrap();
+    let (_, prefix) = store.create_key(&key, &role, "tester").await.unwrap();
     let rev = role_revision(&pool, &role).await.unwrap();
 
     let r = store.role(&role).await.unwrap().unwrap();
@@ -341,7 +342,7 @@ async fn delete_role_in_use_conflicts_and_keeps_the_role() {
     let role = format!("{base}-role");
     let key = format!("{base}-key");
     store.create_role(&role, "full").await.unwrap();
-    store.create_key(&key, &role).await.unwrap();
+    store.create_key(&key, &role, "tester").await.unwrap();
 
     // The FK (not a pre-check) rejects deleting a role a key still references.
     assert_conflict(store.delete_role(&role).await);
@@ -375,7 +376,7 @@ async fn create_key_missing_role_conflicts_not_notfound() {
     let base = unique_name(&pool).await;
     let key = format!("{base}-key");
 
-    assert_conflict(store.create_key(&key, &format!("{base}-no-such-role")).await);
+    assert_conflict(store.create_key(&key, &format!("{base}-no-such-role"), "tester").await);
     assert!(key_summary(&store, &key).await.is_none(), "no key written");
 
     cleanup(&pool, &base).await;
@@ -390,7 +391,7 @@ async fn set_key_role_missing_role_conflicts() {
     let role = format!("{base}-role");
     let key = format!("{base}-key");
     store.create_role(&role, "full").await.unwrap();
-    store.create_key(&key, &role).await.unwrap();
+    store.create_key(&key, &role, "tester").await.unwrap();
     let rev = key_summary(&store, &key).await.unwrap().revision;
 
     assert_conflict(store.set_key_role(&key, rev, &format!("{base}-nope")).await);
@@ -411,8 +412,8 @@ async fn a_duplicate_role_or_key_name_is_taken() {
     assert_eq!(role_policy(&store, &role).await.unwrap(), "full", "first policy kept");
 
     let key = format!("{base}-key");
-    let (secret, _) = store.create_key(&key, &role).await.unwrap();
-    assert_taken(store.create_key(&key, &role).await);
+    let (secret, _) = store.create_key(&key, &role, "tester").await.unwrap();
+    assert_taken(store.create_key(&key, &role, "tester").await);
     assert_eq!(store.lookup(&secret).await.unwrap().unwrap().name, key, "first secret kept");
 
     cleanup(&pool, &base).await;
@@ -429,7 +430,7 @@ async fn create_key_returns_secret_once_and_reads_never_hold_it() {
     let role = format!("{base}-role");
     let key = format!("{base}-key");
     store.create_role(&role, "full").await.unwrap();
-    let (secret, prefix) = store.create_key(&key, &role).await.unwrap();
+    let (secret, prefix) = store.create_key(&key, &role, "tester").await.unwrap();
 
     assert!(secret.starts_with("ak_"), "secret shape: {secret}");
     assert_eq!(prefix, secret.chars().take(12).collect::<String>(), "prefix is the first 12 chars");
@@ -549,13 +550,18 @@ async fn over_cap_name_rejected_on_every_writer_without_writing() {
 
     store.create_role(&role, "full").await.unwrap();
     let role_rev = role_revision(&pool, &role).await.unwrap();
-    store.create_key(&key, &role).await.unwrap();
+    store.create_key(&key, &role, "tester").await.unwrap();
     let key_rev = key_summary(&store, &key).await.unwrap().revision;
 
     // Inserted values.
     assert_invalid(store.create_role(&huge, "full").await, "role name");
-    assert_invalid(store.create_key(&huge, &role).await, "key name");
-    assert_invalid(store.create_key(&format!("{base}-k2"), &huge).await, "role name");
+    assert_invalid(store.create_key(&huge, &role, "tester").await, "key name");
+    assert_invalid(store.create_key(&format!("{base}-k2"), &huge, "tester").await, "role name");
+    let huge_creator = "a".repeat(crate::store::MAX_NAME_BYTES + 1);
+    assert_invalid(store.create_key(&format!("{base}-k3"), &role, &huge_creator).await, "key creator");
+    assert_invalid(store.create_key(&format!("{base}-k4"), &role, " ").await, "key creator");
+    assert!(key_summary(&store, &format!("{base}-k3")).await.is_none(), "no key written under an over-cap creator");
+    assert!(key_summary(&store, &format!("{base}-k4")).await.is_none(), "no key written under a blank creator");
     // Updated values.
     assert_invalid(store.set_key_role(&key, key_rev, &huge).await, "role name");
     // `WHERE` predicates.
@@ -587,7 +593,7 @@ async fn at_cap_name_is_accepted_end_to_end() {
     assert_eq!((role.len(), key.len()), (crate::store::MAX_NAME_BYTES, crate::store::MAX_NAME_BYTES));
 
     store.create_role(&role, "full").await.unwrap();
-    let (secret, _prefix) = store.create_key(&key, &role).await.unwrap();
+    let (secret, _prefix) = store.create_key(&key, &role, "tester").await.unwrap();
     assert_eq!(store.lookup(&secret).await.unwrap().unwrap().name, key);
 
     cleanup(&pool, &base).await;
@@ -671,6 +677,14 @@ async fn seed_upsert_roles_and_keys_self_heal() {
     store.upsert_seed_role(&role, "full").await.unwrap();
     store.upsert_seed_key(&key, &secret, &role).await.unwrap();
     assert_eq!(store.lookup(&secret).await.unwrap().unwrap().policy, "full");
+    assert_eq!(key_summary(&store, &key).await.unwrap().created_by, crate::store::DEV_SEED_CREATOR);
+    assert_eq!(crate::store::DEV_SEED_CREATOR, "dev seed");
+
+    // A seed over an operator-created key of the same name takes the key over, creator included.
+    let taken = format!("{base}-taken");
+    store.create_key(&taken, &role, "tester").await.unwrap();
+    store.upsert_seed_key(&taken, &format!("{base}-taken-secret"), &role).await.unwrap();
+    assert_eq!(key_summary(&store, &taken).await.unwrap().created_by, "dev seed");
 
     // A stray revoke + role drift on the shared dev DB, then re-seed self-heals.
     assert_eq!(store.revoke_key(&key).await.unwrap(), Revoke::Revoked);
@@ -740,7 +754,7 @@ async fn keys_page_keyset_walks_every_key_once_newest_first() {
     let role = format!("{base}-role");
     store.create_role(&role, "full").await.unwrap();
     for i in 0..27 {
-        store.create_key(&format!("{base}-k{i:02}"), &role).await.unwrap();
+        store.create_key(&format!("{base}-k{i:02}"), &role, "tester").await.unwrap();
     }
     // k16 shares k17's created_at, so k17 ends page 1 and k16 starts page 2 only via the name half of the cursor.
     sqlx::query("UPDATE apikeys.keys SET created_at = (SELECT created_at FROM apikeys.keys WHERE name = $1) WHERE name = $2")
@@ -785,9 +799,9 @@ async fn keys_page_filters_by_status_role_and_literal_needle() {
     let live = format!("{base}-live%_x");
     let gone = format!("{base}-gone");
     let other = format!("{base}-other");
-    let (_, live_prefix) = store.create_key(&live, &role_a).await.unwrap();
-    store.create_key(&gone, &role_a).await.unwrap();
-    store.create_key(&other, &role_b).await.unwrap();
+    let (_, live_prefix) = store.create_key(&live, &role_a, "tester").await.unwrap();
+    store.create_key(&gone, &role_a, "tester").await.unwrap();
+    store.create_key(&other, &role_b, "tester").await.unwrap();
     assert_eq!(store.revoke_key(&gone).await.unwrap(), Revoke::Revoked);
 
     let names = |rows: Vec<crate::store::KeyRow>| {
@@ -835,8 +849,8 @@ async fn role_counts_include_revoked_keys_and_key_counts_split_active() {
     store.create_role(&empty, "full").await.unwrap();
     let (total0, active0) = store.key_counts().await.unwrap();
     let k1 = format!("{base}-k1");
-    store.create_key(&k1, &used).await.unwrap();
-    store.create_key(&format!("{base}-k2"), &used).await.unwrap();
+    store.create_key(&k1, &used, "tester").await.unwrap();
+    store.create_key(&format!("{base}-k2"), &used, "tester").await.unwrap();
     assert_eq!(store.revoke_key(&k1).await.unwrap(), Revoke::Revoked);
 
     let roles: Vec<_> = store

@@ -64,9 +64,6 @@ const MAX_CURSOR_MICROS: i64 = 1 << 53;
 
 pub(crate) const ROLES_FOOT: &str = "Policies list the op methods modules serve (e.g. leaderboard.topScores).";
 
-/// The operator logins the FAKE "created by" cell draws from.
-pub(crate) const FAKE_CREATORS: [&str; 4] = ["marta.k", "jonas.l", "priya.n", "sam.o"];
-
 pub(crate) const REVOKE_BODY: &str = "Requests signed with this key fail immediately on every process.";
 pub(crate) const ROLE_DELETE_BODY: &str = "A role still used by a key, revoked keys included, cannot be deleted.";
 
@@ -132,7 +129,7 @@ impl ApiKeysAdmin {
         if role.is_empty() {
             return Ok(field_error(FIELD_ROLE, "required".to_string()));
         }
-        match self.svc.create_key(name, role).await {
+        match self.svc.create_key(name, role, &req.operator).await {
             Ok((secret, _prefix)) => Ok(InvokeOutcome::Ok {
                 message: String::new(),
                 reveal: Some(SecretReveal {
@@ -412,16 +409,10 @@ fn status_text(revoked: bool) -> &'static str {
     }
 }
 
-/// The FAKE operator a key was created by.
-pub(crate) fn fake_creator(name: &str) -> &'static str {
-    // FAKE: keys record no creator.
-    FAKE_CREATORS[(controlplane::fake_hash("apikeys.created_by", name) % FAKE_CREATORS.len() as u64) as usize]
-}
-
 fn key_row(row: &KeyRow) -> Row {
     let created = Cell {
         row: true,
-        more: vec![cell(CellKind::User, fake_creator(&row.name))],
+        more: vec![cell(CellKind::User, row.created_by.clone())],
         ..cell(CellKind::Dim, row.created.clone())
     };
     Row {

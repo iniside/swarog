@@ -110,13 +110,21 @@ pub(crate) const KEY_NAME: ColumnCap = ColumnCap {
     max_bytes: MAX_NAME_BYTES,
     constraint: "keys_name_len_check",
 };
+pub(crate) const KEY_CREATOR: ColumnCap = ColumnCap {
+    what: "key creator",
+    max_bytes: MAX_NAME_BYTES,
+    constraint: "keys_created_by_len_check",
+};
 const ROLE_POLICY: ColumnCap = ColumnCap {
     what: "role policy",
     max_bytes: MAX_POLICY_BYTES,
     constraint: "roles_policy_len_check",
 };
 
-pub(crate) const COLUMN_CAPS: &[&ColumnCap] = &[&ROLE_NAME, &KEY_NAME, &ROLE_POLICY];
+pub(crate) const COLUMN_CAPS: &[&ColumnCap] = &[&ROLE_NAME, &KEY_NAME, &KEY_CREATOR, &ROLE_POLICY];
+
+/// The `created_by` of a key the dev seed writes.
+pub(crate) const DEV_SEED_CREATOR: &str = "dev seed";
 
 /// The implicit primary-key constraint names [`WriteError::from_db`] reads as a taken name.
 const KEYS_PKEY: &str = "keys_pkey";
@@ -263,17 +271,19 @@ pub(crate) struct KeyRow {
     pub created: String,
     /// `created_at` in microseconds since the epoch, the keyset cursor's first half.
     pub created_us: i64,
+    /// The operator login that created the key, or [`DEV_SEED_CREATOR`].
+    pub created_by: String,
 }
 
 /// The `apikeys.keys` columns every [`KeyRow`] read selects, in [`KeyTuple`] order.
 const KEY_COLUMNS: &str = "name, prefix, role, revision, (revoked_at IS NOT NULL), \
     to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'), \
-    (EXTRACT(EPOCH FROM created_at) * 1000000)::int8";
+    (EXTRACT(EPOCH FROM created_at) * 1000000)::int8, created_by";
 
-type KeyTuple = (String, String, String, i64, bool, String, i64);
+type KeyTuple = (String, String, String, i64, bool, String, i64, String);
 
-fn key_row((name, prefix, role, revision, revoked, created, created_us): KeyTuple) -> KeyRow {
-    KeyRow { name, prefix, role, revision, revoked, created, created_us }
+fn key_row((name, prefix, role, revision, revoked, created, created_us, created_by): KeyTuple) -> KeyRow {
+    KeyRow { name, prefix, role, revision, revoked, created, created_us, created_by }
 }
 
 /// Every role with its key count (revoked keys included); a reader appends its WHERE and
@@ -502,18 +512,27 @@ impl Store {
     /// secret is the ONLY time the plaintext exists outside the caller. A duplicate name
     /// (PK) is [`WriteError::Taken`]; a missing `role` (FK `23503`) is a
     /// [`WriteError::Conflict`] (finding #2: never a not-found), as is a digest collision
-    /// (unique, astronomically unlikely).
-    pub async fn create_key(&self, name: &str, role: &str) -> Result<(String, String), WriteError> {
+    /// (unique, astronomically unlikely). `created_by` is the operator login recorded on the
+    /// key.
+    pub async fn create_key(
+        &self,
+        name: &str,
+        role: &str,
+        created_by: &str,
+    ) -> Result<(String, String), WriteError> {
         validate_name(&KEY_NAME, name)?;
         validate_name(&ROLE_NAME, role)?;
+        validate_name(&KEY_CREATOR, created_by)?;
         let (secret, hash, prefix) = generate_secret()?;
         sqlx::query(
-            "INSERT INTO apikeys.keys (name, secret_hash, prefix, role) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO apikeys.keys (name, secret_hash, prefix, role, created_by) \
+             VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(name)
         .bind(&hash)
         .bind(&prefix)
         .bind(role)
+        .bind(created_by)
         .execute(&self.pool)
         .await
         .map_err(|e| WriteError::from_db(e, format!("apikeys: role {role:?} does not exist")))?;
@@ -596,8 +615,9 @@ impl Store {
     }
 
     /// Upserts a well-known dev KEY (Decision 7) with a KNOWN plaintext `secret` so
-    /// `X-Api-Key: <secret>` keeps resolving: stores `sha256(secret)` + prefix + role, and
-    /// on conflict resets the hash/prefix/role, clears any stray `revoked_at`, and bumps
+    /// `X-Api-Key: <secret>` keeps resolving: stores `sha256(secret)` + prefix + role with
+    /// [`DEV_SEED_CREATOR`] as `created_by`, and on conflict resets the hash/prefix/role and
+    /// creator, clears any stray `revoked_at`, and bumps
     /// `revision` (so a form rendered before a re-seed CAS-conflicts). Must be called AFTER
     /// its role is seeded (FK order). Self-healing, idempotent.
     pub async fn upsert_seed_key(
@@ -609,16 +629,18 @@ impl Store {
         let hash = secret_hash(secret);
         let prefix: String = secret.chars().take(PREFIX_CHARS).collect();
         sqlx::query(
-            "INSERT INTO apikeys.keys (name, secret_hash, prefix, role) VALUES ($1, $2, $3, $4) \
+            "INSERT INTO apikeys.keys (name, secret_hash, prefix, role, created_by) \
+             VALUES ($1, $2, $3, $4, $5) \
              ON CONFLICT (name) DO UPDATE \
                SET secret_hash = EXCLUDED.secret_hash, prefix = EXCLUDED.prefix, \
-                   role = EXCLUDED.role, revoked_at = NULL, \
+                   role = EXCLUDED.role, created_by = EXCLUDED.created_by, revoked_at = NULL, \
                    revision = apikeys.keys.revision + 1, updated_at = now()",
         )
         .bind(name)
         .bind(&hash)
         .bind(&prefix)
         .bind(role)
+        .bind(DEV_SEED_CREATOR)
         .execute(&self.pool)
         .await?;
         Ok(())

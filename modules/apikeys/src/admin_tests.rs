@@ -25,6 +25,7 @@ fn key(i: usize, revoked: bool) -> KeyRow {
         revoked,
         created: "2026-11-23".to_string(),
         created_us: 1_000_000 - i as i64,
+        created_by: format!("op-{i:02}"),
     }
 }
 
@@ -338,7 +339,7 @@ fn a_key_row_draws_name_prefix_role_created_and_status() {
     assert_eq!((c[2].kind, c[2].value.as_str()), (CellKind::Ref, "ops"));
     assert_eq!((c[3].kind, c[3].value.as_str(), c[3].row), (CellKind::Dim, "2026-11-23", true));
     assert_eq!(c[3].more.len(), 1);
-    assert_eq!((c[3].more[0].kind, c[3].more[0].value.as_str()), (CellKind::User, fake_creator("key-01")));
+    assert_eq!((c[3].more[0].kind, c[3].more[0].value.as_str()), (CellKind::User, "op-01"));
     assert_eq!((c[4].kind, c[4].value.as_str(), c[4].tone), (CellKind::Badge, "active", None));
     assert_eq!(t.rows[1].cells[4].value, "revoked");
     assert_eq!(body.meta.as_deref(), Some("1 active"));
@@ -352,15 +353,6 @@ fn a_key_row_draws_name_prefix_role_created_and_status() {
             ("role", controlplane::FilterKind::Select(vec!["ops".into()])),
         ]
     );
-}
-
-#[test]
-fn the_fake_creator_is_stable_per_name_and_drawn_from_its_list() {
-    for i in 0..64 {
-        let name = format!("key-{i}");
-        assert_eq!(fake_creator(&name), fake_creator(&name));
-        assert!(FAKE_CREATORS.contains(&fake_creator(&name)));
-    }
 }
 
 #[test]
@@ -546,10 +538,10 @@ async fn keys_page_by_25_narrow_by_filters_and_drop_the_total_and_roles_count_ke
     store.create_role(&role_a, "full").await.unwrap();
     store.create_role(&role_b, "match.report").await.unwrap();
     for i in 0..PAGE_SIZE {
-        store.create_key(&format!("{base}-k{i:02}"), &role_a).await.unwrap();
+        store.create_key(&format!("{base}-k{i:02}"), &role_a, "tester").await.unwrap();
     }
     let revoked = format!("{base}-r");
-    store.create_key(&revoked, &role_b).await.unwrap();
+    store.create_key(&revoked, &role_b, "tester").await.unwrap();
     store.revoke_key(&revoked).await.unwrap();
     let p = provider(pool.clone());
 
@@ -641,6 +633,7 @@ async fn create_change_role_and_revoke_a_key_through_the_provider() {
         Some(&*format!("Send it as the X-Api-Key header (HTTP) or the api_key field (socket). Role {role_a}."))
     );
     assert_eq!(store.lookup(&reveal.value).await.unwrap().unwrap().name, name);
+    assert_eq!(store.key(&name).await.unwrap().unwrap().created_by, "tester", "the creator is the calling operator");
 
     let again = p.invoke(call("key.create", create_input(&name, &role_b, Some("Never")))).await.unwrap();
     let InvokeOutcome::FieldErrors(errors) = again else { panic!("{again:?}") };
@@ -799,7 +792,7 @@ async fn create_edit_and_delete_roles_through_the_provider() {
     assert_eq!(e.status, Status::NotFound);
 
     let key = format!("{base}-k");
-    store.create_key(&key, &name).await.unwrap();
+    store.create_key(&key, &name, "tester").await.unwrap();
     assert_eq!(store.revoke_key(&key).await.unwrap(), Revoke::Revoked);
     let e = p.invoke(role_call("role.delete", &name, BTreeMap::new(), None)).await.unwrap_err();
     assert_eq!(e.status, Status::Conflict, "a revoked key still holds its role: {e:?}");

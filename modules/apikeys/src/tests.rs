@@ -150,7 +150,7 @@ async fn capability_lookup_known_unknown_revoked() {
     let role = format!("{base}-role");
     let key = format!("{base}-key");
     svc.store.create_role(&role, "accounts.login").await.unwrap();
-    let (secret, _prefix) = svc.store.create_key(&key, &role).await.unwrap();
+    let (secret, _prefix) = svc.store.create_key(&key, &role, "tester").await.unwrap();
 
     // Known → Ok(Some(record)) with the resolved ROLE policy.
     assert_eq!(

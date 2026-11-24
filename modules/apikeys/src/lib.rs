@@ -50,7 +50,7 @@ use crate::store::{KeyRow, Revoke, RoleRow, Store, WriteError};
 /// effective policy is resolved by JOIN, never denormalized onto the key. `secret_hash`
 /// is UNIQUE + implicitly indexed, so lookup is an O(1) equality on the digest.
 ///
-/// The three `*_len_check`s are `octet_length`, not `char_length`, because their Rust
+/// The four `*_len_check`s are `octet_length`, not `char_length`, because their Rust
 /// twins in `store::COLUMN_CAPS` are `str::len()` BYTE counts — a 128-character multibyte
 /// name is 256 octets. Every one of these columns is operator-authored, so the column
 /// CHECK is the class fail-safe under those Rust caps, not a second policy; the names are
@@ -81,6 +81,9 @@ CREATE TABLE IF NOT EXISTS apikeys.keys (
 	secret_hash text        NOT NULL UNIQUE,
 	prefix      text        NOT NULL,
 	role        text        NOT NULL REFERENCES apikeys.roles(name),
+	created_by  text        NOT NULL
+	            CONSTRAINT keys_created_by_len_check
+	            CHECK (octet_length(created_by) <= 128),
 	revision    bigint      NOT NULL DEFAULT 1,
 	created_at  timestamptz NOT NULL DEFAULT now(),
 	updated_at  timestamptz NOT NULL DEFAULT now(),
@@ -185,10 +188,16 @@ impl Service {
         self.store.key(name).await
     }
 
-    /// Mints a key under `role` and returns its show-once `secret` (the plaintext exists
-    /// here and nowhere else after this call) plus its display `prefix`.
-    pub(crate) async fn create_key(&self, name: &str, role: &str) -> Result<(String, String), WriteError> {
-        self.store.create_key(name, role).await
+    /// Mints a key under `role`, recording the operator login `created_by`, and returns its
+    /// show-once `secret` (the plaintext exists here and nowhere else after this call) plus
+    /// its display `prefix`.
+    pub(crate) async fn create_key(
+        &self,
+        name: &str,
+        role: &str,
+        created_by: &str,
+    ) -> Result<(String, String), WriteError> {
+        self.store.create_key(name, role, created_by).await
     }
 
     pub(crate) async fn set_key_role(

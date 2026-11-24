@@ -131,11 +131,6 @@ modules/accounts/src/admin.rs, as committed in admin-control-plane-redesign step
 
 modules/apikeys/src/admin.rs, as committed in admin-control-plane-redesign step 21 part a2.
 
-- [ ] **API key created by**
-  ADMIN2-58. Mockup: the Keys panel's "Created by" operator login. Fake:
-  modules/apikeys/src/admin.rs:414 (`fake_creator`, a login from `FAKE_CREATORS` picked by
-  `controlplane::fake_hash("apikeys.created_by", name)`): keys record no creator. Replaced by:
-  a creator column written from the admin session on create.
 - [ ] **Revoked key's row menu offers Revoke**
   ADMIN2-61. Mockup: a revoked key's row menu holds one disabled "Already revoked" item
   ("revoked keys cannot be restored", UILayout/redesign/assets/pages-platform.js:11). The

@@ -2,6 +2,10 @@
 
 Last updated: 2026-11-24
 
+- [x] **API key created by** (2026-11-24, admin-second-pass step 9)
+  ADMIN2-58. Mockup: the Keys panel's "Created by" operator login. Removed: `fake_creator`
+  and `FAKE_CREATORS`. Replaced by `apikeys.keys.created_by` (text NOT NULL, 128-byte cap),
+  written from `InvokeCall.operator` by the create invoke and as "dev seed" by the dev seed.
 - [x] **Cloud saves used sparkline** (2026-11-24, admin-second-pass step 8b)
   ADMIN2-52. Mockup: the tile's sparkline. Removed: `fake_spark`, the tile's series and the
   mockup spark sample (registry.js, pages-core.js catalog tile, KpiTile preview).

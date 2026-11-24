@@ -483,7 +483,8 @@ pub struct InvokeCall {
     pub input: BTreeMap<String, String>,
     pub expected_revision: Option<u64>,
     pub reason: Option<String>,
-    /// The operator's login, carried only as an audit label.
+    /// The calling operator's login, set by the portal from the session. A provider may
+    /// store it as the author of what the call writes.
     pub operator: String,
     /// The bound element: a `PropertyList::item` or a `QueueItem::id`. Unverified: the
     /// module checks it against its own data.
@@ -503,7 +504,7 @@ pub struct PrepareCall {
     /// As `InvokeCall::item`; the provider builds the text from it, never from a fresh read
     /// of the element current now.
     pub item: Option<String>,
-    /// The operator's login, carried only as an audit label.
+    /// The calling operator's login, set by the portal from the session.
     pub operator: String,
 }
 
