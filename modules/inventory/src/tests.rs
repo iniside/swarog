@@ -1896,11 +1896,11 @@ fn admin_rows(t: &DataTable) -> Vec<(String, String)> {
 }
 
 /// The manifest: the tab at 40 declaring its `owner`/`type` select keys, its count, Purges
-/// pending at 63, the `holding` row kind, and three actions all drawn disabled.
+/// pending at 63, the `holding` row kind, and its three implemented, prepared writes.
 #[test]
-fn admin_manifest_declares_the_tab_its_keys_and_disabled_actions() {
+fn admin_manifest_declares_the_tab_its_keys_and_its_writes() {
     let m = admin::manifest();
-    assert!(!m.writes);
+    assert!(m.writes);
     let tab = m.contributions.iter().find(|c| c.id == admin::INVENTORY).expect("the tab");
     assert_eq!(tab.order, 40);
     match &tab.point {
@@ -1915,7 +1915,7 @@ fn admin_manifest_declares_the_tab_its_keys_and_disabled_actions() {
     assert!(m.contributions.iter().any(|c| c.id == admin::TAB_COUNT));
     assert_eq!(m.entity_kinds.iter().map(|k| k.kind.as_str()).collect::<Vec<_>>(), [admin::HOLDING_KIND]);
     assert_eq!(m.actions.len(), 3);
-    assert!(m.actions.iter().all(|a| !a.implemented), "no inventory admin write exists yet");
+    assert!(m.actions.iter().all(|a| a.implemented && a.prepare), "{:?}", m.actions);
     let revoke = m.actions.iter().find(|a| a.point == ActionPoint::RowAction(admin::HOLDING_KIND.into())).expect("revoke");
     assert!(revoke.danger);
     let grant = m.actions.iter().find(|a| a.point == ActionPoint::RowAction("player".into())).expect("grant");

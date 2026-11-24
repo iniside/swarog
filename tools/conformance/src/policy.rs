@@ -177,7 +177,7 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         (key("cp.invoke", "req.entity.id", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
         (key("cp.invoke", "req.entity.kind", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
         (key("cp.invoke", "req.input.<key>", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
-        (key("cp.invoke", "req.input.<value>", Wire), Validated { cap: admin::conformance::CORE_EVENTS_INPUT_VALUE_BYTES, basis: "core.events refuses an InvokeCall whose input carries a value over this many bytes as the first statement of EventsProvider::invoke, before any statement runs; it declares no form fields, so a value within the cap is never read, persisted or echoed. The \"cp.invoke core.events input value\" CapCase executes that check (events_provider::input_within_cap). mail applies the same controlplane::MAX_INPUT_VALUE_BYTES as the first statement of admin::MailAdmin::invoke; its one declared form value, the test-send recipient, then runs address::parse_address and service::validate_new before any statement carries it, and its \"cp.invoke mail input value\" CapCase executes admin::input_within_cap. wallet applies it as the first statement of admin::WalletAdmin::invoke; its declared form values then run parse_amount, parse_reason and, inside Service::credit/debit, validate_movement before any statement carries them, and its \"cp.invoke wallet input value\" CapCase executes admin::input_within_cap through WalletAdmin::invoke. groups applies it as the first statement of admin::GroupsAdmin::invoke; its one action, membership.promote, declares no form fields and reads no input, so a value within the cap is never read, persisted or echoed, and its \"cp.invoke groups input value\" CapCase executes admin::input_within_cap through GroupsAdmin::invoke. notifications applies it as the first statement of admin::NotificationsAdmin::invoke; its declared form values, title and body, then run admin::send_fields against the message column caps and, inside Service::send_operator_mail, validate_new before any statement carries them, and its \"cp.invoke notifications input value\" CapCase executes admin::input_within_cap through NotificationsAdmin::invoke. apikeys applies it as the first statement of admin::ApiKeysAdmin::invoke; its declared form values, the key name and role, then run store::validate_name before any statement carries them and the expiry must equal \"Never\", and its \"cp.invoke apikeys input value\" CapCase executes that check through ApiKeysAdmin::invoke. config applies it as the first statement of admin::ConfigAdmin::invoke; its declared form values, the key, the type and the value, then run valid_ident on both halves of the key, the type's decode_field and the read-back type check (admin::stored_value) before any statement carries them, and its \"cp.invoke config input value\" CapCase executes that check through ConfigAdmin::invoke. accounts applies it as the first statement of admin::AccountsAdmin::invoke; its two actions, revoke-session and revoke-all, declare no form fields and read no input, so a value within the cap is never read, persisted or echoed, and its \"cp.invoke accounts input value\" CapCase executes admin::input_within_cap through AccountsAdmin::invoke. A writer added later carries its own CapCase at this same cap, which control_plane_cap_findings enforces" }),
+        (key("cp.invoke", "req.input.<value>", Wire), Validated { cap: admin::conformance::CORE_EVENTS_INPUT_VALUE_BYTES, basis: "core.events refuses an InvokeCall whose input carries a value over this many bytes as the first statement of EventsProvider::invoke, before any statement runs; it declares no form fields, so a value within the cap is never read, persisted or echoed. The \"cp.invoke core.events input value\" CapCase executes that check (events_provider::input_within_cap). mail applies the same controlplane::MAX_INPUT_VALUE_BYTES as the first statement of admin::MailAdmin::invoke; its one declared form value, the test-send recipient, then runs address::parse_address and service::validate_new before any statement carries it, and its \"cp.invoke mail input value\" CapCase executes admin::input_within_cap. wallet applies it as the first statement of admin::WalletAdmin::invoke; its declared form values then run parse_amount, parse_reason and, inside Service::credit/debit, validate_movement before any statement carries them, and its \"cp.invoke wallet input value\" CapCase executes admin::input_within_cap through WalletAdmin::invoke. groups applies it as the first statement of admin::GroupsAdmin::invoke; its one action, membership.promote, declares no form fields and reads no input, so a value within the cap is never read, persisted or echoed, and its \"cp.invoke groups input value\" CapCase executes admin::input_within_cap through GroupsAdmin::invoke. notifications applies it as the first statement of admin::NotificationsAdmin::invoke; its declared form values, title and body, then run admin::send_fields against the message column caps and, inside Service::send_operator_mail, validate_new before any statement carries them, and its \"cp.invoke notifications input value\" CapCase executes admin::input_within_cap through NotificationsAdmin::invoke. apikeys applies it as the first statement of admin::ApiKeysAdmin::invoke; its declared form values, the key name and role, then run store::validate_name before any statement carries them and the expiry must equal \"Never\", and its \"cp.invoke apikeys input value\" CapCase executes that check through ApiKeysAdmin::invoke. config applies it as the first statement of admin::ConfigAdmin::invoke; its declared form values, the key, the type and the value, then run valid_ident on both halves of the key, the type's decode_field and the read-back type check (admin::stored_value) before any statement carries them, and its \"cp.invoke config input value\" CapCase executes that check through ConfigAdmin::invoke. accounts applies it as the first statement of admin::AccountsAdmin::invoke; its two actions, revoke-session and revoke-all, declare no form fields and read no input, so a value within the cap is never read, persisted or echoed, and its \"cp.invoke accounts input value\" CapCase executes admin::input_within_cap through AccountsAdmin::invoke. inventory applies it as the first statement of admin::InventoryAdmin::invoke; its declared grant form values, the character, the item and the quantity, then run admin::grant_fields (a uuid-shaped character, a non-empty item, validate_quantity) and, inside the grant transaction, the character_owners and item catalog checks before grant_exec carries them, and its \"cp.invoke inventory input value\" CapCase executes admin::input_within_cap through InventoryAdmin::invoke. A writer added later carries its own CapCase at this same cap, which control_plane_cap_findings enforces" }),
         (key("cp.invoke", "req.item", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_ITEM_RATIONALE }),
         (key("cp.invoke", "req.module", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
         (key("cp.invoke", "req.operator", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
@@ -807,12 +807,28 @@ fn gateway() -> Entry {
 }
 
 fn inventory() -> Entry {
-    all_na(
-        "inventory",
-        "INVENTORY_DEV_GRANT is a boolean presence-gate, not a parsed value",
-        "inventory player operations take ids and item references, not free text",
-        "inventory has no bespoke credential verifier",
-    )
+    Entry {
+        module: "inventory",
+        stances: vec![
+            (
+                Convention::EnvValidation,
+                na("INVENTORY_DEV_GRANT is a boolean presence-gate, not a parsed value"),
+            ),
+            (
+                Convention::InputByteCaps,
+                Stance::Applies(Fixture::InputByteCaps(vec![CapCase {
+                    name: "cp.invoke inventory input value",
+                    cap: inventory::conformance::CP_INVOKE_INPUT_VALUE_BYTES,
+                    probe: Arc::new(inventory::conformance::conformance_cp_invoke_input_rejected),
+                }])),
+            ),
+            (Convention::InfraOutage503, na("inventory has no bespoke credential verifier")),
+            (
+                Convention::ArgonParity,
+                na("this module performs no password hashing"),
+            ),
+        ],
+    }
 }
 
 fn leaderboard() -> Entry {

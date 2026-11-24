@@ -315,4 +315,83 @@ impl Store {
             .await?;
         Ok(row.is_some())
     }
+
+    /// The catalog's item ids, in order: the operator grant form's Item choices.
+    pub(crate) async fn item_ids(&self) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar("SELECT id FROM inventory.items ORDER BY id")
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    /// The player's characters in `inventory.character_owners`, in id order: the operator
+    /// grant form's Character choices.
+    pub(crate) async fn player_characters(&self, player_id: &str) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT character_id::text FROM inventory.character_owners \
+              WHERE player_id = $1::uuid ORDER BY character_id",
+        )
+        .bind(player_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Records an operator grant's request id on the grant's own transaction; `false` when
+    /// it is already recorded, so the grant was applied before.
+    pub(crate) async fn claim_operator_grant_exec(
+        &self,
+        conn: &mut PgConnection,
+        request_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let res = sqlx::query("INSERT INTO inventory.operator_grants (request_id) VALUES ($1) ON CONFLICT DO NOTHING")
+            .bind(request_id)
+            .execute(&mut *conn)
+            .await?;
+        Ok(res.rows_affected() == 1)
+    }
+
+    /// Whether `character_owners` records `character_id` as `player_id`'s, read on the
+    /// caller's transaction.
+    pub(crate) async fn is_character_of_exec(
+        &self,
+        conn: &mut PgConnection,
+        character_id: &str,
+        player_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let row: Option<i32> = sqlx::query_scalar(
+            "SELECT 1 FROM inventory.character_owners WHERE character_id = $1::uuid AND player_id = $2::uuid",
+        )
+        .bind(character_id)
+        .bind(player_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+        Ok(row.is_some())
+    }
+
+    /// One holding's item name and quantity, or `None` when the row is gone.
+    pub(crate) async fn holding(&self, key: &HoldingKey) -> Result<Option<(String, i64)>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT i.name, h.quantity::bigint \
+               FROM inventory.holdings h \
+               JOIN inventory.items i ON i.id = h.item_id \
+              WHERE h.owner_type = $1 AND h.owner_id = $2::uuid AND h.item_id = $3",
+        )
+        .bind(&key.owner_type)
+        .bind(&key.owner_id)
+        .bind(&key.item_id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    /// Deletes one holding row whole; the rows removed, 0 or 1.
+    pub(crate) async fn delete_holding_exec(&self, conn: &mut PgConnection, key: &HoldingKey) -> Result<u64, sqlx::Error> {
+        let res = sqlx::query(
+            "DELETE FROM inventory.holdings WHERE owner_type = $1 AND owner_id = $2::uuid AND item_id = $3",
+        )
+        .bind(&key.owner_type)
+        .bind(&key.owner_id)
+        .bind(&key.item_id)
+        .execute(&mut *conn)
+        .await?;
+        Ok(res.rows_affected())
+    }
 }

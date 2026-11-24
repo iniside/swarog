@@ -1,21 +1,29 @@
 //! The `inventory` control-plane provider: the player entity's Inventory tab (the holdings
 //! the player owns directly and through its characters), the tab's count, the dashboard's
-//! "Inventory purges pending" attention item, and the `holding` row kind. Inventory has no
-//! admin write yet: its "Grant item" tool, the player row-menu "Grant item…" and the holding
-//! row-menu "Revoke item…" are declared `implemented: false` and `writes` is false.
+//! "Inventory purges pending" attention item, the `holding` row kind, and the operator
+//! writes: "Grant item" (the tab's tool and the player row-menu "Grant item…") adds to a
+//! character's stack once per form instance, and the holding row-menu "Revoke item…" deletes
+//! the holding row whole. Neither emits an event.
 
 use async_trait::async_trait;
 use controlplane::{
-    ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ContributionDecl, DataTable, Emphasis, EntityKindDecl,
-    EntityRef, FilterDef, FilterKind, InvokeCall, InvokeOutcome, Manifest, Noun, PageInfo, PanelBody, PanelQuery,
-    Point, Primitive, Provider, Role, Row, SearchHit, SearchQuery, Then, DEFAULT_PANEL_DEADLINE_MS,
+    ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ConfirmSpec, ConfirmTone, ContributionDecl, DataTable,
+    Emphasis, EntityKindDecl, EntityRef, Field, FieldKind, FilterDef, FilterKind, FormSpec, InvokeCall, InvokeOutcome,
+    Manifest, Noun, PageInfo, PanelBody, PanelQuery, Point, PrepareCall, Primitive, Provider, ReasonReq, Role, Row,
+    SearchHit, SearchQuery, Then, DEFAULT_PANEL_DEADLINE_MS,
 };
 use controlplane::order;
 use opsapi::Error;
+use sqlx::PgConnection;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::store::{AdminHolding, HoldingKey, HoldingsFilter, ADMIN_PAGE_SIZE};
-use crate::Inner;
+use crate::projection::lock_character;
+use crate::store::{
+    is_holdings_cap_violation, validate_quantity, AdminHolding, HoldingKey, HoldingsFilter, ADMIN_PAGE_SIZE,
+    MAX_HOLDING_QTY,
+};
+use crate::{Inner, Owner};
 
 const MODULE: &str = "inventory";
 /// The entity kind the tab, its count and the grant item attach to; accounts declares it.
@@ -36,9 +44,18 @@ pub(crate) const PARAM_OWNER: &str = "owner";
 pub(crate) const PARAM_TYPE: &str = "type";
 const OWNER_TYPES: [&str; 2] = ["player", "character"];
 
-const ITEM_GRANT: &str = "item.grant";
-const ITEM_GRANT_TOOL: &str = "item.grant-tool";
-const HOLDING_REVOKE: &str = "holding.revoke";
+pub(crate) const ITEM_GRANT: &str = "item.grant";
+pub(crate) const ITEM_GRANT_TOOL: &str = "item.grant-tool";
+pub(crate) const HOLDING_REVOKE: &str = "holding.revoke";
+
+/// The grant form's field keys.
+pub(crate) const FIELD_CHARACTER: &str = "character";
+pub(crate) const FIELD_ITEM: &str = "item";
+pub(crate) const FIELD_QUANTITY: &str = "quantity";
+const FIELD_REQUEST_ID: &str = "request_id";
+
+/// The length of the canonical uuid spelling, hyphens included.
+pub(crate) const UUID_BYTES: usize = 36;
 
 /// What the Source and Acquired cells draw: a holding stores neither.
 const NO_VALUE: &str = "—";
@@ -95,6 +112,184 @@ impl InventoryAdmin {
     async fn purges(&self) -> Result<PanelBody, Error> {
         let (pending, oldest) = self.inner.store.pending_purges().await.map_err(crate::internal)?;
         Ok(purges_body(pending, &oldest))
+    }
+
+    /// One operator grant to a character of the bound player, applied once per form
+    /// instance: the transaction records the request id first, so a repeat finds it and is
+    /// NoOp. Under the player lock the grant is refused for a purged player; under the
+    /// character lock, the one the wipe takes, it is refused for a character the player
+    /// does not own (any more). A refusal rolls the request id back with the rest.
+    async fn grant(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let player = bound_player(req.entity.as_ref())?;
+        let request_id = req
+            .request_id
+            .as_deref()
+            .filter(|r| !r.is_empty())
+            .ok_or_else(|| Error::invalid(format!("{MODULE}: a grant needs a request id")))?;
+        let fields = match grant_fields(&req.input) {
+            Ok(fields) => fields,
+            Err(errors) => return Ok(InvokeOutcome::FieldErrors(errors)),
+        };
+        let mut tx = self.inner.store.pool.begin().await.map_err(crate::internal)?;
+        let outcome = self.grant_tx(&mut tx, player, request_id, &fields).await;
+        match outcome {
+            Ok(InvokeOutcome::Ok { .. }) => tx.commit().await.map_err(crate::internal)?,
+            _ => {
+                let _ = tx.rollback().await;
+            }
+        }
+        outcome
+    }
+
+    async fn grant_tx(
+        &self,
+        conn: &mut PgConnection,
+        player: &str,
+        request_id: &str,
+        fields: &GrantFields<'_>,
+    ) -> Result<InvokeOutcome, Error> {
+        let store = &self.inner.store;
+        if !store.claim_operator_grant_exec(conn, request_id).await.map_err(crate::internal)? {
+            return Ok(InvokeOutcome::NoOp { message: "This grant was already applied".to_string() });
+        }
+        store.lock_player_tx(conn, player).await.map_err(crate::internal)?;
+        if store.is_player_purged_tx(conn, player).await.map_err(read_error)? {
+            return Err(Error::conflict(format!("{MODULE}: the player has been deleted")));
+        }
+        lock_character(conn, fields.character).await.map_err(crate::internal)?;
+        if !store.is_character_of_exec(conn, fields.character, player).await.map_err(read_error)? {
+            return Ok(field_error(FIELD_CHARACTER, "Not a character of this player"));
+        }
+        if !store.item_exists_exec(conn, fields.item).await.map_err(crate::internal)? {
+            return Ok(field_error(FIELD_ITEM, "No such item"));
+        }
+        store
+            .grant_exec(conn, &Owner::character(fields.character), fields.item, fields.qty)
+            .await
+            .map_err(|e| {
+                if is_holdings_cap_violation(&e) {
+                    Error::conflict(format!("{MODULE}: the character's stack of this item is at its cap"))
+                } else {
+                    crate::internal(e)
+                }
+            })?;
+        Ok(done(format!("Granted {} × {}", fields.qty, fields.item)))
+    }
+
+    /// Deletes the bound holding row whole in one transaction; a row already gone is NoOp.
+    async fn revoke(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let key = bound_holding(req.entity.as_ref())?;
+        let store = &self.inner.store;
+        let mut tx = store.pool.begin().await.map_err(crate::internal)?;
+        let removed = store.delete_holding_exec(&mut tx, &key).await.map_err(read_error)?;
+        if removed == 0 {
+            tx.rollback().await.map_err(crate::internal)?;
+            return Ok(InvokeOutcome::NoOp { message: "That holding is already gone".to_string() });
+        }
+        tx.commit().await.map_err(crate::internal)?;
+        Ok(done("Item revoked".to_string()))
+    }
+
+    /// The grant form over the bound player's characters and the item catalog; a player
+    /// with no character has nothing to grant to.
+    async fn prepare_grant(&self, req: &PrepareCall) -> Result<Then, Error> {
+        let player = bound_player(req.entity.as_ref())?;
+        let characters = self.inner.store.player_characters(player).await.map_err(read_error)?;
+        if characters.is_empty() {
+            return Err(Error::invalid(format!("{MODULE}: the player has no character to grant an item to")));
+        }
+        let items = self.inner.store.item_ids().await.map_err(crate::internal)?;
+        Ok(Then::Form(grant_form(characters, items)))
+    }
+
+    /// The revoke Confirm naming the bound holding's item, quantity and owner.
+    async fn prepare_revoke(&self, req: &PrepareCall) -> Result<Then, Error> {
+        let key = bound_holding(req.entity.as_ref())?;
+        match self.inner.store.holding(&key).await.map_err(read_error)? {
+            Some((name, quantity)) => Ok(Then::Confirm(revoke_spec(
+                format!("Revoke {name}?"),
+                vec![
+                    ("Item".to_string(), text(CellKind::Mono, key.item_id.clone())),
+                    ("Quantity".to_string(), text(CellKind::Number, quantity.to_string())),
+                    ("Owner".to_string(), owner_cell(&key)),
+                ],
+            ))),
+            None => Err(Error::not_found(format!("{MODULE}: that holding is already gone"))),
+        }
+    }
+}
+
+/// The grant form's values once each passed its check.
+pub(crate) struct GrantFields<'a> {
+    pub(crate) character: &'a str,
+    pub(crate) item: &'a str,
+    pub(crate) qty: i64,
+}
+
+/// The grant form's values, or each field's error: a uuid-shaped character, a non-empty
+/// item id and a quantity `validate_quantity` admits.
+pub(crate) fn grant_fields(input: &BTreeMap<String, String>) -> Result<GrantFields<'_>, BTreeMap<String, String>> {
+    let get = |key: &str| input.get(key).map_or("", String::as_str);
+    let mut errors = BTreeMap::new();
+    let character = get(FIELD_CHARACTER);
+    if !is_uuid(character) {
+        errors.insert(FIELD_CHARACTER.to_string(), "Pick one of the player's characters".to_string());
+    }
+    let item = get(FIELD_ITEM);
+    if item.is_empty() {
+        errors.insert(FIELD_ITEM.to_string(), "Pick an item".to_string());
+    }
+    let qty = get(FIELD_QUANTITY).trim().parse::<i64>().ok().and_then(|q| validate_quantity(q).ok());
+    if qty.is_none() {
+        errors.insert(FIELD_QUANTITY.to_string(), format!("A whole number from 1 to {MAX_HOLDING_QTY}"));
+    }
+    match qty {
+        Some(qty) if errors.is_empty() => Ok(GrantFields { character, item, qty }),
+        _ => Err(errors),
+    }
+}
+
+fn field_error(key: &str, message: &str) -> InvokeOutcome {
+    InvokeOutcome::FieldErrors(BTreeMap::from([(key.to_string(), message.to_string())]))
+}
+
+fn done(message: String) -> InvokeOutcome {
+    InvokeOutcome::Ok { message, reveal: None, redirect: None }
+}
+
+/// Every input value is at most [`controlplane::MAX_INPUT_VALUE_BYTES`].
+pub(crate) fn input_within_cap(input: &BTreeMap<String, String>) -> bool {
+    input.values().all(|v| v.len() <= controlplane::MAX_INPUT_VALUE_BYTES)
+}
+
+/// The canonical uuid spelling: 36 bytes, hyphens at 8, 13, 18 and 23, hex elsewhere.
+fn is_uuid(value: &str) -> bool {
+    value.len() == UUID_BYTES
+        && value.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_hexdigit(),
+        })
+}
+
+/// The player an action is bound to: its entity, a uuid-shaped `player` ref, checked
+/// before any statement.
+fn bound_player(entity: Option<&EntityRef>) -> Result<&str, Error> {
+    match entity {
+        Some(e) if e.kind == KIND && is_uuid(&e.id) => Ok(&e.id),
+        Some(e) if e.kind == KIND => Err(Error::invalid(format!("{MODULE}: malformed player id"))),
+        _ => Err(Error::invalid(format!("{MODULE}: this action needs a player"))),
+    }
+}
+
+/// The holding an action is bound to: its entity, a `holding` ref spelled as [`holding_id`]
+/// with a uuid-shaped owner, checked before any statement.
+fn bound_holding(entity: Option<&EntityRef>) -> Result<HoldingKey, Error> {
+    match entity {
+        Some(e) if e.kind == HOLDING_KIND => match parse_cursor(&e.id) {
+            Ok(key) if is_uuid(&key.owner_id) => Ok(key),
+            _ => Err(Error::invalid(format!("{MODULE}: malformed holding id"))),
+        },
+        _ => Err(Error::invalid(format!("{MODULE}: this action needs a holding"))),
     }
 }
 
@@ -274,8 +469,8 @@ fn contribution(id: &str, point: Point, order: i32, title: &str) -> Contribution
     }
 }
 
-/// An action with no implementation yet: drawn disabled, never invoked.
-fn not_implemented(id: &str, point: ActionPoint, label: &str, icon: &str, order: i32, danger: bool) -> ActionDecl {
+/// An operator action whose modal `prepare` builds for the bound element.
+fn action(id: &str, point: ActionPoint, label: &str, icon: &str, order: i32, danger: bool, then: Then) -> ActionDecl {
     ActionDecl {
         id: id.to_string(),
         point,
@@ -285,17 +480,76 @@ fn not_implemented(id: &str, point: ActionPoint, label: &str, icon: &str, order:
         danger,
         multi: false,
         min_role: Role::Operator,
-        then: Then::Invoke,
-        implemented: false,
+        then,
+        implemented: true,
         emphasis: Emphasis::Default,
         trailing_icon: false,
         icon_only: false,
         when_empty: false,
-        prepare: false,
+        prepare: true,
+    }
+}
+
+fn field(key: &str, label: &str, kind: FieldKind, required: bool, help: Option<String>) -> Field {
+    Field {
+        key: key.to_string(),
+        label: label.to_string(),
+        kind,
+        required,
+        help,
+        default: None,
+        readonly: false,
+        mono: false,
+        placeholder: None,
+    }
+}
+
+/// The Grant item modal over the player's characters and the catalog's item ids.
+pub(crate) fn grant_form(characters: Vec<String>, items: Vec<String>) -> FormSpec {
+    FormSpec {
+        fields: vec![
+            Field { mono: true, ..field(FIELD_CHARACTER, "Character", FieldKind::Enum(characters), true, None) },
+            Field { mono: true, ..field(FIELD_ITEM, "Item", FieldKind::Enum(items), true, None) },
+            Field {
+                default: Some("1".to_string()),
+                ..field(
+                    FIELD_QUANTITY,
+                    "Quantity",
+                    FieldKind::Int,
+                    true,
+                    Some(format!("1 to {MAX_HOLDING_QTY}, added to the character's stack")),
+                )
+            },
+            Field { mono: true, ..field(FIELD_REQUEST_ID, "Request id", FieldKind::RequestId, false, None) },
+        ],
+        hidden: BTreeMap::new(),
+        submit_label: "Grant".to_string(),
+        note: None,
+        revision: None,
+        title: Some("Grant item".to_string()),
+        modes: Vec::new(),
+        reason: ReasonReq::None,
+        reason_label: None,
+        reason_hint: None,
+    }
+}
+
+/// The Revoke item Confirm; `prepare` names the holding.
+fn revoke_spec(title: String, impact: Vec<(String, Cell)>) -> ConfirmSpec {
+    ConfirmSpec {
+        title,
+        body: "The whole stack is removed from its owner.".to_string(),
+        tone: ConfirmTone::Danger,
+        impact,
+        reason: ReasonReq::None,
+        reason_hint: None,
+        type_to_confirm: None,
+        confirm_label: "Revoke".to_string(),
     }
 }
 
 pub(crate) fn manifest() -> Manifest {
+    let grant = || Then::Form(grant_form(Vec::new(), Vec::new()));
     let tab = Point::EntityTab {
         kind: KIND.to_string(),
         tab: TAB.to_string(),
@@ -328,26 +582,39 @@ pub(crate) fn manifest() -> Manifest {
             ),
         ],
         actions: vec![
-            not_implemented(
+            action(
                 ITEM_GRANT,
                 ActionPoint::RowAction(KIND.to_string()),
                 "Grant item…",
                 "box",
                 order::player_row_action::INVENTORY,
                 false,
+                grant(),
             ),
-            not_implemented(ITEM_GRANT_TOOL, ActionPoint::PanelTool(INVENTORY.to_string()), "Grant item", "gift", 0, false),
-            not_implemented(
+            ActionDecl {
+                when_empty: true,
+                ..action(
+                    ITEM_GRANT_TOOL,
+                    ActionPoint::PanelTool(INVENTORY.to_string()),
+                    "Grant item",
+                    "gift",
+                    0,
+                    false,
+                    grant(),
+                )
+            },
+            action(
                 HOLDING_REVOKE,
                 ActionPoint::RowAction(HOLDING_KIND.to_string()),
                 "Revoke item…",
                 "trash",
                 0,
                 true,
+                Then::Confirm(revoke_spec("Revoke item?".to_string(), Vec::new())),
             ),
         ],
         search: Vec::new(),
-        writes: false,
+        writes: true,
     }
 }
 
@@ -374,6 +641,24 @@ impl Provider for InventoryAdmin {
     }
 
     async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, Error> {
-        Err(Error::not_found(format!("{MODULE} has no action {:?}", req.action)))
+        if !input_within_cap(&req.input) {
+            return Err(Error::invalid(format!(
+                "an input value is longer than {} bytes",
+                controlplane::MAX_INPUT_VALUE_BYTES
+            )));
+        }
+        match req.action.as_str() {
+            ITEM_GRANT | ITEM_GRANT_TOOL => self.grant(&req).await,
+            HOLDING_REVOKE => self.revoke(&req).await,
+            other => Err(Error::not_found(format!("{MODULE} has no action {other:?}"))),
+        }
+    }
+
+    async fn prepare(&self, req: PrepareCall) -> Result<Then, Error> {
+        match req.action.as_str() {
+            ITEM_GRANT | ITEM_GRANT_TOOL => self.prepare_grant(&req).await,
+            HOLDING_REVOKE => self.prepare_revoke(&req).await,
+            other => Err(Error::not_found(format!("{MODULE} has no action {other:?}"))),
+        }
     }
 }

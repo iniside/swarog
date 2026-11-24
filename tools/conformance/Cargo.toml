@@ -37,6 +37,7 @@ friendsapi = { workspace = true }
 gateway = { workspace = true }
 groups = { workspace = true }
 groupsapi = { workspace = true }
+inventory = { workspace = true }
 mail = { workspace = true }
 mailevents = { workspace = true }
 match_module = { workspace = true }

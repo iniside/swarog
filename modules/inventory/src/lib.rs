@@ -14,6 +14,7 @@
 //! client-supplied one. An impl crate: no other module imports it.
 
 mod admin;
+pub mod conformance;
 mod owner;
 mod projection;
 mod service;
@@ -95,6 +96,14 @@ CREATE TABLE IF NOT EXISTS inventory.character_owners (
 );
 CREATE INDEX IF NOT EXISTS character_owners_player_idx
 	ON inventory.character_owners (player_id);
+
+-- One row per operator grant the portal applied, keyed by its form instance's request id:
+-- the grant transaction inserts it first, so a repeat of one submit finds it and changes
+-- nothing (grant_exec alone adds to the stack on every call).
+CREATE TABLE IF NOT EXISTS inventory.operator_grants (
+	request_id text        PRIMARY KEY,
+	at         timestamptz NOT NULL DEFAULT now()
+);
 
 CREATE TABLE IF NOT EXISTS inventory.purged_players (
 	player_id  uuid PRIMARY KEY,
