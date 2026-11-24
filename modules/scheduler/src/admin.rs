@@ -50,11 +50,16 @@ pub(crate) const FIRE_BUSY: &str = "Another Fire now is running on this process;
 
 /// The `statement_timeout` of a Fire now. It bounds each statement, not the fire.
 pub(crate) const FIRE_NOW_DEADLINE: Duration = Duration::from_secs(3);
+/// The room a Fire now leaves under [`controlplane::INVOKE_DEADLINE`] for the `cp.invoke`
+/// round trip in the split.
+pub(crate) const FIRE_NOW_MARGIN: Duration = Duration::from_secs(2);
 /// The whole Fire now (connect, lock, update, emit, commit, unlock), so it answers before
-/// the portal's 10 s `INVOKE_DEADLINE` (`core/admin`, not reachable from a module) with
-/// room for the `cp.invoke` round trip in the split. Cancelling the fire at this bound is
+/// the portal's [`controlplane::INVOKE_DEADLINE`]. Cancelling the fire at this bound is
 /// abort-safe: its dedicated connection closes (see the crate docs).
-pub(crate) const FIRE_NOW_TOTAL: Duration = Duration::from_secs(8);
+pub(crate) const FIRE_NOW_TOTAL: Duration = controlplane::INVOKE_DEADLINE.saturating_sub(FIRE_NOW_MARGIN);
+// A Fire now answers inside the portal's deadline and leaves room for at least one statement.
+const _: () = assert!(FIRE_NOW_TOTAL.as_nanos() < controlplane::INVOKE_DEADLINE.as_nanos());
+const _: () = assert!(FIRE_NOW_TOTAL.as_nanos() > FIRE_NOW_DEADLINE.as_nanos());
 
 pub(crate) struct SchedulerAdmin {
     pool: PgPool,

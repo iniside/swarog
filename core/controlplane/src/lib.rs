@@ -207,6 +207,10 @@ pub const MAX_INPUT_VALUE_BYTES: usize = 4096;
 /// into calls of at most this many; [`LocalFace`] refuses a longer one before the provider
 /// runs.
 pub const MAX_PANEL_REFS: usize = 100;
+/// The portal's bound on one `prepare` or `invoke` round trip; past it the portal answers
+/// that the outcome is unknown. A provider keeps its own work for one call under it, with room
+/// for the round trip.
+pub const INVOKE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The hash every FAKE stand-in for data the backend does not store is drawn from: a pure
 /// function of `salt` and an entity id, reading no clock and no random source.

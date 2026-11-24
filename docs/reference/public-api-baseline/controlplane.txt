@@ -2295,6 +2295,7 @@ pub const controlplane::DEFAULT_PANEL_DEADLINE_MS: u32
 pub const controlplane::DEFAULT_SEARCH_DEADLINE_MS: u32
 pub const controlplane::EVENT_LOG_PAGE: &str
 pub const controlplane::EVENT_LOG_PAGE_MODULE: &str
+pub const controlplane::INVOKE_DEADLINE: core::time::Duration
 pub const controlplane::MAX_INPUT_VALUE_BYTES: usize
 pub const controlplane::MAX_OPERATOR_BYTES: usize
 pub const controlplane::MAX_PANEL_REFS: usize

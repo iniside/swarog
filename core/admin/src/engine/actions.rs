@@ -21,9 +21,9 @@ use super::roles::{self, Operator};
 use crate::render::{encode, entity_url, link_url};
 use crate::AdminState;
 
-/// Bound on one invoke round trip; the edge has no response deadline of its own
-/// (`core/edge/src/client.rs:113-154`).
-pub(crate) const INVOKE_DEADLINE: Duration = Duration::from_secs(10);
+/// The portal's bound on one prepare or invoke round trip; the edge has no response deadline
+/// of its own (`core/edge/src/client.rs:113-154`).
+pub(crate) use controlplane::INVOKE_DEADLINE;
 
 /// A claim older than this is abandoned and may be taken over; it exceeds [`INVOKE_DEADLINE`].
 pub(crate) const CLAIM_WINDOW: Duration = Duration::from_secs(30);
