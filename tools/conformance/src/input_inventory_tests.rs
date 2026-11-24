@@ -115,6 +115,26 @@ fn a_foreign_path_sharing_a_local_enum_name_is_not_resolved_locally() {
     assert_eq!(keys(&crate_path), ["demo.send\trequest.kind\twire"]);
 }
 
+/// `super::Kind` names a type of the crate under scan and resolves to the local unit
+/// enum; `::Kind` is an extern-crate path (Rust 2018), so its leading colon makes it
+/// foreign even with one segment, and it is rejected rather than resolved locally.
+#[test]
+fn a_super_path_resolves_locally_and_a_leading_colon_path_does_not() {
+    let local = "pub enum Kind { A, B }";
+    let super_path = contract(
+        "Request",
+        &format!("pub struct Request {{ pub kind: super::Kind }} {local}"),
+    );
+    assert_eq!(keys(&super_path), ["demo.send\trequest.kind\twire"]);
+    let extern_path = contract(
+        "Request",
+        &format!("pub struct Request {{ pub kind: ::Kind }} {local}"),
+    );
+    let message = rejection(&extern_path);
+    assert!(message.contains("\"::Kind\""), "{message}");
+    assert!(message.contains("OPAQUE_REQUEST_TYPES"), "{message}");
+}
+
 #[test]
 fn a_tuple_struct_is_rejected_because_it_has_no_wire_field_names() {
     let message = rejection(&contract("Wrapper", "pub struct Wrapper(pub String);"));

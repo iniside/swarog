@@ -649,6 +649,29 @@ fn writers_with_no_validated_cp_invoke_row_is_a_finding() {
     assert!(findings[0].contains("is not Validated"), "{findings:?}");
 }
 
+/// A `cp.invoke` `req.input.<value>` row that exists but is a KnownGap is not a byte
+/// cap: the writers are a finding, even though the case's cap equals its planned cap.
+#[test]
+fn a_known_gap_cp_invoke_row_is_not_validated() {
+    let entries = [caps_entry("mail", vec![cap_case("cp.invoke mail input value", 4096)])];
+    let (key, _) = invoke_row(4096);
+    let gap = (key, InputPolicy::KnownGap { planned_cap: 4096, remediation: "fixture" });
+    let findings = control_plane_cap_findings(&writers(&["mail"]), &entries, &[gap]);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings[0].contains("is not Validated"), "{findings:?}");
+}
+
+/// A Validated `cp.invoke` row on another wire field is not the `req.input.<value>` row.
+#[test]
+fn a_validated_cp_invoke_row_on_another_field_is_not_the_invoke_row() {
+    let entries = [caps_entry("mail", vec![cap_case("cp.invoke mail input value", 4096)])];
+    let (mut key, policy) = invoke_row(4096);
+    key.wire_field_name = "req.module".into();
+    let findings = control_plane_cap_findings(&writers(&["mail"]), &entries, &[(key, policy)]);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings[0].contains("is not Validated"), "{findings:?}");
+}
+
 /// `core.events` and `portal` have no conformance entry of their own: both are proven
 /// in the `admin` entry, under their own module name.
 #[test]
