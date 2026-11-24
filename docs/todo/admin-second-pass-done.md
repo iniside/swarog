@@ -2,6 +2,11 @@
 
 Last updated: 2026-11-24
 
+- [x] **Inventory grant and revoke** (2026-11-24, admin-second-pass step 14)
+  INVENTORY-05. The player's Inventory tab "Grant item" tool, the row-menu "Grant item…" and the
+  holding "Revoke item…" are implemented in inventory (`item.grant`, `holding.revoke`). The
+  mockup's character Items tab drew the same tools disabled with the now-false "not exposed"
+  title; it now enables them.
 - [x] **Revoke sessions** (2026-11-24, admin-second-pass step 13)
   ADMIN2-31. Mockup: the Active sessions "Revoke all" tool and each row's "Revoke". Both are
   implemented and `accounts` declares `writes: true`. Revoke ends the row's refresh family

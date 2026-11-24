@@ -69,9 +69,6 @@ modules/mail/src/admin.rs landed in 544dd4e5; the line numbers are its committed
 - [ ] **Friends remove friend**
   The player's Friends tab row-menu "Remove friend…" on a `friendship` row is
   `implemented: false`; tracked as FRIENDS-08 in `docs/todo/friends.md`.
-- [ ] **Inventory grant and revoke**
-  The player's Inventory tab "Grant item" tool, the row-menu "Grant item…" and the holding
-  "Revoke item…" are `implemented: false`; tracked as INVENTORY-05 in `docs/todo/inventory.md`.
 - [ ] **Copy payload**
   ADMIN2-16. Mockup: the poison-event "Copy payload" tool. Action `POISON_COPY`,
   `implemented: false`: core/admin/src/events_provider.rs:330-331; copying to the

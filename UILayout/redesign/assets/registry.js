@@ -125,7 +125,7 @@ window.REG = (() => {
       { label: "Grant currency…", icon: "gift", disabled: "wallet module unavailable" },
       { label: "Revoke currency…", icon: "coins", disabled: "wallet module unavailable" },
     ] },
-    { module: "inventory", items: [{ label: "Grant item…", icon: "box", run: "UI.toast('Grant item form…','info')" }] },
+    { module: "inventory", items: [{ label: "Grant item…", icon: "box", run: "PAGES.grantItem('$')" }] },
     { module: "notifications", items: [{ label: "Send notification…", icon: "send", run: "UI.toast('Compose notification…','info')" }] },
     { module: "lore", when: u => !!u.loreRole, items: [
       { label: "Change Lore role…", icon: "shield", run: "PAGES.changeRole('$')" },

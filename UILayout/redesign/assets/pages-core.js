@@ -35,6 +35,29 @@ window.PAGES = window.PAGES || {};
       { label: "Effective from", type: "select", typeName: "enum", options: ["Now (new tokens)", "Now + revoke live sessions"], value: "Now (new tokens)", help: "Lore checks permissions online on each request, so the change applies within seconds." },
     ] })}<div class="impact"><div><span>Overrides kept</span><b>${Object.keys(D.overrides[h] || {}).length}</b></div><div><span>Seats billed</span><b>unchanged (8)</b></div></div></div>`, { left: true })}<div class="modal-foot"><button class="btn" onclick="UI.closeModal()">Cancel</button><button class="btn primary" onclick="UI.closeModal();UI.toast('Lore role updated')">Save role</button></div>`);
   };
+  P.grantItem = (h = P.currentUser?.handle) => {
+    const u = D.byHandle[h];
+    const chars = D.characters.filter(c => c.player_id === u.id).map(c => c.id);
+    UI.modal(`${frag({ module: "inventory", point: "entity.user.header_action", prim: "Form" }, `<div class="modal-head"><div class="modal-icon ok">${icon("gift")}</div><div><h2>Grant item — ${esc(h)}</h2><div class="muted" style="font-size:12px">Adds to a character's stack; the grant is recorded under the request id.</div></div></div><div class="modal-body">${UI.form({ actions: false, fields: [
+      { label: "Character", type: "select", typeName: "ref Character", options: chars, value: chars[0] },
+      { label: "Item", type: "select", typeName: "ref Item", options: D.items.map(it => it.id), value: D.items[0].id },
+      { label: "Quantity", required: true, value: "1", help: "1 to 1000000, added to the character's stack" },
+      { label: "Request id", mono: true, disabled: true, value: "0c5e9a1e-3b7d-4f60-9a52-6d1f0b7c2e84" },
+    ] })}</div>`, { left: true })}<div class="modal-foot"><button class="btn" onclick="UI.closeModal()">Cancel</button><button class="btn primary" onclick="const m=document.querySelector('.modal');const n=m.querySelector('input:not([disabled])').value||'1';const it=m.querySelectorAll('select')[1].value;UI.closeModal();UI.toast('Granted '+n+' × '+it)">Grant</button></div>`);
+  };
+  P.revokeItem = key => {
+    const [ot, oid, iid] = key.split("|");
+    const h = D.holdings.find(x => x.owner_type === ot && x.owner_id === oid && x.item_id === iid);
+    UI.confirm({
+      c: { module: "inventory", point: "entity.user.row_action", prim: "ConfirmAction" },
+      title: `Revoke ${h.item_name}?`, body: "The whole stack is removed from its owner.",
+      impact: [["Item", `<span class="mono">${esc(iid)}</span>`], ["Quantity", h.quantity.toLocaleString("en-US")], ["Owner", ot === "player" ? "player" : esc(P.charById[oid].name)]],
+      confirm: "Revoke", done: "Item revoked",
+    });
+  };
+  UI.defineMenu("holding", key => [{ c: { module: "inventory", point: "entity.user.row_action", prim: "MenuAction" }, label: "inventory", items: [
+    { label: "Revoke item…", icon: "trash", run: `PAGES.revokeItem('${key}')` },
+  ] }]);
   P.releaseAll = h => {
     const mine = D.locks.filter(l => l.owner === h);
     UI.confirm({
@@ -140,14 +163,14 @@ window.PAGES = window.PAGES || {};
     const all = D.holdings.filter(h => (h.owner_type === "player" && h.owner_id === u.id) || (h.owner_type === "character" && mine.includes(h.owner_id)));
     const kinds = [...new Set(all.map(h => P.itemById[h.item_id].kind))].sort();
     const list = all.filter(h => !P.holdKind || P.itemById[h.item_id].kind === P.holdKind);
-    const off = "Grant and revoke are not exposed to admins by the inventory module yet";
     const owner = h => h.owner_type === "player" ? `<span class="mono">player</span>` : `<span class="mono">${esc(P.charById[h.owner_id].name)}</span>`;
     return panel({ c: { module: "inventory", point: "entity.user.tab", prim: "DataTable" }, title: "Inventory", meta: `player ${u.id.slice(0, 8)} and ${P.plural(mine.length, "character", "characters")}`, flush: true,
-      tools: `<button class="btn sm" disabled title="${off}">${icon("gift")} Grant item</button>`,
+      tools: `<button class="btn sm" onclick="PAGES.grantItem('${esc(u.handle)}')">${icon("gift")} Grant item</button>`,
       emptyTitle: "No items", emptyDetail: "Neither the player nor their characters hold anything.",
       body: table({ searchPlaceholder: "Item id or name", filters: [P.pick("holdKind", "Kind", kinds, P.holdKind)],
         cols: [{ label: "Owner" }, { label: "Item id" }, { label: "Name" }, { label: "Kind" }, { label: "Quantity", num: true }],
         rows: list.map(h => [owner(h), `<span class="mono">${h.item_id}</span>`, esc(h.item_name), P.classTag(P.itemById[h.item_id].kind), h.quantity.toLocaleString("en-US")]),
+        rowMenu: (r, i) => rowMenuBtn("holding", `${list[i].owner_type}|${list[i].owner_id}|${list[i].item_id}`),
         total: P.plural(list.length, "holding", "holdings"), page: "1 / 1" }) });
   };
   tabRender.friends = () => panel({ c: { module: "friends", point: "entity.user.tab", prim: "DataTable" }, title: "Friends", meta: "12 · 1 pending", flush: true,
@@ -286,13 +309,13 @@ window.PAGES = window.PAGES || {};
     const all = charHoldings(c);
     const kinds = [...new Set(all.map(h => itemById[h.item_id].kind))].sort();
     const list = all.filter(h => !P.holdKind || itemById[h.item_id].kind === P.holdKind);
-    const off = "Grant and revoke are not exposed to admins by the inventory module yet";
     return panel({ c: { module: "inventory", point: "entity.character.tab", prim: "DataTable" }, title: "Items", meta: `owner character:${c.id}`, flush: true,
-      tools: `<button class="btn sm" disabled title="${off}">${icon("gift")} Grant item</button><button class="btn sm" disabled title="${off}">Revoke</button>`,
+      tools: `<button class="btn sm" onclick="PAGES.grantItem('${esc(handleOf(c.player_id))}')">${icon("gift")} Grant item</button>`,
       emptyTitle: "No items", emptyDetail: "This character holds nothing.",
       body: table({ searchPlaceholder: "Item id or name", filters: [pick("holdKind", "Kind", kinds, P.holdKind)],
         cols: [{ label: "Item id" }, { label: "Name" }, { label: "Kind" }, { label: "Quantity", num: true }],
         rows: list.map(h => [`<span class="mono">${h.item_id}</span>`, esc(h.item_name), classTag(itemById[h.item_id].kind), h.quantity.toLocaleString("en-US")]),
+        rowMenu: (r, i) => rowMenuBtn("holding", `character|${c.id}|${list[i].item_id}`),
         total: plural(list.length, "holding", "holdings"), page: "1 / 1" }) });
   };
   P.character = {
