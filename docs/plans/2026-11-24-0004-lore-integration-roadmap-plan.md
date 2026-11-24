@@ -1,6 +1,6 @@
 # Lore integration: roadmap
 
-Status: waiting for approval
+Status: approved 2026-11-24 (each step gets its own phase plan before code)
 
 ## Context
 
