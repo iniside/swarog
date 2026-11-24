@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-24T11:23:59.668Z
+  modified: 2026-11-24T12:02:08.777Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -124,3 +124,9 @@ a9094615 ("any" = no filter in core filter_views) review REJECT structural S1: "
 - cargo test --workspace: all green except admindiff (out of plan) and groups one_sweep_fire_stamps_at_most_64_players (todo).
 - Owner open (structural): outcome-prefix constants in controlplane::events (+ does conflict: count as failure), drawn_orders test not in admincheck --strict, no core test for empty-Timeline hide, operator login "system" collides with system actor.
 - 24t (test-author opus, splitproof AU3 re-point + X5 + dashboard + break run) dispatched; then proof-auditor, 24.a3, 24.t, 24.a4, 24.b.
+
+## State 2026-11-24 (Step 24 code complete)
+- 24t 99463190 (+ doc 606dca1a), 24.a3 c9a9f128 (reverse peer finding; review PASS), 24.t 9f691d5a + review-fix 9ffe4b6d (proof-auditor gaps B/C), 24.a4 1287dee6 (no dead_code was left; fixed 3 clippy errors; review PASS). Workspace clippy -D warnings exit 0.
+- 24.b: no template change unless the owner's live look (H3/H13) shows one; not run.
+- Owner open (new): admincheck self-dial (admin-svc dialling "admin") passes silently; duplicate dials vanish in the BTreeSet; audit error-block branch unproven; export has no splitproof.
+- Next: report Step 24 to the owner, then Step 24a/25 on the owner's go.
