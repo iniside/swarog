@@ -1531,12 +1531,15 @@ enum HttpsTls {
     },
 }
 
+/// The HTTPS front and the certificate resolver the player front falls back to.
+type HttpsTlsPair = (Option<HttpsTls>, Option<Arc<dyn ResolvesServerCert>>);
+
 /// Resolves the HTTPS front, returning it with the certificate resolver the player
 /// front falls back to. PEM files go through the same loader as the player front's,
 /// with the ALPN list axum-server's own PEM loader sets (`h2`, `http/1.1`).
 fn resolve_https_tls(
     front: Option<&TlsFront>,
-) -> anyhow::Result<(Option<HttpsTls>, Option<Arc<dyn ResolvesServerCert>>)> {
+) -> anyhow::Result<HttpsTlsPair> {
     match front {
         None => Ok((None, None)),
         Some(TlsFront::Files { cert, key }) => {

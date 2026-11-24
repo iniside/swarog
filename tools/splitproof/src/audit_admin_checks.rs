@@ -130,7 +130,7 @@ async fn checks(p: &mut Proof, front: &str, admin: &reqwest::Client, tag: &str) 
     // just drawn rows of that topic, so a page that ignored the actor filter draws them here.
     let mine = log_panel(admin, front, &format!("actor={LOGIN}")).await?;
     let mine_ok = !mine.rows.is_empty()
-        && mine.rows.iter().all(|(links, topic)| topic == "admin.action" && links.iter().any(|h| *h == actor_href));
+        && mine.rows.iter().all(|(links, topic)| topic == "admin.action" && links.contains(&actor_href));
     let none = log_panel(admin, front, &format!("actor={LOGIN}&topic={SYSTEM_TOPIC}")).await?;
     p.check(
         &format!("[AU4{tag}] Audit log actor filter draws only {LOGIN}'s rows, and none of the {SYSTEM_TOPIC} rows AU3 drew"),
@@ -157,7 +157,7 @@ async fn checks(p: &mut Proof, front: &str, admin: &reqwest::Client, tag: &str) 
         None => (0, String::new()),
     };
     let hrefs = attr_values(&panel, "href");
-    let entry = hrefs.iter().any(|h| *h == actor_href);
+    let entry = hrefs.contains(&actor_href);
     let tool = hrefs.iter().any(|h| h == PAGE_URL);
     p.check(
         &format!("[AU5{tag}] dashboard draws Recent operator activity from the audit provider with a {LOGIN} entry"),
