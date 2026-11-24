@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-24T12:02:08.777Z
+  modified: 2026-11-24T12:17:39.867Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -130,3 +130,8 @@ a9094615 ("any" = no filter in core filter_views) review REJECT structural S1: "
 - 24.b: no template change unless the owner's live look (H3/H13) shows one; not run.
 - Owner open (new): admincheck self-dial (admin-svc dialling "admin") passes silently; duplicate dials vanish in the BTreeSet; audit error-block branch unproven; export has no splitproof.
 - Next: report Step 24 to the owner, then Step 24a/25 on the owner's go.
+
+## State 2026-11-24 (Step 24a done, Step 25 started)
+- Step 24 todo 1b999b4b (24.b closed, no commit). 24a 8ac46dab (VerbError: NotFound/Retired/Healthy/NothingToSkip/Db; state_of pre-read gone); core-reviewer ACCEPT.
+- Owner open (24a review): S1 VerbError Display carries eventctl wording ("eventctl: no such subscription" now shown in portal); L1 prepare_skip NotFound says "no subscription" (second text); L3 poison_event mixes "asyncevents:"/"eventctl:" prefixes. L1/L3 depend on S1.
+- 25a (migrate race + release undecodable claimed row) dispatched to core-implementer opus. Next: 25b (pageshow, mockup-implementer), 25c1-3, 25d1-4, 25e (owner lane decision before 25e2), 25f, 25g, 25h (owner approves per-group assertion lines before 25h1).
