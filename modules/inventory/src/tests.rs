@@ -1868,6 +1868,202 @@ async fn grant_releases_the_lock_before_it_answers_a_refusal() {
     assert!(!held, "a refused grant must not leave its transaction's lock held");
 }
 
+// ---- Operator grant request id retention -------------------------------
+
+/// Wires the module the way `app::run` does (`register` then `init`) over a hand-driven
+/// durable transport, and drains once before the test emits anything.
+async fn wired_for_delivery(pool: &PgPool) -> (Context, asyncevents::testing::TestTransport) {
+    ensure_schema(pool).await;
+    let transport = asyncevents::testing::transport(pool.clone());
+    let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
+    ctx.registry().provide::<dyn Ownership>(
+        key("characters", "ownership"),
+        Arc::new(FakeOwnership::Miss) as Arc<dyn Ownership>,
+    );
+    ctx.registry().provide::<dyn Config>(
+        key("config", "reader"),
+        Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)) as Arc<dyn Config>,
+    );
+    let inv = Inventory::new();
+    inv.register(&ctx).unwrap();
+    inv.init(&ctx).unwrap();
+    transport.deliver_all().await.unwrap();
+    (ctx, transport)
+}
+
+async fn emit_fired(ctx: &Context, pool: &PgPool, name: &str) {
+    let mut tx = pool.begin().await.unwrap();
+    let fired = schedulerevents::Fired { name: name.into() };
+    ctx.bus()
+        .emit_tx(AnyTx::new(&mut *tx), &schedulerevents::FIRED, &fired)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+}
+
+/// A handler that returned `Err` leaves `consecutive_failures` above zero, and at 20 the
+/// plane pauses the subscription; "the rows went" alone does not rule that out.
+async fn assert_subscription_unpoisoned(pool: &PgPool, id: &str) {
+    let (state, failures, last_error): (String, i32, Option<String>) = sqlx::query_as(
+        "SELECT state, consecutive_failures, last_error FROM asyncevents.subscriptions \
+          WHERE subscription_id = $1",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(state, "active", "{id} must still be active");
+    assert_eq!(failures, 0, "{id} must not have failed; last_error = {last_error:?}");
+}
+
+/// Inserts one operator grant request id aged `age_days`, returning the id.
+async fn seed_aged_grant(pool: &PgPool, age_days: i32) -> String {
+    let id = format!("grants-prune-test-{}", unique_uuid(pool).await);
+    sqlx::query(
+        "INSERT INTO inventory.operator_grants (request_id, at) \
+         VALUES ($1, now() - make_interval(days => $2))",
+    )
+    .bind(&id)
+    .bind(age_days)
+    .execute(pool)
+    .await
+    .unwrap();
+    id
+}
+
+async fn grant_kept(pool: &PgPool, request_id: &str) -> bool {
+    sqlx::query_scalar::<_, i32>("SELECT 1 FROM inventory.operator_grants WHERE request_id = $1")
+        .bind(request_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+        .is_some()
+}
+
+async fn cleanup_grants(pool: &PgPool, ids: &[&str]) {
+    for id in ids {
+        let _ = sqlx::query("DELETE FROM inventory.operator_grants WHERE request_id = $1")
+            .bind(id)
+            .execute(pool)
+            .await;
+    }
+}
+
+/// The prune reached through a REAL delivery of `scheduler.fired`: the subscription is
+/// registered on the raw topic and its handler must match the schedule name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_scheduler_fire_prunes_only_grant_ids_past_retention() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (ctx, transport) = wired_for_delivery(&pool).await;
+    let old = seed_aged_grant(&pool, OPERATOR_GRANT_RETENTION_DAYS + 5).await;
+    let fresh = seed_aged_grant(&pool, 1).await;
+
+    emit_fired(&ctx, &pool, GRANTS_PRUNE_SCHEDULE_NAME).await;
+    transport.deliver_all().await.unwrap();
+
+    assert!(!grant_kept(&pool, &old).await, "the request id past retention must go");
+    assert!(grant_kept(&pool, &fresh).await, "the request id inside retention must stay");
+    assert_subscription_unpoisoned(&pool, GRANTS_PRUNE_SUB.id).await;
+
+    cleanup_grants(&pool, &[&old, &fresh]).await;
+}
+
+/// The subscription receives EVERY schedule's fire (a raw sink on the whole topic), so the
+/// name guard is the only thing between another schedule's fire and this retention policy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_foreign_schedule_name_prunes_no_grant_ids() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (ctx, transport) = wired_for_delivery(&pool).await;
+    let old = seed_aged_grant(&pool, OPERATOR_GRANT_RETENTION_DAYS + 5).await;
+
+    emit_fired(&ctx, &pool, schedulerevents::schedule_names::AUDIT_PRUNE).await;
+    transport.deliver_all().await.unwrap();
+    assert!(grant_kept(&pool, &old).await, "another schedule's fire must not prune grant ids");
+
+    // The positive control on the SAME row: this module's own name does prune it.
+    emit_fired(&ctx, &pool, GRANTS_PRUNE_SCHEDULE_NAME).await;
+    transport.deliver_all().await.unwrap();
+    assert!(!grant_kept(&pool, &old).await);
+    assert_subscription_unpoisoned(&pool, GRANTS_PRUNE_SUB.id).await;
+
+    cleanup_grants(&pool, &[&old]).await;
+}
+
+/// The watermarked LOOP, measured by a statement-level trigger counting every DELETE: no
+/// single statement may exceed `GRANTS_PRUNE_BATCH`, and one fire keeps going until a short
+/// batch. Everything runs in ONE transaction that is rolled back, so the table is untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_fire_loops_batched_grant_deletes_and_never_exceeds_the_batch_per_statement() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    ensure_schema(&pool).await;
+    let seeded = GRANTS_PRUNE_BATCH * 2 + 7;
+
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::raw_sql(
+        // `CREATE TRIGGER` takes SHARE ROW EXCLUSIVE on the table: bounded, so a concurrent
+        // long transaction fails this test instead of hanging every other writer.
+        "SET LOCAL lock_timeout = '5s'; SET LOCAL statement_timeout = '60s'; \
+         CREATE TEMP TABLE grants_prune_probe (seq serial, n bigint) ON COMMIT DROP; \
+         CREATE FUNCTION pg_temp.grants_prune_probe_log() RETURNS trigger LANGUAGE plpgsql AS $fn$ \
+           BEGIN INSERT INTO grants_prune_probe (n) SELECT count(*) FROM removed; RETURN NULL; END $fn$; \
+         CREATE TRIGGER inventory_grants_prune_probe AFTER DELETE ON inventory.operator_grants \
+           REFERENCING OLD TABLE AS removed FOR EACH STATEMENT \
+           EXECUTE FUNCTION pg_temp.grants_prune_probe_log();",
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO inventory.operator_grants (request_id, at) \
+         SELECT 'grants-prune-probe-' || n, now() - make_interval(days => 99) \
+           FROM generate_series(1, $1) AS n",
+    )
+    .bind(seeded)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+
+    let payload = serde_json::to_vec(&schedulerevents::Fired {
+        name: GRANTS_PRUNE_SCHEDULE_NAME.to_string(),
+    })
+    .unwrap();
+    GrantsPruneHandler
+        .call(
+            Delivery {
+                event_id: "grants-prune-probe-event",
+                tx: AnyTx::new(&mut *tx),
+            },
+            payload,
+        )
+        .await
+        .expect("the prune must answer Ok");
+
+    let counts: Vec<i64> = sqlx::query_scalar("SELECT n FROM grants_prune_probe ORDER BY seq")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert!(
+        counts.len() >= 3,
+        "{seeded} stale rows at {GRANTS_PRUNE_BATCH} per statement must take at least 3 statements; got {counts:?}"
+    );
+    assert!(
+        counts.iter().all(|n| *n <= GRANTS_PRUNE_BATCH),
+        "no single statement may delete more than GRANTS_PRUNE_BATCH rows; got {counts:?}"
+    );
+    assert!(
+        *counts.last().unwrap() < GRANTS_PRUNE_BATCH,
+        "the loop must end on a SHORT batch; got {counts:?}"
+    );
+    assert!(
+        counts.iter().sum::<i64>() >= seeded,
+        "every stale row must be pruned in the one fire; got {counts:?} for {seeded} rows"
+    );
+    tx.rollback().await.unwrap();
+}
+
 // ---- Admin: the player's Inventory tab ----------------------------------
 
 use controlplane::{ActionPoint, DataTable, EntityRef, FilterKind, PanelBody, PanelQuery, Point, Primitive, Provider};

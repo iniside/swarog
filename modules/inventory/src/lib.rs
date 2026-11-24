@@ -99,11 +99,15 @@ CREATE INDEX IF NOT EXISTS character_owners_player_idx
 
 -- One row per operator grant the portal applied, keyed by its form instance's request id:
 -- the grant transaction inserts it first, so a repeat of one submit finds it and changes
--- nothing (grant_exec alone adds to the stack on every call).
+-- nothing (grant_exec alone adds to the stack on every call). A row only has to outlive a
+-- repeat of the same submit, so the daily inventory-grants-prune sweep drops rows older
+-- than OPERATOR_GRANT_RETENTION_DAYS; operator_grants_at_idx exists for that sweep alone.
 CREATE TABLE IF NOT EXISTS inventory.operator_grants (
 	request_id text        PRIMARY KEY,
 	at         timestamptz NOT NULL DEFAULT now()
 );
+CREATE INDEX IF NOT EXISTS operator_grants_at_idx
+	ON inventory.operator_grants (at);
 
 CREATE TABLE IF NOT EXISTS inventory.purged_players (
 	player_id  uuid PRIMARY KEY,
@@ -337,6 +341,15 @@ impl Module for Inventory {
             projection::PURGE_SWEEP_SUB,
             schedulerevents::FIRED.topic(),
             sweeper,
+        );
+
+        // The retention of operator grant request ids, on its OWN subscription: a raw sink on
+        // `scheduler.fired` guarding on the `inventory-grants-prune` name.
+        let grants_prune: Arc<dyn bus::TxHandler> = Arc::new(projection::GrantsPruneHandler);
+        ctx.bus().on_tx_raw(
+            projection::GRANTS_PRUNE_SUB,
+            schedulerevents::FIRED.topic(),
+            grants_prune,
         );
 
         // 4. HARD dependency on config (declared in requires()): every composition

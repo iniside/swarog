@@ -247,8 +247,10 @@ pub(crate) const PURGE_SCHEDULE_NAME: &str = schedulerevents::schedule_names::PL
 
 pub(crate) const INVENTORY_PLAYERS_PER_FIRE: i64 = 64;
 
-/// The sweep's whole wall-clock budget. Exhausting it ends the fire with the players swept
-/// so far KEPT — they commit with the subscription checkpoint and the next fire resumes from
+/// A sweep's whole wall-clock budget, one constant for BOTH scheduled sweeps in this module
+/// (the purge sweep and the grants prune), since the bound it respects is the plane's
+/// per-handler timeout. Exhausting it ends the fire with the work done so far
+/// KEPT — they commit with the subscription checkpoint and the next fire resumes from
 /// there. It is a bare constant because a module may not read the plane's env and
 /// `bus::Delivery` carries no deadline to derive one from; the operator constraint that
 /// comes with it is that `ASYNCEVENTS_HANDLER_TIMEOUT` must stay above 5s (its default is
@@ -336,6 +338,85 @@ impl TxHandler for PurgeSweepHandler {
                 return Ok(());
             }
             self.inner.sweep_purged_players(conn).await
+        })
+    }
+}
+
+/// The grants prune's consumer-owned subscription id — a durable contract; renaming it
+/// abandons the checkpoint. `Genesis` because the prune must run on a boot that has never
+/// subscribed before.
+pub(crate) const GRANTS_PRUNE_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
+    id: "inventory.grants-prune-on-scheduler.v1",
+    start: bus::StartPosition::Genesis,
+};
+
+pub(crate) const GRANTS_PRUNE_SCHEDULE_NAME: &str = schedulerevents::schedule_names::INVENTORY_GRANTS_PRUNE;
+
+/// How long an `inventory.operator_grants` request id is kept. The row exists only so a
+/// repeat of the SAME portal submit (a double click, a retried request: seconds to minutes)
+/// finds it and grants nothing; once pruned, that request id is open again, so a replay of
+/// it after this many days would grant a second time. Thirty days is far beyond any
+/// resubmit window. A typed constant, not an env var: no deployment has a reason to tune it.
+pub(crate) const OPERATOR_GRANT_RETENTION_DAYS: i32 = 30;
+
+/// Rows per DELETE statement. The prune LOOPS batches until a short one, each resuming from
+/// the previous batch's highest `at`: every batch runs inside the one delivery transaction,
+/// where the rows it already deleted are still visible to its own index scan, so without the
+/// watermark each batch would re-walk all earlier ones.
+pub(crate) const GRANTS_PRUNE_BATCH: i64 = 256;
+
+pub(crate) struct GrantsPruneHandler;
+
+impl TxHandler for GrantsPruneHandler {
+    fn call<'a>(
+        &'a self,
+        mut delivery: Delivery<'a>,
+        payload: Vec<u8>,
+    ) -> BoxFuture<'a, Result<(), BusError>> {
+        Box::pin(async move {
+            let conn = delivery.tx.downcast::<PgConnection>()?;
+            let fired: FiredName = serde_json::from_slice(&payload).map_err(BusError::from)?;
+            if fired.name != GRANTS_PRUNE_SCHEDULE_NAME {
+                return Ok(());
+            }
+            let started = std::time::Instant::now();
+            // The scan floor, carried across batches as text because the workspace's sqlx
+            // has no date/time feature; `-infinity` is the first batch's "no floor".
+            let mut watermark = "-infinity".to_string();
+            loop {
+                let (deleted, high): (i64, Option<String>) = sqlx::query_as(
+                    "WITH stale AS ( \
+                       SELECT ctid FROM inventory.operator_grants \
+                        WHERE at < now() - make_interval(days => $1) \
+                          AND at >= $3::timestamptz \
+                        ORDER BY at LIMIT $2 FOR UPDATE SKIP LOCKED \
+                     ), del AS ( \
+                       DELETE FROM inventory.operator_grants g USING stale \
+                        WHERE g.ctid = stale.ctid RETURNING g.at \
+                     ) \
+                     SELECT count(*)::bigint, max(at)::text FROM del",
+                )
+                .bind(OPERATOR_GRANT_RETENTION_DAYS)
+                .bind(GRANTS_PRUNE_BATCH)
+                .bind(&watermark)
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(BusError::transport)?;
+                if deleted < GRANTS_PRUNE_BATCH {
+                    return Ok(());
+                }
+                // `>=`, never `>`: rows sharing the batch's highest `at` may still be pending.
+                if let Some(high) = high {
+                    watermark = high;
+                }
+                if started.elapsed() >= SWEEP_BUDGET {
+                    tracing::warn!(
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "inventory: grants prune hit its budget — resuming next fire"
+                    );
+                    return Ok(());
+                }
+            }
         })
     }
 }

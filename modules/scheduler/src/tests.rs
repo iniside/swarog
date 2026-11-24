@@ -237,6 +237,7 @@ fn seeded_schedule_names_are_contract() {
         schedulerevents::schedule_names::NOTIFICATIONS_PRUNE,
         schedulerevents::schedule_names::MAIL_PRUNE,
         schedulerevents::schedule_names::GROUPS_PRUNE,
+        schedulerevents::schedule_names::INVENTORY_GRANTS_PRUNE,
         schedulerevents::schedule_names::PLAYER_PURGE,
     ] {
         assert!(
