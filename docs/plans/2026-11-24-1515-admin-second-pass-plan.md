@@ -516,6 +516,6 @@ item for the download carrier plan with its five buttons (D1).
 9. ADMIN2-19 stays in the plan.
 
 Released so far: "zrob kroki 1-5" (Steps 1, 2, 3, 4, 5a, 5b); "kroki 6-10" (Steps 6, 7a, 7b, 8a,
-8b, 9, 10).
+8b, 9, 10); "zrob od 11 do 15" (Steps 11, 12, 13, 14, 15).
 Lane changes (owner, 2026-11-24, "ok to zmien"): Steps 11, 16, 17a and 21b moved from
 [independent] to [sonnet]; every step keeps its opus core-reviewer.
