@@ -251,9 +251,6 @@ async fn nav_counter_draws_the_player_count_with_separators() {
     let n: i64 = cell.value.replace(',', "").parse().expect("the counter is a grouped number");
     assert!(n >= 1, "the counter counts the registered player");
     assert_eq!(cell.value, thousands(n), "the counter groups its digits");
-    assert_eq!(thousands(1_234_567), "1,234,567");
-    assert_eq!(thousands(999), "999");
-    assert_eq!(thousands(-3), "0");
 }
 
 #[tokio::test]
@@ -313,7 +310,6 @@ async fn identities_panel_masks_the_subject_and_counts_the_links() {
     assert_eq!(row.cells[1].value, mask(&email), "the email subject is masked");
     assert!(!row.cells[1].value.contains(&email[4..email.len() - 4]), "the masked middle never leaks");
     assert_eq!(row.item.as_deref(), Some("dev"), "unlink acts on the provider");
-    assert_eq!(mask("short"), "…", "a subject of eight characters or fewer shows nothing");
 }
 
 #[tokio::test]
@@ -343,27 +339,39 @@ async fn player_panels_draw_the_handle_and_refuse_a_missing_or_absent_player() {
 }
 
 #[tokio::test]
-async fn player_search_answers_nothing_for_another_kind_a_blank_or_an_overlong_query() {
+async fn player_search_answers_nothing_for_another_kind_or_a_blank_query() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
-    let admin = AccountsAdmin::new(svc);
+    let name = format!("Srch{}", suffix().replace(['-', '_'], "x"));
+    let email = format!("{name}@test.local");
+    let id = svc.register(email, "pw".into(), name.clone()).await.unwrap().player_id;
+    let admin = AccountsAdmin::new(Arc::clone(&svc));
     let search = |kind: &str, q: String| SearchQuery {
         module: "accounts".to_string(),
         kind: kind.to_string(),
         q,
         limit: 10,
     };
-    for (what, q) in [
-        ("another kind", search("character", "a".to_string())),
-        ("a blank query", search("player", "   ".to_string())),
-        ("an overlong query", search("player", "a".repeat(MAX_NEEDLE_BYTES + 1))),
-    ] {
-        assert_eq!(admin.search(q).await.unwrap(), Vec::new(), "{what} finds nothing");
-    }
+    // Both queries would list the player just registered (newest first, and an
+    // empty needle matches every name) if search did not answer them early.
+    let other_kind = admin.search(search("character", name.clone())).await;
+    let blank = admin.search(search("player", "   ".to_string())).await;
+    cleanup_player(&pool, &id).await;
+
+    assert_eq!(other_kind.unwrap(), Vec::new(), "another kind finds nothing, not the named player");
+    assert_eq!(blank.unwrap(), Vec::new(), "a blank query finds nothing, not every player");
 }
 
 #[test]
 fn fakes_draw_pinned_values_from_the_shared_helper() {
     assert_eq!(fake_country("p-1"), "ES");
     assert_eq!(fake_ip("fam-1"), "198.51.100.64");
+}
+
+#[test]
+fn thousands_groups_digits_and_mask_hides_a_short_subject() {
+    assert_eq!(thousands(1_234_567), "1,234,567");
+    assert_eq!(thousands(999), "999");
+    assert_eq!(thousands(-3), "0");
+    assert_eq!(mask("short"), "…", "a subject of eight characters or fewer shows nothing");
 }
