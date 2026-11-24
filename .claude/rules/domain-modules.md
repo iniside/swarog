@@ -40,7 +40,8 @@ Per-module mechanics live in each `modules/<name>/src/lib.rs` header and the
   sync `Ownership` authz over the wire, starter-grant/wipe via durable
   `character.created/deleted`. `INVENTORY_DEV_GRANT` (explicit-only, default
   OFF/fail-closed, set by the `devctl` and split-proof development profiles) enables
-  the simulated-IAP grant route.
+  the simulated-IAP grant route. `scheduler.fired{inventory-grants-prune}` deletes
+  `inventory.operator_grants` rows older than 30 days (`OPERATOR_GRANT_RETENTION_DAYS`).
 - **config** — The NOTIFY payload is value-less (`pg_notify` hard-caps at 8000 bytes
   and the invalidation callback re-reads the whole snapshot anyway); the durable
   `config.changed` event still carries the full `value`. Local `Service` and remote
