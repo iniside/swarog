@@ -93,9 +93,11 @@ pub struct Accepted {
     pub addressee_handle: String,
 }
 
-/// The relation is gone, whatever state it was in. `actor_id` is the party who ended it
-/// and `other_id` is the one who did not; neither maps to the original requester/addressee
-/// roles, because either side may remove.
+/// The relation is gone, whatever state it was in. For a player-initiated reason
+/// ([`REASON_DECLINED`], [`REASON_WITHDRAWN`], [`REASON_UNFRIENDED`]) `actor_id` is the party
+/// who ended it and `other_id` is the one who did not; neither maps to the original
+/// requester/addressee roles, because either side may remove. [`REASON_ACCOUNT_DELETED`] and
+/// [`REASON_OPERATOR_REMOVED`] state their own slot meaning in their bullets below.
 ///
 /// **One topic covers every ending**, discriminated by `reason` rather than split per
 /// ending, because a defined topic with no durable subscriber fails the blocking durability

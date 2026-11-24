@@ -214,9 +214,9 @@ async fn derives_every_logged_topic() {
                 actor_handle: "A#1".into(),
                 other_id: "q".into(),
                 other_handle: "B#2".into(),
-                reason: "unfriend".into(),
+                reason: friendsevents::REASON_UNFRIENDED.into(),
             }),
-            [SYSTEM_ACTOR.into(), "removed".into(), format!("friendship:e-{m}"), "unfriend · A#1 → B#2".into()],
+            [SYSTEM_ACTOR.into(), "removed".into(), format!("friendship:e-{m}"), "unfriended · A#1 → B#2".into()],
         ),
         (
             "group.created",

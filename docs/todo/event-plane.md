@@ -8,6 +8,12 @@ _None._
 
 ## Open
 
+- [ ] **Contract golden does not pin enumerated string values**
+  `tools/topiccheck/src/golden.rs:444-446` (`flatten_shape`) keeps only `key:kind`, so a rename or
+  removal of a `REASON_*` value (the friends and groups reason consts) passes every gate. Fix: one
+  typed set per enumerated field (an enum with `as_str()` and an exhaustive `ALL`), from which
+  topiccheck emits value lines, so a rename or removal shows as BREAKING.
+  Source: proof-auditor review of admin-second-pass step 17a (2026-11-24).
 - [ ] **Scheduled prune tests seed rows far from the retention edge**
   The audit, groups, mail and notifications prune tests seed stale rows well past retention
   (e.g. modules/notifications/src/tests.rs:1315 at DEFAULT_RETENTION_DAYS + 5, modules/audit/src/tests.rs:326),

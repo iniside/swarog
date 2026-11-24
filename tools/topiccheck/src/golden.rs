@@ -59,11 +59,14 @@ const GOLDEN_HEADER: &str = "\
 # arg's {wildcard} string and its wire_key (route_bindings' decode is an opaque
 # closure; rpc-body strips path-wildcard args), so a silent path_args rebind FAILs
 # here. The `payload`/`rpc-body` lines are a SAMPLED JSON
-# key/kind fingerprint -- concrete values per contract, flattened -- so a silent
+# key/kind fingerprint -- one concrete sample per contract, flattened to key:kind, never the
+# values themselves -- so a silent
 # #[serde(rename)] or a reshaped field on a sampled key lands as a golden diff.
 # KNOWN GAPS (by design, of sampling a finite value set):
 # - Scalar collapse: every numeric width and int-vs-float renders as `:number`; a
 #   u32->i64 or int->float change is invisible.
+# - String VALUES are unpinned: flatten_shape keeps only key:kind, so an enumerated field
+#   (the friends/groups REASON_* sets) can have a value renamed or dropped with no diff.
 # - Arrays traverse the FIRST element only; shapes beyond it are unpinned.
 # - Enum/variant shapes beyond the sampled variant are unpinned (only the variant the
 #   sample constructs is fingerprinted).
