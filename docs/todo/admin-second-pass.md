@@ -244,6 +244,31 @@ modules/audit/src/admin.rs, as committed in admin-control-plane-redesign step 24
   `page`/`dashboard`/`entity` handlers and called from the goldens. Source: Step 28
   round-1 and round-2 proof audits.
 
+### Known limits (admin-second-pass step 15)
+
+- [ ] **`INVOKE_DEADLINE` doc promises "outcome unknown" for a prepare too** (owner, 2026-11-24)
+  ADMIN2-72. The doc on `controlplane::INVOKE_DEADLINE` (core/controlplane/src/lib.rs:210-212)
+  says that past the deadline the portal answers that the outcome is unknown. That holds only for
+  invoke; a prepare past it gets a retryable 504 "try again" (core/admin/src/engine/actions.rs:199-208).
+  A provider author reading the contract is told the wrong thing about prepare. Closed by:
+  rewording the doc (prepare answered as retryable, invoke as outcome-unknown), keeping the
+  sentence that a provider keeps its per-call work under the deadline with room for the round
+  trip. Source: 92445fec review.
+- [ ] **Nothing checks `CLAIM_WINDOW` > `INVOKE_DEADLINE`** (owner, 2026-11-24)
+  ADMIN2-73. `CLAIM_WINDOW` (30 s, core/admin/src/engine/actions.rs:29) must exceed
+  `INVOKE_DEADLINE`, or a claim takeover can meet an invoke still in flight and run it twice.
+  Only a doc comment says so, and the deadline now lives in the controlplane crate, so raising it
+  there does not touch admin. Closed by: a `const _: () = assert!(CLAIM_WINDOW.as_nanos() >
+  INVOKE_DEADLINE.as_nanos());` after `CLAIM_WINDOW`, with the reason. Source: 92445fec review.
+- [ ] **Scheduler's Fire now deadline assert is vacuous** (owner, 2026-11-24)
+  ADMIN2-74. `assert!(FIRE_NOW_TOTAL < INVOKE_DEADLINE)` (modules/scheduler/src/admin.rs:61)
+  follows from the `saturating_sub` that defines `FIRE_NOW_TOTAL` and fails only at a zero
+  `FIRE_NOW_MARGIN`. A margin cut to 1 ms passes, and the scheduler would then answer after the
+  split portal has already reported "unknown". Closed by: replacing it with a floor on
+  `FIRE_NOW_MARGIN` (at least 1 s, the minimum room for the `cp.invoke` QUIC round trip in the
+  split), keeping the `FIRE_NOW_TOTAL > FIRE_NOW_DEADLINE` assert and adjusting the comment
+  above. Source: 92445fec proof audit.
+
 ## Accepted contract gaps
 
 One item per `contract gap` entry in `tools/admindiff/accept/*.txt`; remaining mockup
