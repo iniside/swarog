@@ -79,6 +79,10 @@ pub struct CapCase {
     /// The value has one admitted length, not a ceiling (a uuid): `cap - 1` bytes must be
     /// rejected too.
     pub exact: bool,
+    /// The control-plane writer (its `Manifest.module`) whose `cp.invoke` input-value cap
+    /// this case proves, or `None` for every other case. The writer check matches on this
+    /// field alone, never on `name`.
+    pub writer: Option<&'static str>,
 }
 
 #[derive(Clone, Debug)]

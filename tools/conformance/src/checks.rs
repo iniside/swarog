@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::input_inventory::{render_key, InputKey};
-use crate::model::{ArgonParams, Convention, Entry, Fixture, InputPolicy, Stance};
+use crate::model::{ArgonParams, CapCase, Convention, Entry, Fixture, InputPolicy, Stance};
 
 /// Core-infra modules hosted in every process that are NOT fortresses under
 /// `modules/` — they appear in `checkmodules::monolith_modules()` but carry no
@@ -225,8 +225,8 @@ pub fn input_policy_prose_findings(policies: &[(InputKey, InputPolicy)]) -> Vec<
         .collect()
 }
 
-/// The `CapCase` name marker that ties a byte-cap case to `cp.invoke`.
-pub const CONTROL_PLANE_CAP_MARKER: &str = "cp.invoke";
+/// The wire method whose `req.input.<value>` row bounds every control-plane writer.
+pub const CONTROL_PLANE_INVOKE_METHOD: &str = "cp.invoke";
 
 /// The conformance entry that proves a control-plane writer's caps.
 fn control_plane_writer_entry(module: &str) -> &str {
@@ -236,27 +236,62 @@ fn control_plane_writer_entry(module: &str) -> &str {
     }
 }
 
+/// Every input-byte-caps `CapCase` marked with [`CapCase::writer`], with the entry
+/// that carries it.
+fn writer_cases(entries: &[Entry]) -> Vec<(&'static str, &CapCase)> {
+    entries
+        .iter()
+        .flat_map(|entry| match entry.stance(Convention::InputByteCaps) {
+            Some(Stance::Applies(Fixture::InputByteCaps(cases))) => cases.as_slice(),
+            _ => &[],
+        }
+        .iter()
+        .filter(|case| case.writer.is_some())
+        .map(move |case| (entry.module, case)))
+        .collect()
+}
+
 /// Phase 1b — every control-plane writer (a monolith manifest with `writes: true`) must
-/// carry, in its entry, an input-byte-caps `CapCase` whose name contains both
-/// [`CONTROL_PLANE_CAP_MARKER`] and the writer's `Manifest.module`, and every such case's
-/// cap must equal the Validated `cp.invoke` `req.input.<value>` row.
+/// carry, in its entry, an input-byte-caps `CapCase` whose [`CapCase::writer`] is the
+/// writer's `Manifest.module`, and every such case's cap must equal the Validated
+/// `cp.invoke` `req.input.<value>` row. A case marked for a module that is not a writer,
+/// or carried by another module's entry, is a finding too: the link is the typed field,
+/// never the case name.
 pub fn control_plane_cap_findings(
     writers: &BTreeSet<String>,
     entries: &[Entry],
     policies: &[(InputKey, InputPolicy)],
 ) -> Vec<String> {
     let mut findings = Vec::new();
+    let marked = writer_cases(entries);
+    for (entry_name, case) in &marked {
+        let module = case.writer.expect("writer_cases keeps marked cases only");
+        if !writers.contains(module) {
+            findings.push(format!(
+                "entry {entry_name}: CapCase \"{}\" is marked as the {CONTROL_PLANE_INVOKE_METHOD} \
+                 case of {module}, but no monolith manifest named {module} declares `writes: true`",
+                case.name
+            ));
+        } else if control_plane_writer_entry(module) != *entry_name {
+            findings.push(format!(
+                "entry {entry_name}: CapCase \"{}\" is marked as the {CONTROL_PLANE_INVOKE_METHOD} \
+                 case of {module}, whose caps belong in entry {}",
+                case.name,
+                control_plane_writer_entry(module)
+            ));
+        }
+    }
     if writers.is_empty() {
         return findings;
     }
     let row = policies.iter().find(|(key, _)| {
-        key.wire_method == CONTROL_PLANE_CAP_MARKER && key.wire_field_name == "req.input.<value>"
+        key.wire_method == CONTROL_PLANE_INVOKE_METHOD && key.wire_field_name == "req.input.<value>"
     });
     let row_cap = match row {
         Some((_, InputPolicy::Validated { cap, .. })) => Some(*cap),
         _ => {
             findings.push(format!(
-                "control-plane writers exist ({}) but the {CONTROL_PLANE_CAP_MARKER} \
+                "control-plane writers exist ({}) but the {CONTROL_PLANE_INVOKE_METHOD} \
                  req.input.<value> input policy is not Validated with a byte cap",
                 writers.iter().cloned().collect::<Vec<_>>().join(", ")
             ));
@@ -265,32 +300,27 @@ pub fn control_plane_cap_findings(
     };
     for writer in writers {
         let entry_name = control_plane_writer_entry(writer);
-        let Some(entry) = entries.iter().find(|entry| entry.module == entry_name) else {
+        if !entries.iter().any(|entry| entry.module == entry_name) {
             findings.push(format!(
                 "{writer} declares `writes: true` but its conformance entry {entry_name} does not exist"
             ));
             continue;
-        };
-        let caps: Vec<usize> = match entry.stance(Convention::InputByteCaps) {
-            Some(Stance::Applies(Fixture::InputByteCaps(cases))) => cases
-                .iter()
-                .filter(|case| {
-                    case.name.contains(CONTROL_PLANE_CAP_MARKER) && case.name.contains(writer.as_str())
-                })
-                .map(|case| case.cap)
-                .collect(),
-            _ => Vec::new(),
-        };
+        }
+        let caps: Vec<usize> = marked
+            .iter()
+            .filter(|(entry, case)| *entry == entry_name && case.writer == Some(writer.as_str()))
+            .map(|(_, case)| case.cap)
+            .collect();
         if caps.is_empty() {
             findings.push(format!(
                 "{writer} declares `writes: true` but entry {entry_name} has no executable \
-                 input-byte-caps CapCase whose name contains both {CONTROL_PLANE_CAP_MARKER} and {writer}"
+                 input-byte-caps CapCase whose writer is {writer}"
             ));
         }
         if let Some(row_cap) = row_cap {
             for cap in caps.into_iter().filter(|cap| *cap != row_cap) {
                 findings.push(format!(
-                    "{writer}: entry {entry_name} has a {CONTROL_PLANE_CAP_MARKER} CapCase for {writer} with cap \
+                    "{writer}: entry {entry_name} has a {CONTROL_PLANE_INVOKE_METHOD} CapCase for {writer} with cap \
                      {cap}, but the req.input.<value> row is Validated at {row_cap}"
                 ));
             }

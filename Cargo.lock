@@ -1004,6 +1004,7 @@ dependencies = [
  "characters",
  "checkmodules",
  "config",
+ "controlplane",
  "friends",
  "friendsapi",
  "gateway",

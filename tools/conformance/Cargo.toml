@@ -32,6 +32,7 @@ apikeys = { workspace = true }
 apikeysapi = { workspace = true }
 characters = { workspace = true }
 config = { workspace = true }
+controlplane = { workspace = true }
 friends = { workspace = true }
 friendsapi = { workspace = true }
 gateway = { workspace = true }

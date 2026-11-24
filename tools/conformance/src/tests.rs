@@ -131,7 +131,12 @@ fn na(why: &'static str) -> Stance {
 // or deliberately diverge from — that fixed table rather than a synthetic one.
 
 fn cap_case(name: &'static str, cap: usize) -> CapCase {
-    CapCase { name, cap, probe: Arc::new(move |len| len > cap), exact: false }
+    CapCase { name, cap, probe: Arc::new(move |len| len > cap), exact: false, writer: None }
+}
+
+/// A `cp.invoke` input-value case marked as the proof of `writer`'s cap.
+fn writer_case(name: &'static str, writer: &'static str, cap: usize) -> CapCase {
+    CapCase { writer: Some(writer), ..cap_case(name, cap) }
 }
 
 /// The registry `checks::CREDENTIAL_CAPS` states today: `epic`/`google` at 65536,
@@ -588,6 +593,7 @@ fn cap_case_probe_plumbing_smoke() {
         cap: 8,
         probe: Arc::new(|len| len > 8),
         exact: false,
+        writer: None,
     };
     assert!(!(case.probe)(case.cap));
     assert!((case.probe)(case.cap + 1));
@@ -623,28 +629,62 @@ fn caps_entry(module: &'static str, cases: Vec<CapCase>) -> Entry {
 
 #[test]
 fn a_writer_with_its_cp_invoke_case_at_the_row_cap_is_clean() {
-    let entries = [caps_entry("mail", vec![cap_case("cp.invoke mail input value", 4096)])];
+    let entries = [caps_entry("mail", vec![writer_case("cp.invoke mail input value", "mail", 4096)])];
     let findings = control_plane_cap_findings(&writers(&["mail"]), &entries, &[invoke_row(4096)]);
     assert!(findings.is_empty(), "{findings:?}");
 }
 
-/// A `writes: true` module whose entry has no CapCase naming both `cp.invoke` and the
-/// module: a case for another writer, or one without the marker, does not count.
+/// A `writes: true` module whose entry has no CapCase marked with its writer is a
+/// finding: a case NAMED like its `cp.invoke` case but not marked does not count.
 #[test]
-fn a_writer_without_a_matching_cp_invoke_case_is_a_finding() {
-    let entries = [caps_entry(
-        "mail",
-        vec![cap_case("cp.invoke wallet input value", 4096), cap_case("mail input value", 4096)],
-    )];
+fn a_writer_without_a_marked_cp_invoke_case_is_a_finding() {
+    let entries = [caps_entry("mail", vec![cap_case("cp.invoke mail input value", 4096)])];
     let findings = control_plane_cap_findings(&writers(&["mail"]), &entries, &[invoke_row(4096)]);
     assert_eq!(findings.len(), 1, "{findings:?}");
     assert!(findings[0].contains("mail declares `writes: true`"), "{findings:?}");
     assert!(findings[0].contains("no executable input-byte-caps CapCase"), "{findings:?}");
 }
 
+/// The link is the typed field, not the name: a case renamed to mention neither
+/// `cp.invoke` nor its writer still proves that writer.
+#[test]
+fn a_renamed_marked_case_still_matches_its_writer() {
+    let entries = [caps_entry("mail", vec![writer_case("operator form value bound", "mail", 4096)])];
+    let findings = control_plane_cap_findings(&writers(&["mail"]), &entries, &[invoke_row(4096)]);
+    assert!(findings.is_empty(), "{findings:?}");
+}
+
+/// A case marked for a module that declares no `writes: true` manifest is a finding,
+/// even though every real writer is proven.
+#[test]
+fn a_case_marked_for_a_non_writer_is_a_finding() {
+    let entries = [
+        caps_entry("mail", vec![writer_case("cp.invoke mail input value", "mail", 4096)]),
+        caps_entry("wallet", vec![writer_case("cp.invoke wallet input value", "wallet", 4096)]),
+    ];
+    let findings = control_plane_cap_findings(&writers(&["mail"]), &entries, &[invoke_row(4096)]);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings[0].contains("case of wallet"), "{findings:?}");
+    assert!(findings[0].contains("no monolith manifest named wallet"), "{findings:?}");
+}
+
+/// A marked case carried by another module's entry neither proves its writer nor
+/// passes silently.
+#[test]
+fn a_marked_case_in_another_writers_entry_is_a_finding() {
+    let entries = [
+        caps_entry("mail", vec![writer_case("cp.invoke wallet input value", "wallet", 4096)]),
+        caps_entry("wallet", Vec::new()),
+    ];
+    let findings = control_plane_cap_findings(&writers(&["wallet"]), &entries, &[invoke_row(4096)]);
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    assert!(findings[0].contains("belong in entry wallet"), "{findings:?}");
+    assert!(findings[1].contains("wallet declares `writes: true`"), "{findings:?}");
+}
+
 #[test]
 fn a_cp_invoke_case_whose_cap_differs_from_the_validated_row_is_a_finding() {
-    let entries = [caps_entry("mail", vec![cap_case("cp.invoke mail input value", 2048)])];
+    let entries = [caps_entry("mail", vec![writer_case("cp.invoke mail input value", "mail", 2048)])];
     let findings = control_plane_cap_findings(&writers(&["mail"]), &entries, &[invoke_row(4096)]);
     assert_eq!(findings.len(), 1, "{findings:?}");
     assert!(findings[0].contains("cap 2048"), "{findings:?}");
@@ -653,7 +693,7 @@ fn a_cp_invoke_case_whose_cap_differs_from_the_validated_row_is_a_finding() {
 
 #[test]
 fn writers_with_no_validated_cp_invoke_row_is_a_finding() {
-    let entries = [caps_entry("mail", vec![cap_case("cp.invoke mail input value", 4096)])];
+    let entries = [caps_entry("mail", vec![writer_case("cp.invoke mail input value", "mail", 4096)])];
     let findings = control_plane_cap_findings(&writers(&["mail"]), &entries, &[]);
     assert_eq!(findings.len(), 1, "{findings:?}");
     assert!(findings[0].contains("is not Validated"), "{findings:?}");
@@ -663,7 +703,7 @@ fn writers_with_no_validated_cp_invoke_row_is_a_finding() {
 /// cap: the writers are a finding, even though the case's cap equals its planned cap.
 #[test]
 fn a_known_gap_cp_invoke_row_is_not_validated() {
-    let entries = [caps_entry("mail", vec![cap_case("cp.invoke mail input value", 4096)])];
+    let entries = [caps_entry("mail", vec![writer_case("cp.invoke mail input value", "mail", 4096)])];
     let (key, _) = invoke_row(4096);
     let gap = (key, InputPolicy::KnownGap { planned_cap: 4096, remediation: "fixture" });
     let findings = control_plane_cap_findings(&writers(&["mail"]), &entries, &[gap]);
@@ -674,7 +714,7 @@ fn a_known_gap_cp_invoke_row_is_not_validated() {
 /// A Validated `cp.invoke` row on another wire field is not the `req.input.<value>` row.
 #[test]
 fn a_validated_cp_invoke_row_on_another_field_is_not_the_invoke_row() {
-    let entries = [caps_entry("mail", vec![cap_case("cp.invoke mail input value", 4096)])];
+    let entries = [caps_entry("mail", vec![writer_case("cp.invoke mail input value", "mail", 4096)])];
     let (mut key, policy) = invoke_row(4096);
     key.wire_field_name = "req.module".into();
     let findings = control_plane_cap_findings(&writers(&["mail"]), &entries, &[(key, policy)]);
@@ -689,8 +729,8 @@ fn core_events_and_portal_map_to_the_admin_entry() {
     let entries = [caps_entry(
         "admin",
         vec![
-            cap_case("cp.invoke core.events input value", 4096),
-            cap_case("cp.invoke portal input value", 4096),
+            writer_case("cp.invoke core.events input value", "core.events", 4096),
+            writer_case("cp.invoke portal input value", "portal", 4096),
         ],
     )];
     let both = writers(&["core.events", "portal"]);
