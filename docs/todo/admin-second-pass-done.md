@@ -2,6 +2,21 @@
 
 Last updated: 2026-11-24
 
+- [x] **API key requests in the last 24 hours** (2026-11-24, admin-second-pass step 5b)
+  ADMIN2-62. Mockup: the revoke confirm's "Requests (24 h)" impact row. Removed by owner
+  ruling: `fake_requests` and `FAKE_REQUESTS_CAP` went, the confirm lists only the Key row,
+  the mockup row with them. The gateway still counts no requests per key.
+
+- [x] **Row-bound "Requests by this key" link** (2026-11-24, admin-second-pass step 5b)
+  ADMIN2-60. Mockup: the apikey row menu's "Requests by this key". Removed by plan D10: the
+  `key.requests` action, its `drawn_orders.txt` line and the mockup's audit menu group went;
+  no store records a request per key.
+
+- [x] **API key last used** (2026-11-24, admin-second-pass step 5b)
+  ADMIN2-59. Mockup: the Keys panel's "Last used" column. Removed by owner ruling:
+  `fake_last_used`, `FAKE_LAST_USED`, the table column and the mockup column and
+  `lastUsed` samples went; the gateway records no key use.
+
 - [x] **Audit log export** (2026-11-24, admin-second-pass step 5a)
   ADMIN2-69. Mockup: the Audit log head's "Export" button. Removed by plan D1 (no
   download carrier exists): the `log.export` action, its invoke arm and the mockup button.

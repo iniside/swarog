@@ -127,13 +127,13 @@ window.DATA = (() => {
     { name: "support-bot", scopes: ["accounts.read", "mail.send", "notifications.send"], keys: 1 },
   ];
   const apiKeys = [
-    { id: "ak_9f2c", name: "dedicated-eu-west", role: "game-server", prefix: "swg_live_9f2c…", created: "2026-06-02", by: "marta.k", lastUsed: "now", status: "active" },
-    { id: "ak_31d0", name: "dedicated-us-east", role: "game-server", prefix: "swg_live_31d0…", created: "2026-06-02", by: "marta.k", lastUsed: "now", status: "active" },
-    { id: "ak_77e1", name: "dedicated-staging", role: "game-server", prefix: "swg_live_77e1…", created: "2026-08-14", by: "jonas.l", lastUsed: "2 h ago", status: "active" },
-    { id: "ak_c4a8", name: "horde-agents", role: "ci-build", prefix: "swg_live_c4a8…", created: "2026-10-22", by: "marta.k", lastUsed: "4 min ago", status: "active" },
-    { id: "ak_05bb", name: "nightly-cook", role: "ci-build", prefix: "swg_live_05bb…", created: "2026-03-19", by: "priya.n", lastUsed: "9 h ago", status: "active" },
-    { id: "ak_e2f7", name: "metabase", role: "analytics-export", prefix: "swg_live_e2f7…", created: "2026-01-11", by: "marta.k", lastUsed: "1 d ago", status: "active" },
-    { id: "ak_1a6d", name: "zendesk-bridge", role: "support-bot", prefix: "swg_live_1a6d…", created: "2025-12-04", by: "sam.o", lastUsed: "62 d ago", status: "revoked" },
+    { id: "ak_9f2c", name: "dedicated-eu-west", role: "game-server", prefix: "swg_live_9f2c…", created: "2026-06-02", by: "marta.k", status: "active" },
+    { id: "ak_31d0", name: "dedicated-us-east", role: "game-server", prefix: "swg_live_31d0…", created: "2026-06-02", by: "marta.k", status: "active" },
+    { id: "ak_77e1", name: "dedicated-staging", role: "game-server", prefix: "swg_live_77e1…", created: "2026-08-14", by: "jonas.l", status: "active" },
+    { id: "ak_c4a8", name: "horde-agents", role: "ci-build", prefix: "swg_live_c4a8…", created: "2026-10-22", by: "marta.k", status: "active" },
+    { id: "ak_05bb", name: "nightly-cook", role: "ci-build", prefix: "swg_live_05bb…", created: "2026-03-19", by: "priya.n", status: "active" },
+    { id: "ak_e2f7", name: "metabase", role: "analytics-export", prefix: "swg_live_e2f7…", created: "2026-01-11", by: "marta.k", status: "active" },
+    { id: "ak_1a6d", name: "zendesk-bridge", role: "support-bot", prefix: "swg_live_1a6d…", created: "2025-12-04", by: "sam.o", status: "revoked" },
   ];
 
   const mail = [

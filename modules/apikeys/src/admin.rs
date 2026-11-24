@@ -13,7 +13,7 @@ use controlplane::{
     DataTable, Emphasis, EntityKindDecl, EntityRef, Field, FieldKind, FieldValue, FilterDef, FilterKind, FormSpec,
     InvokeCall, InvokeOutcome,
     Layout, Link, Manifest, NavEntry, Noun, PageDecl, PageInfo, PanelBody, PanelQuery, Point, PrepareCall, Primitive,
-    Provider, ReasonReq, Role, Row, SearchDecl, SearchHit, SearchQuery, SecretReveal, Then, Tone,
+    Provider, ReasonReq, Role, Row, SearchDecl, SearchHit, SearchQuery, SecretReveal, Then,
     DEFAULT_PANEL_DEADLINE_MS, DEFAULT_SEARCH_DEADLINE_MS,
 };
 use opsapi::Error;
@@ -35,7 +35,6 @@ pub(crate) const KEY_CREATE: &str = "key.create";
 pub(crate) const KEY_ROTATE: &str = "key.rotate";
 pub(crate) const KEY_CHANGE_ROLE: &str = "key.change-role";
 pub(crate) const KEY_REVOKE: &str = "key.revoke";
-pub(crate) const KEY_REQUESTS: &str = "key.requests";
 pub(crate) const ROLE_CREATE: &str = "role.create";
 pub(crate) const ROLE_EDIT: &str = "role.edit";
 pub(crate) const ROLE_DELETE: &str = "role.delete";
@@ -67,10 +66,6 @@ pub(crate) const ROLES_FOOT: &str = "Policies list the op methods modules serve 
 
 /// The operator logins the FAKE "created by" cell draws from.
 pub(crate) const FAKE_CREATORS: [&str; 4] = ["marta.k", "jonas.l", "priya.n", "sam.o"];
-/// The FAKE "last used" values after "now".
-pub(crate) const FAKE_LAST_USED: [&str; 4] = ["4 min ago", "2 h ago", "9 h ago", "1 d ago"];
-/// The FAKE "requests (24 h)" values are below this.
-pub(crate) const FAKE_REQUESTS_CAP: u64 = 50_000;
 
 pub(crate) const REVOKE_BODY: &str = "Requests signed with this key fail immediately on every process.";
 pub(crate) const ROLE_DELETE_BODY: &str = "A role still used by a key, revoked keys included, cannot be deleted.";
@@ -423,32 +418,6 @@ pub(crate) fn fake_creator(name: &str) -> &'static str {
     FAKE_CREATORS[(controlplane::fake_hash("apikeys.created_by", name) % FAKE_CREATORS.len() as u64) as usize]
 }
 
-/// The FAKE last-used cell: a "now" badge or a dim relative time. A revoked key cannot be in
-/// use, so it never draws "now": the pick that would is drawn as the oldest relative time.
-pub(crate) fn fake_last_used(name: &str, revoked: bool) -> Cell {
-    // FAKE: the gateway records no key use.
-    let pick = (controlplane::fake_hash("apikeys.last_used", name) % (FAKE_LAST_USED.len() as u64 + 1)) as usize;
-    match pick {
-        0 if revoked => cell(CellKind::Dim, FAKE_LAST_USED[FAKE_LAST_USED.len() - 1]),
-        0 => Cell { tone: Some(Tone::Ok), ..cell(CellKind::Badge, "now") },
-        n => cell(CellKind::Dim, FAKE_LAST_USED[n - 1]),
-    }
-}
-
-/// The FAKE requests in the last 24 hours, with thousands separators.
-pub(crate) fn fake_requests(name: &str) -> String {
-    // FAKE: the gateway counts no requests per key.
-    let n = (controlplane::fake_hash("apikeys.requests_24h", name) % FAKE_REQUESTS_CAP).to_string();
-    let mut out = String::new();
-    for (i, digit) in n.chars().enumerate() {
-        if i > 0 && (n.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-    out
-}
-
 fn key_row(row: &KeyRow) -> Row {
     let created = Cell {
         row: true,
@@ -462,7 +431,6 @@ fn key_row(row: &KeyRow) -> Row {
             cell(CellKind::MonoMuted, format!("{}…", row.prefix)),
             cell(CellKind::Ref, row.role.clone()),
             created,
-            fake_last_used(&row.name, row.revoked),
             cell(CellKind::Badge, status_text(row.revoked)),
         ],
         highlight: false,
@@ -491,7 +459,6 @@ pub(crate) fn keys_body(mut rows: Vec<KeyRow>, role_names: Vec<String>, total: O
             column("key", "Key", CellKind::MonoMuted),
             column("role", "Role", CellKind::Ref),
             column("created", "Created", CellKind::Dim),
-            column("last_used", "Last used", CellKind::Dim),
             column("status", "Status", CellKind::Badge),
         ],
         rows: rows.iter().map(key_row).collect(),
@@ -719,8 +686,6 @@ pub(crate) fn revoke_confirm_for(key: &KeyRow) -> ConfirmSpec {
         title: format!("Revoke {}?", key.name),
         impact: vec![
             ("Key".to_string(), id),
-            ("Last used".to_string(), fake_last_used(&key.name, key.revoked)),
-            ("Requests (24 h)".to_string(), cell(CellKind::Number, fake_requests(&key.name))),
         ],
         type_to_confirm: Some(key.name.clone()),
         ..revoke_confirm()
@@ -812,11 +777,6 @@ fn role_action(id: &str, label: &str, icon: &str, order: i32, then: Then) -> Act
 }
 
 pub(crate) fn manifest() -> Manifest {
-    let requests = Link::Page {
-        module: "audit".to_string(),
-        page: "log".to_string(),
-        params: BTreeMap::new(),
-    };
     Manifest {
         module: MODULE.to_string(),
         sections: Vec::new(),
@@ -879,7 +839,6 @@ pub(crate) fn manifest() -> Manifest {
                 prepare: true,
                 ..key_action(KEY_REVOKE, "Revoke…", "ban", 30, Role::Operator, Then::Confirm(revoke_confirm()), true)
             },
-            key_action(KEY_REQUESTS, "Requests by this key", "list", 40, Role::Viewer, Then::Link(requests), true),
             ActionDecl {
                 point: ActionPoint::PanelTool(ROLES.to_string()),
                 when_empty: true,

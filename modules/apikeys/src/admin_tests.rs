@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use controlplane::{
     order, ActionPoint, Align, CellKind, ConfirmTone, DataTable, Emphasis, FieldKind, InvokeCall, InvokeOutcome, Layout,
-    Link, PanelBody, PanelQuery, Point, PrepareCall, Primitive, Provider, ReasonReq, Role, SearchQuery, Then, Tone,
+    Link, PanelBody, PanelQuery, Point, PrepareCall, Primitive, Provider, ReasonReq, Role, SearchQuery, Then,
 };
 use opsapi::Status;
 use sqlx::PgPool;
@@ -144,15 +144,6 @@ fn manifest_declares_the_page_its_two_panels_kinds_search_and_row_actions() {
     assert_eq!(rotate.min_role, Role::Operator);
     assert_eq!(rotate.then, Then::Invoke);
 
-    let requests = m.actions.iter().find(|a| a.id == "key.requests").expect("key.requests");
-    assert_eq!(requests.point, ActionPoint::RowAction("apikey".into()));
-    assert_eq!((requests.label.as_str(), requests.icon.as_str(), requests.order), ("Requests by this key", "list", 40));
-    assert!(requests.implemented);
-    assert_eq!(requests.min_role, Role::Viewer);
-    assert_eq!(
-        requests.then,
-        Then::Link(Link::Page { module: "audit".into(), page: "log".into(), params: BTreeMap::new() })
-    );
 
     let create = m.actions.iter().find(|a| a.id == "key.create").expect("key.create");
     assert_eq!(create.point, ActionPoint::PageHead("keys".into()));
@@ -196,7 +187,7 @@ fn manifest_declares_the_page_its_two_panels_kinds_search_and_row_actions() {
         assert_eq!(a.min_role, Role::Operator, "{}", a.id);
         assert_eq!(a.emphasis, Emphasis::Default, "{}", a.id);
     }
-    assert_eq!(m.actions.len(), 8);
+    assert_eq!(m.actions.len(), 7);
 }
 
 fn role_row(name: &str, policy: &str) -> RoleRow {
@@ -252,13 +243,11 @@ fn the_revoke_confirm_names_the_key_its_impact_and_asks_for_its_name() {
     assert_eq!(c.type_to_confirm.as_deref(), Some("key-03"));
     assert_eq!(c.confirm_label, "Revoke key");
     let labels: Vec<_> = c.impact.iter().map(|(l, _)| l.as_str()).collect();
-    assert_eq!(labels, vec!["Key", "Last used", "Requests (24 h)"]);
+    assert_eq!(labels, vec!["Key"]);
     let id = &c.impact[0].1;
     assert_eq!((id.kind, id.value.as_str(), id.row), (CellKind::Mono, "ak_0003…", true));
     assert_eq!(id.more.len(), 1);
     assert_eq!((id.more[0].kind, id.more[0].value.as_str()), (CellKind::Text, "· ops"));
-    assert_eq!(c.impact[1].1, fake_last_used("key-03", false));
-    assert_eq!((c.impact[2].1.kind, c.impact[2].1.value.clone()), (CellKind::Number, fake_requests("key-03")));
 }
 
 #[test]
@@ -336,27 +325,11 @@ fn the_delete_role_confirm_is_a_danger_with_no_reason_and_names_the_role() {
 }
 
 #[test]
-fn fake_requests_are_stable_below_the_cap_and_grouped_by_thousands() {
-    for i in 0..200 {
-        let name = format!("key-{i}");
-        let drawn = fake_requests(&name);
-        assert_eq!(drawn, fake_requests(&name));
-        let n: u64 = drawn.replace(',', "").parse().unwrap();
-        assert!(n < FAKE_REQUESTS_CAP);
-        let digits = n.to_string();
-        let groups: Vec<_> = drawn.split(',').collect();
-        assert!(groups[0].len() <= 3 && !groups[0].is_empty(), "{drawn}");
-        assert!(groups[1..].iter().all(|g| g.len() == 3), "{drawn}");
-        assert_eq!(groups.concat(), digits);
-    }
-}
-
-#[test]
-fn a_key_row_draws_name_prefix_role_created_last_used_and_status() {
+fn a_key_row_draws_name_prefix_role_created_and_status() {
     let body = keys_body(vec![key(1, false), key(4, true)], vec!["ops".into()], Some(2), 1);
     let t = table(&body);
     let labels: Vec<_> = t.columns.iter().map(|c| c.label.as_str()).collect();
-    assert_eq!(labels, vec!["Name", "Key", "Role", "Created", "Last used", "Status"]);
+    assert_eq!(labels, vec!["Name", "Key", "Role", "Created", "Status"]);
     let row = &t.rows[0];
     assert_eq!(row.entity, Some(EntityRef { kind: "apikey".into(), id: "key-01".into() }));
     let c = &row.cells;
@@ -366,12 +339,8 @@ fn a_key_row_draws_name_prefix_role_created_last_used_and_status() {
     assert_eq!((c[3].kind, c[3].value.as_str(), c[3].row), (CellKind::Dim, "2026-11-23", true));
     assert_eq!(c[3].more.len(), 1);
     assert_eq!((c[3].more[0].kind, c[3].more[0].value.as_str()), (CellKind::User, fake_creator("key-01")));
-    assert_eq!(c[4], fake_last_used("key-01", false));
-    assert_eq!((c[5].kind, c[5].value.as_str(), c[5].tone), (CellKind::Badge, "active", None));
-    assert_eq!(fake_last_used("key-04", false).value, "now", "key-04's hash picks the now badge");
-    let last = &t.rows[1].cells[4];
-    assert_eq!((last.kind, last.value.as_str(), last.tone), (CellKind::Dim, "1 d ago", None));
-    assert_eq!(t.rows[1].cells[5].value, "revoked");
+    assert_eq!((c[4].kind, c[4].value.as_str(), c[4].tone), (CellKind::Badge, "active", None));
+    assert_eq!(t.rows[1].cells[4].value, "revoked");
     assert_eq!(body.meta.as_deref(), Some("1 active"));
     assert_eq!(t.search_placeholder.as_deref(), Some("Name or key prefix"));
     assert_eq!(t.item_noun, Some(controlplane::Noun::new("key", "keys")));
@@ -386,46 +355,12 @@ fn a_key_row_draws_name_prefix_role_created_last_used_and_status() {
 }
 
 #[test]
-fn fake_cells_are_stable_per_name_and_drawn_from_their_lists() {
-    let mut seen_now = false;
-    let mut seen_dim = false;
+fn the_fake_creator_is_stable_per_name_and_drawn_from_its_list() {
     for i in 0..64 {
         let name = format!("key-{i}");
         assert_eq!(fake_creator(&name), fake_creator(&name));
         assert!(FAKE_CREATORS.contains(&fake_creator(&name)));
-        let last = fake_last_used(&name, false);
-        assert_eq!(last, fake_last_used(&name, false));
-        match last.kind {
-            CellKind::Badge => {
-                assert_eq!((last.value.as_str(), last.tone), ("now", Some(Tone::Ok)));
-                seen_now = true;
-            }
-            CellKind::Dim => {
-                assert!(FAKE_LAST_USED.contains(&last.value.as_str()));
-                assert_eq!(last.tone, None);
-                seen_dim = true;
-            }
-            other => panic!("last used is a badge or dim text, got {other:?}"),
-        }
     }
-    assert!(seen_now && seen_dim, "64 names draw both shapes");
-}
-
-#[test]
-fn a_revoked_key_never_draws_now_as_its_last_use() {
-    let mut now_names = 0;
-    for i in 0..64 {
-        let name = format!("key-{i}");
-        let revoked = fake_last_used(&name, true);
-        assert_eq!(revoked, fake_last_used(&name, true));
-        assert_eq!((revoked.kind, revoked.tone), (CellKind::Dim, None), "{name} revoked draws {revoked:?}");
-        assert!(FAKE_LAST_USED.contains(&revoked.value.as_str()));
-        if fake_last_used(&name, false).value == "now" {
-            assert_eq!(revoked.value, FAKE_LAST_USED[FAKE_LAST_USED.len() - 1]);
-            now_names += 1;
-        }
-    }
-    assert!(now_names > 0, "64 names include one whose active key draws now");
 }
 
 #[test]

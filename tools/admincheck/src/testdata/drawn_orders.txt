@@ -55,7 +55,6 @@ header_action player | accounts | suspend-header | 30
 row_action apikey | apikeys | key.rotate | 10
 row_action apikey | apikeys | key.change-role | 20
 row_action apikey | apikeys | key.revoke | 30
-row_action apikey | apikeys | key.requests | 40
 row_action apirole | apikeys | role.edit | 10
 row_action apirole | apikeys | role.delete | 20
 row_action friendship | friends | friendship.remove | 0

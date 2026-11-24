@@ -12,13 +12,13 @@
       { label: "Rotate secret…", icon: "refresh", run: "PAGES.reveal('" + id + "')" },
       { label: "Change role…", icon: "shield", run: "UI.toast('Role picker…','info')" },
       { label: "Revoke…", icon: "ban", danger: true, run: `PAGES.revokeKey('${id}')` },
-    ] }, { c: { module: "audit", point: "entity.apikey.row_action", prim: "MenuAction" }, label: "audit", items: [{ label: "Requests by this key", icon: "list", run: "location.href='audit.html'" }] }];
+    ] }];
   });
   P.revokeKey = id => {
     const k = D.apiKeys.find(x => x.id === id);
     UI.confirm({ c: { module: "apikeys", point: "entity.apikey.row_action", prim: "ConfirmAction" }, title: `Revoke ${k.name}?`, icon: "ban",
       body: "Requests signed with this key fail immediately on every process.",
-      impact: [["Key", `<span class="mono">${k.id}</span> · ${k.role}`], ["Last used", k.lastUsed], ["Requests (24 h)", k.role === "game-server" ? "1.9 M" : "4,120"]],
+      impact: [["Key", `<span class="mono">${k.id}</span> · ${k.role}`]],
       reason: "e.g. leaked in CI log", typeToConfirm: k.name, confirm: "Revoke key", done: "Key revoked" });
   };
   P.createKey = () => UI.modal(`${frag({ module: "apikeys", point: "page", prim: "Form" }, `<div class="modal-head"><div class="modal-icon ok">${icon("key")}</div><div><h2>Create API key</h2><div class="muted" style="font-size:12px">The secret is shown once after creation.</div></div></div><div class="modal-body">${UI.form({ actions: false, fields: [
@@ -35,8 +35,8 @@
         body: table({ pager: false, cols: [{ label: "Role" }, { label: "Scopes", wrap: true }, { label: "Keys", num: true }], rows: D.apiRoles.map(r => [`<span style="font-weight:500">${r.name}</span>`, r.scopes.map(s => `<span class="tag">${s}</span>`).join(" "), r.keys]), rowMenu: () => `<button class="btn sm icon ghost">${icon("more")}</button>` }),
         foot: "Scopes are contributed by modules (e.g. lore.presign by lore)." });
       const keys = panel({ c: pg("apikeys", "DataTable"), title: "Keys", meta: `${D.apiKeys.filter(k => k.status === "active").length} active`, flush: true,
-        body: table({ filters: [{ k: "Status", v: "active + revoked" }, { k: "Role", v: "any" }], searchPlaceholder: "Name or key id", cols: [{ label: "Name" }, { label: "Key" }, { label: "Role" }, { label: "Created" }, { label: "Last used" }, { label: "Status" }],
-          rows: D.apiKeys.map(k => [`<span style="font-weight:500">${k.name}</span>`, `<span class="mono muted">${k.prefix}</span>`, `<span class="tag">${k.role}</span>`, `<span class="row"><span class="dim">${k.created}</span> ${userCell(k.by)}</span>`, k.lastUsed === "now" ? badge("now", "ok") : `<span class="dim">${k.lastUsed}</span>`, status(k.status)]),
+        body: table({ filters: [{ k: "Status", v: "active + revoked" }, { k: "Role", v: "any" }], searchPlaceholder: "Name or key id", cols: [{ label: "Name" }, { label: "Key" }, { label: "Role" }, { label: "Created" }, { label: "Status" }],
+          rows: D.apiKeys.map(k => [`<span style="font-weight:500">${k.name}</span>`, `<span class="mono muted">${k.prefix}</span>`, `<span class="tag">${k.role}</span>`, `<span class="row"><span class="dim">${k.created}</span> ${userCell(k.by)}</span>`, status(k.status)]),
           rowMenu: (r, i) => rowMenuBtn("apikey", D.apiKeys[i].id), total: `${D.apiKeys.length} keys` }) });
       return P.head("API keys", "Machine credentials for game servers, CI and integrations.", `<button class="btn primary" onclick="PAGES.createKey()">${icon("plus")} Create key</button>`) +
         `<div class="stack">${keys}${roles}</div>`;
