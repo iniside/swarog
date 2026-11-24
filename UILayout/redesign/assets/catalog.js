@@ -104,7 +104,7 @@ KpiTile {
       actions: ["Click → link"],
       states: ["ok", "loading", "empty", "stale", "error", "denied"],
       points: ["dashboard.tile", "page"],
-      demo: () => `<div class="grid g-2">${kpi({ c: C("lore", "dashboard.tile", "KpiTile"), label: "Lore seats", value: "8", delta: "users with Lore access", spark: [5, 6, 6, 7, 8, 8], noForce: true })}${kpi({ c: C("wallet", "dashboard.tile", "KpiTile"), label: "Embers spent (24 h)", value: "1.94 M", state: "error", noForce: true })}</div>`,
+      demo: () => `<div class="grid g-2">${kpi({ c: C("accounts", "dashboard.tile", "KpiTile"), label: "Active players (24 h)", value: "38,412", delta: '<span class="up">▲ 6.1%</span> vs prev. day', spark: [31, 30, 33, 32, 35, 34, 36, 35, 37, 38.4], noForce: true })}${kpi({ c: C("wallet", "dashboard.tile", "KpiTile"), label: "Embers spent (24 h)", value: "1.94 M", state: "error", noForce: true })}</div>`,
     },
     {
       id: "Timeline", name: "Event timeline / log", used: ["lore-events.html", "index.html", "scheduler.html", "config.html", "player.html?tab=inbox"],
@@ -221,7 +221,7 @@ ActionDef {
       actions: ["Open link", "Snooze (portal-side, per operator)"],
       states: ["ok", "loading", "error"],
       points: ["dashboard.attention"],
-      demo: () => frag(C("lore", "dashboard.attention", "AttentionItem"), `<div class="panel"><div class="pop-row" style="align-items:center"><span class="modal-icon warn" style="width:28px;height:28px">${icon("lock")}</span><div class="grow"><div class="t">2 stale Lore locks</div><div class="d">Held &gt; 14 days by sam.o (suspended).</div></div><a class="btn sm" href="lore-locks.html?stale=1">Review</a></div></div>`),
+      demo: () => frag(C("core.events", "dashboard.attention", "AttentionItem"), `<div class="panel"><div class="pop-row" style="align-items:center"><span class="modal-icon danger" style="width:28px;height:28px">${icon("zap")}</span><div class="grow"><div class="t">Subscription paused by poison event</div><div class="d">inventory.character-created.v1 stopped · 118 behind.</div></div><a class="btn sm" href="events.html">Resolve</a></div></div>`),
     },
     {
       id: "SearchResult", name: "Search provider", used: ["index.html?search=ash"],

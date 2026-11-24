@@ -147,13 +147,13 @@ window.DATA = (() => {
   ];
 
   const subs = [
-    { id: "audit.lore-branch-pushed.v1", topic: "lore.branch.pushed", module: "audit", cursor: "1/18442/0", lag: "0", state: "running" },
-    { id: "notifications.lore-resource-locked.v1", topic: "lore.resource.locked", module: "notifications", cursor: "1/9204/0", lag: "6", state: "running" },
-    { id: "wallet.player-promoted.v1", topic: "player.promoted", module: "wallet", cursor: "1/40118/0", lag: "273", state: "lagging" },
-    { id: "notifications.wallet-changed.v1", topic: "wallet.changed", module: "notifications", cursor: "1/88160/0", lag: "6", state: "running" },
-    { id: "inventory.character-created.v1", topic: "character.created", module: "inventory", cursor: "1/12904/0", lag: "118", state: "paused", poison: { id: "a3f9c2d1", err: "decode: missing field `class`", at: "2026-10-22 09:41" } },
-    { id: "leaderboard.match-finished.v1", topic: "match.finished", module: "leaderboard", cursor: "1/220418/0", lag: "0", state: "running" },
-    { id: "storage.player-deleted.v1", topic: "player.deleted", module: "storage", cursor: "1/311/0", lag: "0", state: "running" },
+    { id: "audit.lore-branch-pushed.v1", topic: "lore.branch.pushed", module: "audit", cursor: "1/18442/0", lag: "0", state: "active" },
+    { id: "notifications.lore-resource-locked.v1", topic: "lore.resource.locked", module: "notifications", cursor: "1/9204/0", lag: "6", state: "active" },
+    { id: "wallet.player-promoted.v1", topic: "player.promoted", module: "wallet", cursor: "1/40118/0", lag: "273", state: "active" },
+    { id: "notifications.wallet-changed.v1", topic: "wallet.changed", module: "notifications", cursor: "1/88160/0", lag: "6", state: "active" },
+    { id: "inventory.character-created.v1", topic: "character.created", module: "inventory", cursor: "1/12904/0", lag: "118", state: "paused", poison: { id: "a3f9c2d1", err: "bus: JSON codec error: missing field `class` at line 1 column 126", at: "Oct 22 09:41" } },
+    { id: "leaderboard.match-finished.v1", topic: "match.finished", module: "leaderboard", cursor: "1/220418/0", lag: "0", state: "active" },
+    { id: "storage.player-deleted.v1", topic: "player.deleted", module: "storage", cursor: "1/311/0", lag: "0", state: "active" },
   ];
 
   const audit = [
@@ -168,13 +168,13 @@ window.DATA = (() => {
   ];
 
   const ledger = [
-    { t: "2026-10-22 14:02", who: "MiraVoss", cur: "EMB", amt: -1200, bal: 91300, reason: "store.purchase · Frost Warden skin", ref: "tx_8a1f" },
-    { t: "2026-10-22 13:40", who: "NightOwl_77", cur: "GLD", amt: 340, bal: 3120, reason: "match.reward · ranked win", ref: "tx_8a1c" },
-    { t: "2026-10-22 10:02", who: "MiraVoss", cur: "EMB", amt: 500, bal: 92500, reason: "CS ticket #4471", ref: "tx_8a03" },
-    { t: "2026-10-22 09:41", who: "kestrel", cur: "TOK", amt: -1, bal: 2, reason: "store.purchase · reroll token", ref: "tx_89f7" },
-    { t: "2026-10-21 22:19", who: "Volkhv", cur: "GLD", amt: 120, bal: 1310, reason: "quest.complete · Ashgate Bounty", ref: "tx_89c2" },
-    { t: "2026-10-21 20:05", who: "ash_and_ember", cur: "EMB", amt: -18400, bal: 0, reason: "chargeback", ref: "tx_89a0" },
-    { t: "2026-10-21 18:30", who: "aiko.tanaka", cur: "EMB", amt: 10000, bal: 12400, reason: "playtest budget", ref: "tx_8991" },
+    { t: "2026-10-22 14:02", who: "MiraVoss", cur: "EMB", amt: -1200, bal: 91300, reason: "CS ticket #4476 · duplicate grant reversed", ref: uuid("ledger:1") },
+    { t: "2026-10-22 13:40", who: "NightOwl_77", cur: "GLD", amt: 340, bal: 3120, reason: "CS ticket #4479 · ranked reward not delivered", ref: uuid("ledger:2") },
+    { t: "2026-10-22 10:02", who: "MiraVoss", cur: "EMB", amt: 500, bal: 92500, reason: "CS ticket #4471", ref: uuid("ledger:3") },
+    { t: "2026-10-22 09:41", who: "kestrel", cur: "TOK", amt: -1, bal: 2, reason: "CS ticket #4483 · token granted twice", ref: uuid("ledger:4") },
+    { t: "2026-10-21 22:19", who: "Volkhv", cur: "GLD", amt: 120, bal: 1310, reason: "CS ticket #4485 · Ashgate reward not delivered", ref: uuid("ledger:5") },
+    { t: "2026-10-21 20:05", who: "ash_and_ember", cur: "EMB", amt: -18400, bal: 0, reason: "chargeback", ref: uuid("ledger:6") },
+    { t: "2026-10-21 18:30", who: "aiko.tanaka", cur: "EMB", amt: 10000, bal: 12400, reason: "playtest budget", ref: uuid("ledger:7") },
   ];
 
   const currencies = [

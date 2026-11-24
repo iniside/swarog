@@ -17,8 +17,8 @@
   var S = window.Swarog;
   var c = { module: "lore", point: "dashboard.tile", prim: "KpiTile" };
   document.getElementById("root").innerHTML = '<div class="pv-row">' +
-    S.KpiTile({ c: c, noForce: true, label: "Lore store used", value: "13.29", unit: "TB", delta: '<span class="bad-up">▲ 1.19 TB</span> this month', spark: [6.2, 7.4, 8.9, 10.6, 12.1, 13.29], sparkColor: "var(--chart-2)" }) +
-    S.KpiTile({ c: c, noForce: true, label: "Lore seats", value: "8", delta: "users with Lore access", bar: 66 }) +
+    S.KpiTile({ c: { module: "storage", point: "dashboard.tile", prim: "KpiTile" }, noForce: true, label: "Cloud saves used", value: "1.82", unit: "TB", delta: "64 MB quota / player", spark: [1.5, 1.55, 1.6, 1.64, 1.7, 1.76, 1.82], sparkColor: "var(--chart-2)" }) +
+    S.KpiTile({ c: { module: "accounts", point: "dashboard.tile", prim: "KpiTile" }, noForce: true, label: "Active players (24 h)", value: "38,412", delta: '<span class="up">▲ 6.1%</span> vs prev. day', spark: [31, 30, 33, 32, 35, 34, 36, 35, 37, 38.4] }) +
     S.KpiTile({ c: { module: "wallet", point: "dashboard.tile", prim: "KpiTile" }, noForce: true, label: "Embers spent (24 h)", value: "1.94 M", state: "error" }) +
     S.KpiTile({ c: c, noForce: true, label: "Pushes (24 h)", value: "41", state: "loading" }) + '</div>';
 </script>

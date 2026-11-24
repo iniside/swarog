@@ -132,8 +132,8 @@
     meta: { nav: "events", crumbs: [plat, ["Event plane"]] },
     render: () => {
       const tiles = [
-        { label: "Subscriptions", value: String(D.subs.length), delta: ["running", "lagging", "paused"].map(st => `${D.subs.filter(x => x.state === st).length} ${st}`).join(" · ") },
-        { label: "Max lag", value: "273", delta: '<span class="bad-up">wallet.player-promoted.v1 (wallet down)</span>' },
+        { label: "Subscriptions", value: String(D.subs.length), delta: ["active", "paused", "retired"].map(st => `${D.subs.filter(x => x.state === st).length} ${st}`).join(" · ") },
+        { label: "Max lag", value: "273", delta: '<span class="bad-up">wallet.player-promoted.v1 (active)</span>' },
       ].map(t => kpi({ ...t, c: pg("core.events", "KpiTile") })).join("");
       const subsTbl = panel({ c: pg("core.events", "DataTable"), title: "Subscriptions", flush: true,
         body: table({ pager: false, filters: [{ k: "State", v: "any" }], searchPlaceholder: "Subscription id or topic",
@@ -146,8 +146,8 @@
         banner: `<div class="banner err">${icon("alert")} Consumer failed 5× on the same event and stopped to preserve ordering. ${s.lag} events are waiting behind it.</div>`,
         body: `${props([["Event", `<span class="mono">character.created #${s.poison.id}</span>`], ["Consumer", s.module], ["Error", `<span class="mono" style="color:var(--err)">${esc(s.poison.err)}</span>`]])}<div class="code" style="margin-top:10px">{
   "character_id": "${ch.id}",
-  "player_id": "${ch.player_id}",
-  "name": "${ch.name}"
+  "name": "${ch.name}",
+  "player_id": "${ch.player_id}"
 }</div><div class="row" style="margin-top:12px;flex-wrap:wrap"><button class="btn primary" onclick="UI.toast('Resumed inventory.character-created.v1; its failing event is retried')">${icon("play")} Resume (retry event)</button><button class="btn" onclick="PAGES.skipPoison()">${icon("skip")} Skip event…</button><button class="btn ghost">${icon("download")} Copy payload</button><span class="muted" style="font-size:12px">Fix the consumer first, then Resume. Skip advances the checkpoint past this event.</span></div>` });
       return P.head("Event plane", "Durable topics, subscription checkpoints and lag.", "") + `<div class="grid g-tiles" style="margin-bottom:12px">${tiles}</div><div class="stack">${poison}${subsTbl}</div>`;
     },

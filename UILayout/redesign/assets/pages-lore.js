@@ -18,9 +18,6 @@
       { label: "View locks", icon: "lock", run: `location.href='lore-locks.html?repo=${name}'` },
       { label: "Copy clone URL", icon: "copy", run: `UI.toast('Copied lore://lore.emberline.gg/${name}')` },
     ] },
-    { c: { module: "audit", point: "entity.repository.row_action", prim: "MenuAction" }, label: "audit", items: [
-      { label: "Audit trail", icon: "list", run: "location.href='audit.html'" },
-    ] },
     { c: { module: "lore", point: "entity.repository.row_action", prim: "MenuAction" }, label: "danger", items: [
       { label: "Obliterate files…", icon: "trash", danger: true, run: `PAGES.obliterate('${name}')` },
     ] },

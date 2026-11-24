@@ -8,7 +8,7 @@ _None._
 
 ## Open
 
-### Known limits (lore)
+### Known limits (admin-second-pass step 5a)
 
 - [ ] **Audit of Lore operator actions**
   Not built: no audit topic for Lore actions and no repository audit tab.
