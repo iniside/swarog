@@ -2,8 +2,8 @@
 //! untitled table over every `audit.log` row, newest first, narrowed by topic, actor and a
 //! target-or-detail search, paged on `(at, id)`; and the dashboard's "Recent operator
 //! activity" timeline of the newest `admin.action` rows, whose tool links to the page.
-//! Nothing here writes: the module declares no writes and the dashboard tool is a link. It reads only schema `audit` (through [`crate::store`]),
-//! never another module's tables.
+//! Nothing here writes: the module declares no writes and the dashboard tool is a link.
+//! It reads only schema `audit` (through [`crate::store`]), never another module's tables.
 
 use std::collections::BTreeMap;
 

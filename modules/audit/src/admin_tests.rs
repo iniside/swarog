@@ -1,5 +1,5 @@
-//! The audit provider: the manifest (nav, page, the untitled table, the disabled Export
-//! and the refusing `invoke`), the table's columns, cells, toolbar and pager, and the
+//! The audit provider: the manifest (nav, page, the untitled table and the refusing
+//! `invoke`), the table's columns, cells, toolbar and pager, and the
 //! filter params reaching the store through `Provider::panel` against the local DB.
 
 use std::collections::BTreeMap;

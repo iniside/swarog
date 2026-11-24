@@ -1,6 +1,6 @@
 //! `core.events` maps each [`VerbError`] to its status, and an unknown subscription is
-//! the verb's own `NotFound` with no pre-read. Live-Postgres tests skip without a
-//! database (`testdb`).
+//! the verb's own `NotFound` with no pre-read. Live-Postgres tests fail without a
+//! database unless `TESTDB_ALLOW_SKIP` is set (`testdb`).
 
 use super::*;
 
@@ -164,9 +164,8 @@ fn consumer_is_the_subscription_id_prefix() {
 fn manifest_declares_only_backed_tiles_and_row_actions() {
     let manifest = manifest();
     assert_eq!(manifest.pages[0].tiles, [KPI_SUBSCRIPTIONS, KPI_MAX_LAG]);
-    let row_actions: Vec<&str> =
-        manifest.actions.iter().filter(|a| a.id.starts_with("sub.")).map(|a| a.id.as_str()).collect();
-    assert_eq!(row_actions, [SUB_PAUSE, SUB_RESUME, SUB_RETRY]);
+    let actions: Vec<&str> = manifest.actions.iter().map(|a| a.id.as_str()).collect();
+    assert_eq!(actions, [POISON_RESUME, POISON_SKIP, POISON_COPY, SUB_PAUSE, SUB_RESUME, SUB_RETRY]);
 }
 
 #[tokio::test]
@@ -191,4 +190,37 @@ async fn subscription_row_shows_the_stored_cursor_and_the_id_prefix() {
     assert_eq!(labels, ["Subscription", "Topic", "Consumer", "Checkpoint", "Lag", "State"]);
     let cells: Vec<&str> = table.rows[0].cells.iter().map(|c| c.value.as_str()).collect();
     assert_eq!(&cells[..5], [id.as_str(), &format!("{id} v1"), "core-events", "4/77/9", "0"]);
+}
+
+fn property<'a>(items: &'a [(String, Cell)], label: &str) -> &'a str {
+    items.iter().find(|(l, _)| l == label).map(|(_, c)| c.value.as_str()).unwrap_or_else(|| panic!("no {label} property"))
+}
+
+#[tokio::test]
+async fn details_consumer_is_the_id_prefix() {
+    let Some(pool) = test_pool().await else { return };
+    let id = unique("core-events.details");
+    insert_sub(&pool, &id, "active").await;
+    let provider = EventsProvider::new(pool.clone());
+    let body = provider.panel(panel_query(DETAILS, &id)).await;
+    delete_sub(&pool, &id).await;
+    let Primitive::PropertyList(list) = body.unwrap().primitive else { panic!("the details panel is a property list") };
+    assert_eq!(property(&list.items, "Consumer"), "core-events");
+}
+
+/// The poison panel shows the first paused subscription, which on a shared database may
+/// be another test's, so the Consumer is checked against the prefix of the heading it names.
+#[tokio::test]
+async fn poison_consumer_is_the_id_prefix() {
+    let Some(pool) = test_pool().await else { return };
+    let id = unique("core-events.poison");
+    insert_sub(&pool, &id, "paused").await;
+    let provider = EventsProvider::new(pool.clone());
+    let body = provider.panel(panel_query(POISON, &id)).await;
+    delete_sub(&pool, &id).await;
+    let body = body.unwrap();
+    let heading = body.heading.expect("a paused subscription is named");
+    let Primitive::PropertyList(list) = body.primitive else { panic!("the poison panel is a property list") };
+    let prefix = heading.split('.').next().unwrap();
+    assert_eq!(property(&list.items, "Consumer"), prefix);
 }
