@@ -139,6 +139,35 @@ async fn insert_sub(
     .unwrap();
 }
 
+/// The event ids on `topic` in log order.
+async fn event_ids(pool: &PgPool, topic: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT event_id FROM asyncevents.events WHERE topic = $1 \
+         ORDER BY generation, producer_xid, tie_breaker",
+    )
+    .bind(topic)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+/// Puts subscription `id`'s cursor on `(generation 0, xid, tie)` and makes it healthy,
+/// as a worker's successful delivery of that event does.
+async fn deliver_onto(pool: &PgPool, id: &str, xid: &str, tie: i64) {
+    sqlx::query(
+        "UPDATE asyncevents.subscriptions \
+         SET cursor_generation = 0, cursor_xid = $2::xid8, cursor_tie = $3, \
+             consecutive_failures = 0, next_attempt_at = NULL, state = 'active', updated_at = now() \
+         WHERE subscription_id = $1",
+    )
+    .bind(id)
+    .bind(xid)
+    .bind(tie)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 async fn cleanup(pool: &PgPool, topic: &str, id: &str) {
     let _ = sqlx::query("DELETE FROM asyncevents.events WHERE topic = $1")
         .bind(topic)
@@ -420,11 +449,155 @@ async fn skip_with_no_eligible_event_is_nothing_to_skip() {
     let topic = unique("evctl.empty");
     let id = unique("sub.empty");
     insert_sub(&pool, &id, &topic, "paused", 2, (0, "0".to_string(), 0)).await;
+    let before = snapshot(&pool, &id).await.unwrap();
 
     let err = skip(&pool, &id, "r", None).await.unwrap_err();
     assert!(matches!(&err, VerbError::NothingToSkip { id: e } if *e == id), "unexpected: {err}");
     let resolved = skip(&pool, &id, "r", Some("e")).await.unwrap();
     assert!(matches!(resolved, SkipResult::AlreadyResolved { healthy: false }), "{resolved:?}");
+    assert_eq!(snapshot(&pool, &id).await.unwrap(), before, "neither skip moved anything");
+
+    cleanup(&pool, &topic, &id).await;
+}
+
+/// `resume_retry` reactivates a paused subscription and clears its failure count,
+/// backoff window and last error; the cursor stays.
+#[tokio::test]
+async fn resume_retry_resets_failures_and_activates() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique("evctl.resumeretry");
+    let id = unique("sub.resumeretry");
+    insert_sub(&pool, &id, &topic, "paused", 9, (0, "0".to_string(), 0)).await;
+
+    let (before, after) = resume_retry(&pool, &id).await.unwrap();
+    assert_eq!((before.state.as_str(), before.consecutive_failures), ("paused", 9));
+    assert_eq!(after.state, "active", "resume_retry activates");
+    assert_eq!(after.consecutive_failures, 0, "resume_retry resets the failure count");
+    assert_eq!(after.next_attempt_at, None, "resume_retry clears the backoff window");
+    assert_eq!(after.last_error, None, "resume_retry clears the last error");
+    assert_eq!(after.cursor, before.cursor, "resume_retry must NOT move the cursor");
+
+    cleanup(&pool, &topic, &id).await;
+}
+
+/// `resume` reactivates and clears the backoff window but leaves the failure count and
+/// last error for `retry`.
+#[tokio::test]
+async fn resume_activates_but_leaves_failures() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique("evctl.resume");
+    let id = unique("sub.resume");
+    insert_sub(&pool, &id, &topic, "paused", 9, (0, "0".to_string(), 0)).await;
+
+    let (before, after) = resume(&pool, &id).await.unwrap();
+    assert_eq!(before.state, "paused");
+    assert_eq!(after.state, "active", "resume activates");
+    assert_eq!(after.consecutive_failures, 9, "resume leaves the failure count");
+    assert_eq!(after.last_error, before.last_error, "resume leaves the last error");
+    assert_eq!(after.next_attempt_at, None, "resume clears the backoff window");
+    assert_eq!(after.cursor, before.cursor, "resume must NOT move the cursor");
+
+    cleanup(&pool, &topic, &id).await;
+}
+
+/// `poison_event` is the first eligible event past the cursor (not the event the cursor
+/// is on, not a later one), moves nothing, and is `None` once the cursor is on the last
+/// event.
+#[tokio::test]
+async fn poison_event_is_the_first_event_past_the_cursor() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique("evctl.poison");
+    let id = unique("sub.poison");
+    let ties = [unique_tie(), unique_tie(), unique_tie()];
+    for (xid, tie) in ["101", "102", "103"].into_iter().zip(ties) {
+        insert_synthetic_event(&pool, &topic, xid, tie).await;
+    }
+    let ids = event_ids(&pool, &topic).await;
+    // The cursor is ON event 101 (consumed), so 102 is the one the worker attempts next.
+    insert_sub(&pool, &id, &topic, "paused", 4, (0, "101".to_string(), ties[0])).await;
+    let before = snapshot(&pool, &id).await.unwrap();
+
+    let ev = poison_event(&pool, &id).await.unwrap().expect("an event past the cursor");
+    assert_eq!(ev.event_id, ids[1], "the first event past the cursor");
+    assert_eq!((ev.topic.as_str(), ev.version), (topic.as_str(), 1));
+    assert_eq!(ev.payload["xid"], 102, "payload: {}", ev.payload);
+    assert_eq!(snapshot(&pool, &id).await.unwrap(), before, "poison_event moves nothing");
+
+    deliver_onto(&pool, &id, "103", ties[2]).await;
+    let none = poison_event(&pool, &id).await.unwrap();
+    assert!(none.is_none(), "no event past the last one: {none:?}");
+
+    cleanup(&pool, &topic, &id).await;
+}
+
+/// `skip` with the previewed event steps past that event only: the next preview is the
+/// event after it.
+#[tokio::test]
+async fn skip_expected_skips_only_the_previewed_event() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique("evctl.skipexpected");
+    let id = unique("sub.skipexpected");
+    let ties = [unique_tie(), unique_tie(), unique_tie()];
+    for (xid, tie) in ["201", "202", "203"].into_iter().zip(ties) {
+        insert_synthetic_event(&pool, &topic, xid, tie).await;
+    }
+    let ids = event_ids(&pool, &topic).await;
+    insert_sub(&pool, &id, &topic, "paused", 20, (0, "0".to_string(), 0)).await;
+
+    let preview = poison_event(&pool, &id).await.unwrap().expect("a poison event");
+    assert_eq!(preview.event_id, ids[0]);
+    let out = skipped(skip(&pool, &id, "poison", Some(&preview.event_id)).await.unwrap());
+    assert_eq!(out.skipped_event_id, preview.event_id);
+    assert_eq!(out.after.cursor, format!("0/201/{}", ties[0]), "the cursor lands on the previewed event only");
+    assert_eq!((out.after.state.as_str(), out.after.consecutive_failures), ("active", 0));
+    let next = poison_event(&pool, &id).await.unwrap().expect("the following event");
+    assert_eq!(next.event_id, ids[1], "skip stepped past one event, no more");
+
+    cleanup(&pool, &topic, &id).await;
+}
+
+/// A retry delivered the previewed event before the operator's skip: the subscription is
+/// healthy, so `skip` with that event is `AlreadyResolved { healthy: true }` and moves
+/// nothing (with `None` it would be `Healthy`, see
+/// `skip_refuses_a_healthy_subscription`).
+#[tokio::test]
+async fn skip_expected_after_a_retry_delivered_it_is_already_resolved() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique("evctl.healed");
+    let id = unique("sub.healed");
+    let ties = [unique_tie(), unique_tie()];
+    for (xid, tie) in ["301", "302"].into_iter().zip(ties) {
+        insert_synthetic_event(&pool, &topic, xid, tie).await;
+    }
+    insert_sub(&pool, &id, &topic, "paused", 20, (0, "0".to_string(), 0)).await;
+    let preview = poison_event(&pool, &id).await.unwrap().expect("a poison event");
+
+    deliver_onto(&pool, &id, "301", ties[0]).await;
+    let before = snapshot(&pool, &id).await.unwrap();
+    let resolved = skip(&pool, &id, "late", Some(&preview.event_id)).await.unwrap();
+    assert!(matches!(resolved, SkipResult::AlreadyResolved { healthy: true }), "{resolved:?}");
+    assert_eq!(snapshot(&pool, &id).await.unwrap(), before, "the delivered cursor stays; 302 is not skipped");
+
+    cleanup(&pool, &topic, &id).await;
+}
+
+/// The previewed event is not the next one (another event blocks): `skip` is
+/// `AlreadyResolved { healthy: false }` and moves nothing, never skipping the blocker.
+#[tokio::test]
+async fn skip_expected_behind_another_event_is_already_resolved() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique("evctl.blocked");
+    let id = unique("sub.blocked");
+    for xid in ["401", "402"] {
+        insert_synthetic_event(&pool, &topic, xid, unique_tie()).await;
+    }
+    let ids = event_ids(&pool, &topic).await;
+    insert_sub(&pool, &id, &topic, "paused", 20, (0, "0".to_string(), 0)).await;
+    let before = snapshot(&pool, &id).await.unwrap();
+
+    let resolved = skip(&pool, &id, "wrong event", Some(&ids[1])).await.unwrap();
+    assert!(matches!(resolved, SkipResult::AlreadyResolved { healthy: false }), "{resolved:?}");
+    assert_eq!(snapshot(&pool, &id).await.unwrap(), before, "neither event is skipped");
 
     cleanup(&pool, &topic, &id).await;
 }

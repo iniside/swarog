@@ -121,16 +121,35 @@ async fn retired_subscription_is_invalid() {
     delete_sub(&pool, &id).await;
 }
 
+/// A pool whose every query fails, so a plane call through it is `Internal`.
+fn unreachable_pool() -> PgPool {
+    sqlx::postgres::PgPoolOptions::new()
+        .acquire_timeout(std::time::Duration::from_millis(250))
+        .connect_lazy("postgres://gamebackend:gamebackend@127.0.0.1:1/gamebackend?sslmode=disable")
+        .expect("lazy pool from a well-formed DSN")
+}
+
 /// A database failure reaches the provider as `Internal`.
 #[tokio::test]
 async fn database_failure_is_internal() {
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .acquire_timeout(std::time::Duration::from_millis(250))
-        .connect_lazy("postgres://gamebackend:gamebackend@127.0.0.1:1/gamebackend?sslmode=disable")
-        .expect("lazy pool from a well-formed DSN");
-    let provider = EventsProvider::new(pool);
+    let provider = EventsProvider::new(unreachable_pool());
     for action in VERBS {
         let err = provider.invoke(invoke_call(action, "core-events.unreachable")).await.expect_err(action);
         assert_eq!(err.status, opsapi::Status::Internal, "{action}: {}", err.msg);
+    }
+}
+
+/// `poison.skip` without a previewed event (no item, or an item naming no event) is
+/// `Invalid` before any plane call: the pool is unreachable, so a call to `skip` would
+/// answer `Internal` instead.
+#[tokio::test]
+async fn skip_without_a_previewed_event_is_invalid_without_calling_skip() {
+    let provider = EventsProvider::new(unreachable_pool());
+    let id = "core-events.unreachable";
+    for item in [None, Some(format!("{id}#"))] {
+        let mut call = invoke_call(POISON_SKIP, id);
+        call.item = item.clone();
+        let err = provider.invoke(call).await.expect_err("skip without a previewed event");
+        assert_eq!((err.status, err.msg.as_str()), (opsapi::Status::Invalid, SKIP_NEEDS_ITEM), "{item:?}");
     }
 }
