@@ -1,6 +1,6 @@
 # Splitproof
 
-Last updated: 2026-11-23
+Last updated: 2026-11-24
 
 ## In progress
 
@@ -22,6 +22,18 @@ _None._
   SPLITPROOF-02. The `Err` arm does `e.to_string().contains(want)` (tools/splitproof/src/main.rs:7109,
   2026-07-11). Typed edge codes (audit-remediation step 16) allow re-pointing it.
   Source: docs/plans/2026-07-13-1415-audit-remediation-plan.md:204.
+
+### Known limits (admin-control-plane-redesign step 25)
+
+- [ ] **Admin redesign splitproof groups not rewritten (Step 25h)**
+  The owner dropped Step 25h (2026-11-24). The groups it was to rewrite against the redesigned
+  portal stay as they are: 25h1 portal core (AD0–AD6g, ADX1–ADX3b, `admin_csrf`, login,
+  lockout, rate limit, CSRF, reveal, audit trail, killed-provider and viewer-denied additions);
+  25h2 monolith parity (M3/M3b, WL6m, NT4m, ML3–ML4b, `mail_form`, `wallet_form`); 25h3
+  cross-process money and inbox (WL3–WL6, NT2/NT2b/NT2c, NT4, PH3, PH6, PH11, PY7,
+  `inbox_form`); 25h4 FR8, GR5, the config CAS edit and one real invoke per writing provider.
+  Scope and per-group notes: the Step 25 **Splitproof** list in
+  `docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md`.
 
 ### Known limits (admin-control-plane-redesign step 20)
 

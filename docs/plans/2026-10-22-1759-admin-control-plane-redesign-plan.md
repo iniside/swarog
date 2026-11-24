@@ -3268,6 +3268,8 @@ second only for `core/` or a gate). Steps 25a–25g depend on no port after Step
 admincheck finding Step 24 (24.a3) adds, so the owner may move them earlier. A backfill test
 that exposes a bug is fixed at its authority in the same step, or listed under **Leftovers
 for owner**. Each step runs its own crates' tests, one rollout at a time.
+Owner, 2026-11-24: a backfill step adds only the items no existing test covers; it never
+duplicates one.
 - **25a — Step 8a fixes.** `[opus]` core-implementer: the test migrate race and the
   undecodable claimed row (release before the 503), each with a test that fails before the
   fix. Files: `core/admin/src/tests.rs` and the claim path in `core/admin/src`.
@@ -3316,7 +3318,9 @@ for owner**. Each step runs its own crates' tests, one rollout at a time.
   - **25g1:** `tools/conformance`: the input-inventory and writer-check tests.
   - **25g2:** every admincheck fixture listed here and in Steps 9a, 9b and 10a, plus one
     failing fixture per finding kind and the valid manifest with zero findings.
-- **25h — splitproof.** `[opus]` test-author: the **Splitproof** list below, one fleet run
+- **25h — splitproof.** Dropped by the owner (2026-11-24): not run in this plan; the open
+  groups are recorded in `docs/todo/splitproof.md`. The original scope follows.
+  `[opus]` test-author: the **Splitproof** list below, one fleet run
   per step, in order (`tools/splitproof/src/main.rs`; PY7 in `party_checks.rs`).
   proof-auditor audits; split is the at-risk topology for every engine assertion. 25h4 ends
   the red of the intermediate gate.
