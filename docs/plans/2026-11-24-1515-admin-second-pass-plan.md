@@ -1,6 +1,6 @@
 # Admin second pass: remove fakes and dead buttons, make the rest real
 
-Status: Steps 1-5b approved by the owner 2026-11-24; later steps wait for the owner
+Status: Steps 1-10 approved by the owner 2026-11-24; later steps wait for the owner
 
 Plan slug: admin-second-pass. Draft location until approval: C:\Users\lukas\.claude\plans\admin-second-pass.md;
 after approval it is copied to docs/plans/2026-11-24-1515-admin-second-pass-plan.md.
@@ -514,4 +514,5 @@ item for the download carrier plan with its five buttons (D1).
 8. D14: agreed.
 9. ADMIN2-19 stays in the plan.
 
-Released so far: "zrob kroki 1-5" (Steps 1, 2, 3, 4, 5a, 5b).
+Released so far: "zrob kroki 1-5" (Steps 1, 2, 3, 4, 5a, 5b); "kroki 6-10" (Steps 6, 7a, 7b, 8a,
+8b, 9, 10).
