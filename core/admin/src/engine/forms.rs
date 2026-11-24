@@ -116,8 +116,16 @@ async fn claimed(pool: &PgPool, row: Option<PgRow>) -> anyhow::Result<Option<For
         Err(err) => {
             let id = row.try_get::<String, _>("id");
             let claimed_at = row.try_get::<Option<i64>, _>("claimed_us");
-            if let (Ok(id), Ok(claimed_at)) = (id, claimed_at) {
-                end_claim(pool, &id, claimed_at, false).await;
+            match (id, claimed_at) {
+                (Ok(id), Ok(claimed_at)) => end_claim(pool, &id, claimed_at, false).await,
+                (id, claimed_at) => {
+                    let (id_err, claimed_err) = (id.err(), claimed_at.err());
+                    tracing::warn!(
+                        ?id_err,
+                        ?claimed_err,
+                        "admin forms: an undecodable claimed row could not be released; it is held for the claim window"
+                    );
+                }
             }
             Err(err)
         }

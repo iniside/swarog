@@ -3359,6 +3359,8 @@ for owner**. Each step runs its own crates' tests, one rollout at a time.
     outside `ensure_schema`'s once-cell, so on a freshly wiped schema two tests can run
     `CREATE TABLE IF NOT EXISTS` for `admin.forms` at once and fail on a duplicate
     `pg_type` key (passes on rerun). Route them through the once-cell;
+    already closed by 7a12fa56 (`Admin::migrate` runs through `lifecycle::Ddl` under
+    `pg_advisory_xact_lock`, `core/lifecycle/src/ddl.rs:182-236`); 25a changed nothing for it;
   - back/forward cache: after an `HX-Redirect`, htmx keeps `hx-disabled-elt` buttons
     disabled, and a page restored from the browser's back/forward cache shows them
     disabled until reload. `admin.js` re-enables `[data-disabled-by-htmx]` on a
