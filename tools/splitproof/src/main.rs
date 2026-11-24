@@ -31,6 +31,7 @@ use splitproof::{fleet_liveness, Running};
 use crate::idp::Idp;
 use crate::pushws::{Frame, PushClient};
 
+mod accounts_admin_checks;
 mod apikeys_admin_checks;
 mod audit_admin_checks;
 mod characters_admin_checks;
@@ -536,6 +537,8 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
     Box::pin(scheduler_admin_checks::assertions(ctx, pool, p, &m, &jar, "m")).await?;
     Box::pin(audit_admin_checks::assertions(ctx, pool, p, &m, &jar, "m")).await?;
     wallet_ledger_checks::assertions(ctx, pool, p, &m, &jar, "m").await?;
+    // Boxed: `run`'s future sits on the main thread's stack under `block_on`.
+    Box::pin(accounts_admin_checks::assertions(ctx, pool, p, &m, &jar, "m")).await?;
     deletion_assertions(ctx, pool, p, &m, None, "m").await?;
     party_checks::deletion_assertion(ctx, pool, p, &m, "m").await?;
 
@@ -5836,6 +5839,8 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     Box::pin(scheduler_admin_checks::assertions(ctx, pool, p, &g, &cfg, "")).await?;
     Box::pin(audit_admin_checks::assertions(ctx, pool, p, &g, &cfg, "")).await?;
     wallet_ledger_checks::assertions(ctx, pool, p, &g, &cfg, "").await?;
+    // Boxed: `run`'s future sits on the main thread's stack under `block_on`.
+    Box::pin(accounts_admin_checks::assertions(ctx, pool, p, &g, &cfg, "")).await?;
 
     // --- Parties over the multiplexed socket: every invoke is Remote-dispatched from
     // gateway-svc to party-svc, whose post-commit pushes cross the backplane back to the
