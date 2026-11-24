@@ -139,6 +139,7 @@ Sources:
 | gRPC for `user_url` | edge transport | QUIC JSON, not gRPC | A tonic service mounted with `ctx.mount` on lore's HTTP routes (h2c, verified above) |
 | Lore wire types | linking `lore-proto` | C build (rpmalloc) + axum 0.8 | Vendored generated code (Step 6) |
 | Portal UI | `core/admin` templates | Swarog-internal, operator-facing | The portal is zero-sharing and copies the embedded-static precedent, not the code |
+| Portal access to loreserver | the portal as a direct Lore gRPC client | A second Lore integration, a shared wire crate, Lore tokens in the BFF | Rejected (owner). `lore` is the only loreserver client; the portal uses Swarog HTTP ops |
 
 ## Order
 
@@ -295,8 +296,10 @@ split proof checks its endpoints through gateway-svc.
   - Step 8: notification, revision `BranchList`, `urc.lock`;
   - Step 9: `BranchProtect`, force unlock;
   - Step 10: `RevisionList`;
-  - Step 12: thin_client and storage. It depends on tonic and
-  prost without tonic's `router` feature.
+  - Step 12a: thin_client and storage.
+
+  It depends on tonic and prost without tonic's `router` feature. Only
+  `modules/lore` uses it: the portal never talks to loreserver.
   - Service impl in `modules/lore`: `UserGet`/`UserFind` via
     `accountsapi::Directory`; `RepositoryList`/`Register`/`Unregister` over
     `lore.repositories`.
@@ -406,22 +409,43 @@ split proof checks its endpoints through gateway-svc.
 
 ### D. Lore Portal
 
-**Step 12: Portal skeleton (zero-sharing).**
+**Step 12a: Repository browsing ops in `lore`.**
+- (a) `#[http]` player ops in `api/lore` and `modules/lore`:
+  - repository list (filtered to repos where the caller has `read`);
+  - folder listing (`RevisionTree`);
+  - file content and metadata (`StorageService.Get`; text in full, binaries as
+    metadata only);
+  - history (`RevisionList`, optionally filtered by path);
+  - revision detail with changed files (`RevisionInfo`/`RevisionDiff`);
+  - text diff between two revisions;
+  - branches;
+  - repo locks.
+- (b) The portal (12b, 13) and `review` (the MR files-changed view) consume
+  them. The admin pages from Step 9 can show the same data.
+- (c) `lore` checks the caller's `read` (or other action) in `authz`, then
+  calls loreserver with its own service token from Step 4. So the per-user Tier 2
+  token stays for the Lore client only. The text diff is computed in `lore`,
+  because `ContentDiff` is unimplemented in Lore. Per-line attribution is out of
+  the first cut, because the server keeps no audit. Size caps on file content
+  and diff responses are part of the phase plan.
+- (d) `[opus]`.
+
+**Step 12b: Portal skeleton (zero-sharing).**
 - (a) `portal/` workspace member (BFF on axum 0.7 with embedded static pages,
-  the weles precedent). It depends on `vendor/lore-wire` and nothing else
-  from the repo (owner question 4). A new archcheck kind `Portal` with a deny-all rule for
-  `core/`, `modules/`, `api/`, `cmd/` and `weles/` makes zero-sharing
-  enforced, not a convention.
+  the weles precedent). It depends on nothing from the repo, including
+  `vendor/lore-wire`: everything comes through the Swarog API over HTTP, with the
+  portal's own DTOs. A new archcheck kind `Portal` with a deny-all rule makes
+  zero-sharing enforced, not a convention.
   - Login with auth code + PKCE against Swarog.
   - Repositories list, Files with folder view, file view (text; binaries as
     metadata), History, Revision, Branches.
   - The design-system primitives from the v2 delta.
 - (b) It consumes everything above.
-- (c) The BFF holds the user's Swarog token and exchanges it per repo (Step 4) for
-  loreserver calls (ThinClient `RevisionTree`/`RevisionInfo`/`RevisionDiff`,
-  `StorageService.Get`, `BranchList`, `RevisionList`, `LockService.Query`).
-  Text diff is computed in the BFF (`ContentDiff` is unimplemented in Lore).
-  Per-line attribution is out of the first cut, because there is no server audit.
+- (c) The BFF holds the user's Swarog session and calls the `lore` ops from 12a
+  and the `review` ops through the gateway with an `X-Api-Key`
+  (`modules/gateway/src/lib.rs:21-25`). This step creates an apikeys role for the
+  portal, covering the lore and review methods; the key comes from the portal's
+  config. The portal has no loreserver address and no Lore token.
 - (d) Several steps in the phase plan: `[opus]` BFF, `mockup-implementer` views.
 
 **Step 13: Portal review screens.**
@@ -429,11 +453,9 @@ split proof checks its endpoints through gateway-svc.
   (conversation, files changed with inline threads, revisions, MergeBox with
   commands), repo locks and my locks, notifications, profile (devices = refresh
   families, PATs = confidential clients).
-- (b) It needs Steps 10–12.
-- (c) The BFF calls Swarog `review` ops through the gateway with the user's
-  session plus an `X-Api-Key` (`modules/gateway/src/lib.rs:21-25`). Step 12
-  creates an apikeys role for the portal, covering the review and lore methods,
-  and the key comes from the portal's config.
+- (b) It needs Steps 10–12b.
+- (c) Same path as 12b: `review` and `lore` ops through the gateway with the
+  user's session and the portal's API key.
 - (d) `[opus]` BFF + `mockup-implementer` views.
 
 **Step 14: Docs, tracker, verify gates.**
@@ -467,9 +489,11 @@ Resolved 2026-11-24: grants live in a separate `authz` module (Step 5a).
    Google/Epic stays available on the same page. OK?
 3. **Resolved 2026-11-24: vendor.** **Vendoring Lore's generated code (Step 6) vs linking `lore-proto`.** Linking
    brings a C build (rpmalloc) and a second axum. Proposal: vendor.
-4. **The portal shares the vendored crate with Swarog.** It is third-party code,
-   not Swarog code. Proposal: allow this one shared dependency in the portal's
-   archcheck rule.
+4. **Resolved 2026-11-24: the portal never talks to loreserver.** Owner: "portal
+   bedzie to po prostu robil za pomoca modulu lore, ktory i tak bedzie sie
+   komunikowal z serwerem i moze dodawwac elementy do portalu admina". The
+   `lore` module is the single integration point with loreserver (Step 12a). The
+   portal shares no crate with Swarog.
 
 ## Not in this roadmap
 
