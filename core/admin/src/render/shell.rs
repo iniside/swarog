@@ -88,15 +88,6 @@ pub(crate) struct HealthView {
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub(crate) struct NotificationView {
-    /// `err`, `warn` or `muted`.
-    pub(crate) tone: &'static str,
-    pub(crate) title: String,
-    pub(crate) text: String,
-    pub(crate) when: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
 pub(crate) struct ShellView {
     pub(crate) operator: OperatorView,
     pub(crate) csrf: String,
@@ -108,7 +99,6 @@ pub(crate) struct ShellView {
     pub(crate) flash: Option<FlashView>,
     pub(crate) deployment: Option<String>,
     pub(crate) health: Option<HealthView>,
-    pub(crate) notifications: Option<Vec<NotificationView>>,
     /// `Snapshot::complete`: `data-state` of the page root.
     pub(crate) complete: bool,
 }

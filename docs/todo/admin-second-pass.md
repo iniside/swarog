@@ -36,10 +36,6 @@ _None._
   ADMIN2-03. Mockup: the 48-bucket uptime bar per service. Fake:
   core/admin/src/fakes.rs:81 (`history`): no health history is stored. Replaced by: a
   stored probe history (needs ADMIN2-02 first).
-- [ ] **Notification bell**
-  ADMIN2-04. Mockup: the top-bar bell's five entries. Fake: core/admin/src/fakes.rs:98
-  (`notifications()`), used at core/admin/src/routes.rs:140: no operator feed exists.
-  Replaced by: an operator feed fed by health, the event plane and audit.
 - [ ] **Scheduler run outcomes**
   ADMIN2-07. Mockup: the dashboard's "storage.gc failed at 03:30" attention item, and the
   Scheduler page's Target, Last result and Enabled columns and each Recent fires entry's

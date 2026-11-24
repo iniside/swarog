@@ -2,6 +2,13 @@
 
 Last updated: 2026-11-24
 
+- [x] **Notification bell** (2026-11-24, admin-second-pass step 2)
+  ADMIN2-04. Mockup: the top-bar bell's five entries. Fake: core/admin/src/fakes.rs:98
+  (`notifications()`), used at core/admin/src/routes.rs:140: no operator feed exists.
+  Removed by owner ruling: bell, pip and popover leave the shell view model, template, mockup
+  top bar and catalog (NotificationItem, notification.source). An operator feed fed by
+  health, the event plane and audit would be a new feature.
+
 - [x] **Lore tiles and stale-locks attention** (2026-11-24, admin-second-pass step 1)
   ADMIN2-05. Mockup: "Lore seats" and "Lore store used" tiles, "2 stale Lore locks"
   attention. Fakes: core/admin/src/fakes.rs:113 (`lore_seats`), :127 (`lore_store`), :171

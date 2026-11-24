@@ -89,18 +89,6 @@ fn history(name: &str, now: ServiceState) -> Vec<(String, ServiceState)> {
         .collect()
 }
 
-/// The notification bell as `(tone, title, text, when)`.
-// FAKE: no operator feed exists.
-pub(crate) fn notifications() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
-    vec![
-        ("err", "wallet-svc is down", "Health probe failed 7× in 15 min.", "3 min"),
-        ("err", "inventory.on_purchase.v1 paused", "Poison event at seq 12,905.", "4 h"),
-        ("warn", "Lore store volume 66% full", "13.29 of 20 TB on lore-01.", "5 h"),
-        ("warn", "SMTP relay throttling", "Retry backoff active.", "2 h"),
-        ("muted", "Key ak_c4a8 created", "by marta.k · role ci-build", "6 h"),
-    ]
-}
-
 fn page(module: &str, page: &str) -> Link {
     Link::Page { module: module.to_string(), page: page.to_string(), params: Default::default() }
 }

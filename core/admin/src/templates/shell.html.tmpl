@@ -37,7 +37,6 @@
 <div class="crumbs">{% for c in shell.crumbs %}{% if loop.last %}<span class="cur" id="crumb-cur">{{ c.label }}</span>{% elif c.href %}<a href="{{ c.href }}">{{ c.label }}</a><span class="sep">/</span>{% else %}<span>{{ c.label }}</span><span class="sep">/</span>{% endif %}{% endfor %}</div>
 <button type="button" class="search-trigger" data-action="palette">{{ ui.icon("search") }}<span class="grow" style="text-align:left">Search users, repositories, keys…</span><span class="kbd">Ctrl K</span></button>
 <button type="button" class="top-btn" id="health-btn" data-popover="health" title="System health"><span class="health-pill">{% if shell.health %}<span class="dot {{ 'err' if shell.health.unhealthy else 'ok' }}"></span><span class="hide-tablet">{{ shell.health.healthy }}/{{ shell.health.total }} healthy</span>{% else %}<span class="dot muted"></span><span class="hide-tablet">—</span>{% endif %}</span></button>
-<button type="button" class="top-btn" id="notif-btn" data-popover="notif" aria-label="Notifications">{{ ui.icon("bell") }}{% if shell.notifications %}<span class="pip"></span>{% endif %}</button>
 <button type="button" class="top-btn" data-action="theme" aria-label="Toggle theme">{{ ui.icon("sun", "theme-sun") }}{{ ui.icon("moon", "theme-moon") }}</button>
 </header>
 <main class="main"><div class="page">
@@ -75,10 +74,6 @@
 <div class="popover" data-popover-panel="health" hidden><div class="popover-head">{{ ui.icon("activity") }} System health<span class="grow"></span><a href="/admin#health" style="font-weight:500;font-size:12px">All services</a></div><div class="pop-list">
 {%- if shell.health %}{{ ui.services({"items": shell.health.unhealthy}, false) }}<div class="pop-row"><span class="dot ok" style="margin-top:4px"></span><div><div class="t">{{ shell.health.healthy }} services healthy</div><div class="d">{{ shell.health.note }}</div></div></div>
 {%- else %}<div class="state compact"><div class="state-title">No health source</div><div class="state-detail">No service reports its health to the portal yet.</div></div>{% endif -%}
-</div></div>
-<div class="popover" data-popover-panel="notif" hidden><div class="popover-head">{{ ui.icon("bell") }} Notifications<span class="grow"></span>{% if shell.notifications %}<button type="button" class="btn sm ghost">Mark all read</button>{% endif %}</div><div class="pop-list">
-{%- for n in shell.notifications or [] %}<div class="pop-row"><span class="dot {{ n.tone }}" style="margin-top:5px"></span><div class="grow"><div class="t">{{ n.title }}</div><div class="d">{{ n.text }}</div></div><span class="muted" style="font-size:11.5px">{{ n.when }}</span></div>{% endfor -%}
-{%- if not shell.notifications %}<div class="state compact"><div class="state-title">No notifications</div></div>{% endif -%}
 </div></div>
 <div class="scrim" data-palette hidden><div class="palette" role="dialog" aria-label="Search"><div class="palette-in">{{ ui.icon("search") }}<input placeholder="Search users, repositories, API keys…" autocomplete="off" data-palette-input><span class="kbd">Esc</span></div><div class="palette-scopes"><span class="filter-chip" data-scope="" style="background:var(--selected);color:var(--accent-fg)">All</span>{% for p in shell.scopes %}<span class="filter-chip" data-scope="{{ p.kind }}">{{ ui.icon(p.icon) }} {{ p.kind }}</span>{% endfor %}</div><div class="palette-list" data-palette-list></div><div class="palette-foot"><span><span class="kbd">↑↓</span> navigate</span><span><span class="kbd">↵</span> open</span><span><span class="kbd">Tab</span> scope</span><span class="grow"></span><span>{{ shell.scopes|length }} search providers</span></div></div></div>
 <div id="modal-root">{% if shell.flash and shell.flash.reveal %}{{ md.reveal(shell.flash) }}{% endif %}</div>

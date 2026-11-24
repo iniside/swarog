@@ -136,15 +136,6 @@ window.REG = (() => {
     { module: "storage", items: [{ label: "Download cloud saves", icon: "download", hint: "read-only", run: "UI.toast('Preparing archive…','info')" }] },
   ];
 
-  // notification.source
-  const notifications = [
-    { module: "wallet", tone: "err", title: "wallet-svc is down", text: "Health probe failed 7× in 15 min.", when: "3 min" },
-    { module: "core.events", tone: "err", title: "inventory.on_purchase.v1 paused", text: "Poison event at seq 12,905.", when: "4 h" },
-    { module: "lore", tone: "warn", title: "Lore store volume 66% full", text: "13.29 of 20 TB on lore-01.", when: "5 h" },
-    { module: "mail", tone: "warn", title: "SMTP relay throttling", text: "Retry backoff active.", when: "2 h" },
-    { module: "apikeys", tone: "info", title: "Key ak_c4a8 created", text: "by marta.k · role ci-build", when: "6 h" },
-  ];
-
   UI.defineMenu("user", handle => {
     const u = D.byHandle[handle];
     return userRowActions.filter(g => !g.when || g.when(u)).map(g => ({
@@ -176,7 +167,6 @@ window.REG = (() => {
       ${UI.frag({ module: "portal", point: "shell.breadcrumbs", prim: "Breadcrumbs" }, `<div class="crumbs">${cr}</div>`, { inline: true, style: "min-width:0" })}
       <button class="search-trigger" onclick="REG.openSearch()">${icon("search")}<span class="grow" style="text-align:left">Search users, repositories, keys…</span><span class="kbd">Ctrl K</span></button>
       <button class="top-btn" id="health-btn" onclick="REG.healthPop(event)" title="System health"><span class="health-pill"><span class="dot err"></span><span class="hide-tablet">${D.services.length - healthDown.length}/${D.services.length} healthy</span></span></button>
-      <button class="top-btn" id="notif-btn" onclick="REG.notifPop(event)" aria-label="Notifications">${icon("bell")}<span class="pip"></span></button>
       <span class="devbar">
         <select class="select" title="Preview panel state (mockup only)" onchange="REG.setForce(this.value)">${states.map(s => `<option value="${s}" ${UI.state.force === s ? "selected" : ""}>${s ? "State: " + s : "State: as designed"}</option>`).join("")}</select>
         <button class="top-btn ${UI.state.annot ? "on" : ""}" id="annot-btn" onclick="REG.toggleAnnot()" title="Outline every contributed fragment">${icon("layers")}<span class="hide-tablet">Show contributions</span></button>
@@ -220,10 +210,6 @@ window.REG = (() => {
     const html = `<div class="popover-head">${icon("activity")} System health<span class="grow"></span><a href="index.html#health" style="font-weight:500;font-size:12px">All services</a></div>${UI.frag({ module: "portal", point: "shell.health", prim: "ServiceStatus" }, `<div class="pop-list">${UI.services(healthDown, { bars: false })}<div class="pop-row"><span class="dot ok" style="margin-top:4px"></span><div><div class="t">${D.services.length - healthDown.length} services healthy</div><div class="d">Probed every 10 s by the portal · last probe 2 s ago</div></div></div></div>`)}`;
     UI.popover(ev, html);
   }
-  function notifPop(ev) {
-    const rows = notifications.map(n => UI.frag({ module: n.module, point: "notification.source", prim: "NotificationItem" }, `<div class="pop-row"><span class="dot ${n.tone === "info" ? "muted" : n.tone}" style="margin-top:5px"></span><div class="grow"><div class="t">${esc(n.title)}</div><div class="d">${esc(n.text)}</div></div><span class="muted" style="font-size:11.5px">${n.when}</span></div>`, { left: true })).join("");
-    UI.popover(ev, `<div class="popover-head">${icon("bell")} Notifications<span class="grow"></span><button class="btn sm ghost">Mark all read</button></div><div class="pop-list">${rows}</div>`);
-  }
 
   function openSearch(initial = "") {
     UI.closeModal();
@@ -250,5 +236,5 @@ window.REG = (() => {
     input.focus();
   }
 
-  return { sections, nav, search, tiles, attention, userTabs, userFacts, characterTabs, characterFacts, groupTabs, groupFacts, userHeaderActions, userRowActions, notifications, mount, render, setForce, toggleAnnot, toggleTheme, healthPop, notifPop, openSearch };
+  return { sections, nav, search, tiles, attention, userTabs, userFacts, characterTabs, characterFacts, groupTabs, groupFacts, userHeaderActions, userRowActions, mount, render, setForce, toggleAnnot, toggleTheme, healthPop, openSearch };
 })();

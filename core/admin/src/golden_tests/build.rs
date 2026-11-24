@@ -273,7 +273,6 @@ pub(super) fn shell_view(crumb: &str) -> ShellView {
         flash: None,
         deployment: None,
         health: None,
-        notifications: None,
         complete: true,
     }
 }

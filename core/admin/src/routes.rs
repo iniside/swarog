@@ -28,7 +28,7 @@ use crate::engine::search;
 use crate::engine::Engine;
 use crate::render::{
     self, ActionItem, ActionResultView, Crumb, DashboardView, EntityView, FlashView, FormFrame, FormInstance,
-    HealthView, LayoutRow, MenuView, MissingView, ModalSpec, NavSectionView, NavView, NotificationView, OperatorView,
+    HealthView, LayoutRow, MenuView, MissingView, ModalSpec, NavSectionView, NavView, OperatorView,
     PageView, PanelInput, ScopeView, SearchGroupView, SearchView, ShellView, SlotView, TabView,
 };
 use crate::{fakes, see_other, AdminState};
@@ -138,17 +138,6 @@ async fn shell(
         }),
         deployment: Some(fakes::DEPLOYMENT.to_string()),
         health: Some(health()),
-        notifications: Some(
-            fakes::notifications()
-                .into_iter()
-                .map(|(tone, title, text, when)| NotificationView {
-                    tone,
-                    title: title.to_string(),
-                    text: text.to_string(),
-                    when: when.to_string(),
-                })
-                .collect(),
-        ),
         complete: snapshot.complete(),
     }
 }
