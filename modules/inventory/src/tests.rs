@@ -2211,3 +2211,6 @@ async fn admin_holdings_page_keyset_crosses_characters_then_the_player() {
         cleanup_owner(&pool, id).await;
     }
 }
+
+#[path = "admin_tests.rs"]
+mod admin_tests;
