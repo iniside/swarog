@@ -49,14 +49,14 @@ window.REG = (() => {
     { module: "accounts", label: "Active players (24 h)", value: "38,412", delta: '<span class="up">▲ 6.1%</span> vs prev. day', spark: [31, 30, 33, 32, 35, 34, 36, 35, 37, 38.4], href: "players.html" },
     { module: "storage", label: "Cloud saves used", value: "1.82", unit: "TB", delta: "64 MB quota / player", spark: [1.5, 1.55, 1.6, 1.64, 1.7, 1.76, 1.82], sparkColor: "var(--chart-2)" },
     { module: "mail", label: "Mail queue", value: "312", delta: '<span class="bad-up">▲ relay throttled</span> · 1 failed', spark: [4, 6, 3, 8, 20, 140, 310, 312], sparkColor: "var(--warn)", href: "mail.html" },
-    { module: "core.events", label: "Paused subscriptions", value: "1", unit: "/ 7", delta: '<span class="down">inventory.on_purchase.v1</span>', href: "events.html" },
+    { module: "core.events", label: "Paused subscriptions", value: "1", unit: "/ 7", delta: '<span class="down">inventory.character-created.v1</span>', href: "events.html" },
     { module: "wallet", label: "Embers spent (24 h)", value: "1.94 M", state: "error" },
   ];
 
   // dashboard.attention — modules surface things needing an operator.
   const attention = [
     { module: "wallet", tone: "err", icon: "alert", title: "wallet-svc unavailable", text: "7 restarts in 15 min; grants and ledger are offline.", href: "economy.html", action: "Open" },
-    { module: "core.events", tone: "err", icon: "zap", title: "Subscription paused by poison event", text: "inventory.on_purchase.v1 stopped · 118 behind.", href: "events.html", action: "Resolve" },
+    { module: "core.events", tone: "err", icon: "zap", title: "Subscription paused by poison event", text: "inventory.character-created.v1 stopped · 118 behind.", href: "events.html", action: "Resolve" },
     { module: "mail", tone: "warn", icon: "mail", title: "Mail relay throttling", text: "312 queued, 2 retrying, 1 failed permanently.", href: "mail.html", action: "Outbox" },
   ];
 

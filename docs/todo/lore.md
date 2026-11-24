@@ -1,12 +1,19 @@
 # Lore
 
-Last updated: 2026-11-23
+Last updated: 2026-11-24
 
 ## In progress
 
 _None._
 
 ## Open
+
+### Known limits (lore)
+
+- [ ] **Audit of Lore operator actions**
+  Not built: no audit topic for Lore actions and no repository audit tab.
+  The mockup's repository Audit tab was removed on 2026-11-24 because no code
+  declares an `entity.repository.tab` audit contribution.
 
 ### Deferred
 

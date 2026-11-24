@@ -149,16 +149,16 @@ window.DATA = (() => {
   const subs = [
     { id: "audit.lore-branch-pushed.v1", topic: "lore.branch.pushed", module: "audit", cursor: "1/18442/0", lag: "0", state: "running" },
     { id: "notifications.lore-resource-locked.v1", topic: "lore.resource.locked", module: "notifications", cursor: "1/9204/0", lag: "6", state: "running" },
-    { id: "wallet.on_match.v1", topic: "match.finished", module: "wallet", cursor: "1/40118/0", lag: "273", state: "lagging" },
-    { id: "notifications.mail-sent.v1", topic: "mail.sent", module: "notifications", cursor: "1/88160/0", lag: "6", state: "running" },
-    { id: "inventory.on_purchase.v1", topic: "wallet.debited", module: "inventory", cursor: "1/12904/0", lag: "118", state: "paused", poison: { id: "a3f9c2d1", err: "decode: unknown currency code \"TOK2\" at $.amount.currency", at: "2026-10-22 09:41" } },
-    { id: "leaderboard.on_rating.v1", topic: "rating.updated", module: "leaderboard", cursor: "1/220418/0", lag: "0", state: "running" },
+    { id: "wallet.player-promoted.v1", topic: "player.promoted", module: "wallet", cursor: "1/40118/0", lag: "273", state: "lagging" },
+    { id: "notifications.wallet-changed.v1", topic: "wallet.changed", module: "notifications", cursor: "1/88160/0", lag: "6", state: "running" },
+    { id: "inventory.character-created.v1", topic: "character.created", module: "inventory", cursor: "1/12904/0", lag: "118", state: "paused", poison: { id: "a3f9c2d1", err: "decode: missing field `class`", at: "2026-10-22 09:41" } },
+    { id: "leaderboard.match-finished.v1", topic: "match.finished", module: "leaderboard", cursor: "1/220418/0", lag: "0", state: "running" },
     { id: "storage.player-deleted.v1", topic: "player.deleted", module: "storage", cursor: "1/311/0", lag: "0", state: "running" },
   ];
 
   const audit = [
     { t: "12:40:02", actor: "system", topic: "player.registered", action: "registered", target: "player:28be71f5", detail: "guest-28be71f5 · guest" },
-    { t: "11:15:20", actor: "marta.k", topic: "admin.action", action: "core.events.sub.pause", target: "subscription:inventory.on_purchase.v1", detail: "ok" },
+    { t: "11:15:20", actor: "marta.k", topic: "admin.action", action: "core.events.sub.pause", target: "subscription:inventory.character-created.v1", detail: "ok" },
     { t: "10:02:13", actor: "system", topic: "wallet.changed", action: "changed", target: "player:f6c4d097", detail: "+500 EMB · CS ticket #4471" },
     { t: "10:02:13", actor: "jonas.l", topic: "admin.action", action: "wallet.currency.grant", target: "player:f6c4d097", detail: "ok" },
     { t: "09:30:00", actor: "system", topic: "config.changed", action: "changed", target: "season4/enabled", detail: "update · rev 41" },
@@ -170,11 +170,11 @@ window.DATA = (() => {
   const ledger = [
     { t: "2026-10-22 14:02", who: "MiraVoss", cur: "EMB", amt: -1200, bal: 91300, reason: "store.purchase · Frost Warden skin", ref: "tx_8a1f" },
     { t: "2026-10-22 13:40", who: "NightOwl_77", cur: "GLD", amt: 340, bal: 3120, reason: "match.reward · ranked win", ref: "tx_8a1c" },
-    { t: "2026-10-22 10:02", who: "MiraVoss", cur: "EMB", amt: 500, bal: 92500, reason: "admin.grant · CS ticket #4471 (jonas.l)", ref: "tx_8a03" },
+    { t: "2026-10-22 10:02", who: "MiraVoss", cur: "EMB", amt: 500, bal: 92500, reason: "CS ticket #4471", ref: "tx_8a03" },
     { t: "2026-10-22 09:41", who: "kestrel", cur: "TOK", amt: -1, bal: 2, reason: "store.purchase · reroll token", ref: "tx_89f7" },
     { t: "2026-10-21 22:19", who: "Volkhv", cur: "GLD", amt: 120, bal: 1310, reason: "quest.complete · Ashgate Bounty", ref: "tx_89c2" },
-    { t: "2026-10-21 20:05", who: "ash_and_ember", cur: "EMB", amt: -18400, bal: 0, reason: "admin.revoke · chargeback (marta.k)", ref: "tx_89a0" },
-    { t: "2026-10-21 18:30", who: "aiko.tanaka", cur: "EMB", amt: 10000, bal: 12400, reason: "admin.grant · playtest budget (marta.k)", ref: "tx_8991" },
+    { t: "2026-10-21 20:05", who: "ash_and_ember", cur: "EMB", amt: -18400, bal: 0, reason: "chargeback", ref: "tx_89a0" },
+    { t: "2026-10-21 18:30", who: "aiko.tanaka", cur: "EMB", amt: 10000, bal: 12400, reason: "playtest budget", ref: "tx_8991" },
   ];
 
   const currencies = [

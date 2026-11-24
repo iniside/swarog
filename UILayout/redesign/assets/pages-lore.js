@@ -88,14 +88,14 @@
     { module: "lore", id: "locks", label: "Locks", prim: "DataTable", count: r => r.locks },
     { module: "lore", id: "access", label: "Access", prim: "DataTable" },
     { module: "lore", id: "events", label: "Events", prim: "Timeline" },
-    { module: "audit", id: "audit", label: "Audit", prim: "DataTable" },
   ];
   P.loreRepo = {
     meta: { nav: "lore.repos", crumbs: [] },
     render: () => {
       const q = new URLSearchParams(location.search);
       const r = D.repos.find(x => x.name === q.get("r")) || D.repos[0];
-      const active = P.repoTab || q.get("tab") || "branches";
+      const wanted = P.repoTab || q.get("tab");
+      const active = repoTabs.some(t => t.id === wanted) ? wanted : "branches";
       P.loreRepo.meta.crumbs = [loreCrumb, ["Repositories", "lore-repos.html"], [r.name]];
       const tabs = repoTabs.map(t => frag({ module: t.module, point: "entity.repository.tab", prim: t.prim }, `<button class="tab ${t.id === active ? "on" : ""}" onclick="PAGES.repoTab='${t.id}';REG.render()">${t.label}${t.count ? ` <span class="count">${t.count(r)}</span>` : ""}</button>`, { inline: true, tag: "span" })).join("");
       const header = frag({ module: "portal", point: "entity.repository (host)", prim: "EntityDetail" }, `<section class="panel" style="margin-bottom:12px"><div class="entity-head"><span class="modal-icon" style="width:44px;height:44px;background:var(--accent-soft);color:var(--accent-fg)">${icon("repo")}</span><div class="grow"><div class="row"><h1>${r.name}</h1>${badge("healthy", "ok")}</div><div class="entity-facts"><span>${esc(r.desc)}</span><span>${icon("branch")} default <span class="tag">${r.branch}</span></span><span>${icon("clock")} last push ${r.lastPush} by ${esc(r.pushBy)}</span><span class="mono">lore://lore.emberline.gg/${r.name}</span></div></div><div class="page-actions"><button class="btn">${icon("copy")} Clone URL</button><button class="btn icon" onclick="UI.openMenu(event,'repo','${r.name}')">${icon("more")}</button></div></div><div class="tabs">${tabs}</div></section>`, { left: true });
@@ -129,8 +129,6 @@
         body = panel({ c: { module: "lore", point: "entity.repository.tab", prim: "DataTable" }, title: "Who can access this repository", meta: "global role + override = effective", flush: true, tools: `<a class="btn sm" href="lore-permissions.html#overrides">Edit overrides</a>`, body: table({ pager: false, cols: [{ label: "User" }, { label: "Global role" }, { label: "Override" }, { label: "Effective actions" }], rows }) });
       } else if (active === "events") {
         body = panel({ c: { module: "lore", point: "entity.repository.tab", prim: "Timeline" }, title: "Events", flush: true, body: timeline(loreTimelineItems(D.loreEvents.filter(e => e.repo === r.name))) });
-      } else {
-        body = panel({ c: { module: "audit", point: "entity.repository.tab", prim: "DataTable" }, title: "Audit", meta: `target repository:${r.name}`, flush: true, body: table({ pager: false, cols: [{ label: "Time" }, { label: "Actor" }, { label: "Action" }, { label: "Detail" }], rows: D.audit.filter(a => a.target.includes(r.name)).map(a => [`<span class="mono">${a.t}</span>`, P.actor(a.actor), `<span class="mono">${a.action}</span>`, esc(a.detail)]) }) });
       }
       return header + body;
     },

@@ -133,7 +133,7 @@
     render: () => {
       const tiles = [
         { label: "Subscriptions", value: String(D.subs.length), delta: ["running", "lagging", "paused"].map(st => `${D.subs.filter(x => x.state === st).length} ${st}`).join(" · ") },
-        { label: "Max lag", value: "273", delta: '<span class="bad-up">wallet.on_match.v1 (wallet down)</span>' },
+        { label: "Max lag", value: "273", delta: '<span class="bad-up">wallet.player-promoted.v1 (wallet down)</span>' },
       ].map(t => kpi({ ...t, c: pg("core.events", "KpiTile") })).join("");
       const subsTbl = panel({ c: pg("core.events", "DataTable"), title: "Subscriptions", flush: true,
         body: table({ pager: false, filters: [{ k: "State", v: "any" }], searchPlaceholder: "Subscription id or topic",
@@ -141,21 +141,21 @@
           rows: D.subs.map(s => ({ sel: s.state === "paused", cells: [`<span class="mono" style="font-weight:500">${s.id}</span>`, `<span class="tag">${s.topic}</span>`, s.module, `<span class="mono">${s.cursor}</span>`, lagBar(s), status(s.state)] })),
           rowMenu: () => `<button class="btn sm icon ghost" onclick="UI.toast('Pause · Resume · Retry now','info')">${icon("more")}</button>` }) });
       const s = D.subs.find(x => x.poison);
+      const ch = D.characters.find(c => c.player_id === D.byHandle.kestrel.id && c.name === "Talon");
       const poison = panel({ c: pg("core.events", "PoisonEventResolver"), title: `Paused: <span class="mono">${s.id}</span>`, meta: `since ${s.poison.at}`,
         banner: `<div class="banner err">${icon("alert")} Consumer failed 5× on the same event and stopped to preserve ordering. ${s.lag} events are waiting behind it.</div>`,
-        body: `${props([["Event", `<span class="mono">wallet.debited #${s.poison.id}</span>`], ["Consumer", s.module], ["Error", `<span class="mono" style="color:var(--err)">${esc(s.poison.err)}</span>`]])}<div class="code" style="margin-top:10px">{
-  "player_id": "${D.byHandle.kestrel.id}",
-  "amount": { "value": 1, "currency": "TOK2" },
-  "reason": "store.purchase",
-  "tx": "tx_89f7"
-}</div><div class="row" style="margin-top:12px;flex-wrap:wrap"><button class="btn primary" onclick="UI.toast('Resumed inventory.on_purchase.v1; its failing event is retried')">${icon("play")} Resume (retry event)</button><button class="btn" onclick="PAGES.skipPoison()">${icon("skip")} Skip event…</button><button class="btn ghost">${icon("download")} Copy payload</button><span class="muted" style="font-size:12px">Fix the consumer first, then Resume. Skip advances the checkpoint past this event.</span></div>` });
+        body: `${props([["Event", `<span class="mono">character.created #${s.poison.id}</span>`], ["Consumer", s.module], ["Error", `<span class="mono" style="color:var(--err)">${esc(s.poison.err)}</span>`]])}<div class="code" style="margin-top:10px">{
+  "character_id": "${ch.id}",
+  "player_id": "${ch.player_id}",
+  "name": "${ch.name}"
+}</div><div class="row" style="margin-top:12px;flex-wrap:wrap"><button class="btn primary" onclick="UI.toast('Resumed inventory.character-created.v1; its failing event is retried')">${icon("play")} Resume (retry event)</button><button class="btn" onclick="PAGES.skipPoison()">${icon("skip")} Skip event…</button><button class="btn ghost">${icon("download")} Copy payload</button><span class="muted" style="font-size:12px">Fix the consumer first, then Resume. Skip advances the checkpoint past this event.</span></div>` });
       return P.head("Event plane", "Durable topics, subscription checkpoints and lag.", "") + `<div class="grid g-tiles" style="margin-bottom:12px">${tiles}</div><div class="stack">${poison}${subsTbl}</div>`;
     },
   };
   P.skipPoison = () => UI.confirm({ c: { module: "core.events", point: "page", prim: "ConfirmAction" }, title: "Skip event a3f9c2d1?", icon: "skip",
     body: "The checkpoint advances past this event and the subscription resumes. The consumer never applies this event unless it is done by hand.",
-    impact: [["Subscription", '<span class="mono">inventory.on_purchase.v1</span>'], ["Event", '<span class="mono">wallet.debited #a3f9c2d1</span>']],
-    reason: "e.g. malformed payload from a producer bug, compensated manually", typeToConfirm: "a3f9c2d1", confirm: "Skip and resume", done: "Skipped event a3f9c2d1 on inventory.on_purchase.v1; the subscription resumed" });
+    impact: [["Subscription", '<span class="mono">inventory.character-created.v1</span>'], ["Event", '<span class="mono">character.created #a3f9c2d1</span>']],
+    reason: "e.g. malformed payload from a producer bug, compensated manually", typeToConfirm: "a3f9c2d1", confirm: "Skip and resume", done: "Skipped event a3f9c2d1 on inventory.character-created.v1; the subscription resumed" });
 
   // ---------- economy ----------
   P.economy = {
