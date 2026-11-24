@@ -47,20 +47,16 @@ window.REG = (() => {
   // dashboard.tile
   const tiles = [
     { module: "accounts", label: "Active players (24 h)", value: "38,412", delta: '<span class="up">▲ 6.1%</span> vs prev. day', spark: [31, 30, 33, 32, 35, 34, 36, 35, 37, 38.4], href: "players.html" },
-    { module: "lore", label: "Lore seats", value: "8", delta: "users with Lore access · 1 suspended", spark: [5, 6, 6, 7, 8, 8], href: "lore-billing.html" },
-    { module: "lore", label: "Lore store used", value: "13.29", unit: "TB", delta: '<span class="bad-up">▲ 1.19 TB</span> this month', spark: [6.2, 7.4, 8.9, 10.6, 12.1, 13.29], sparkColor: "var(--chart-2)", href: "lore-billing.html" },
     { module: "storage", label: "Cloud saves used", value: "1.82", unit: "TB", delta: "64 MB quota / player", spark: [1.5, 1.55, 1.6, 1.64, 1.7, 1.76, 1.82], sparkColor: "var(--chart-2)" },
     { module: "mail", label: "Mail queue", value: "312", delta: '<span class="bad-up">▲ relay throttled</span> · 1 failed', spark: [4, 6, 3, 8, 20, 140, 310, 312], sparkColor: "var(--warn)", href: "mail.html" },
     { module: "core.events", label: "Paused subscriptions", value: "1", unit: "/ 7", delta: '<span class="down">inventory.on_purchase.v1</span>', href: "events.html" },
     { module: "wallet", label: "Embers spent (24 h)", value: "1.94 M", state: "error" },
-    { module: "match", label: "Matches in progress", value: "1,204", delta: '<span class="flat">— steady</span>', spark: [900, 1010, 1100, 1180, 1220, 1190, 1204] },
   ];
 
   // dashboard.attention — modules surface things needing an operator.
   const attention = [
     { module: "wallet", tone: "err", icon: "alert", title: "wallet-svc unavailable", text: "7 restarts in 15 min; grants and ledger are offline.", href: "economy.html", action: "Open" },
     { module: "core.events", tone: "err", icon: "zap", title: "Subscription paused by poison event", text: "inventory.on_purchase.v1 stopped at seq 12,905 · 118 behind.", href: "events.html", action: "Resolve" },
-    { module: "lore", tone: "warn", icon: "lock", title: "2 stale Lore locks", text: "Held > 14 days by sam.o (suspended) in ashfall-game, ashfall-art.", href: "lore-locks.html?stale=1", action: "Review" },
     { module: "mail", tone: "warn", icon: "mail", title: "Mail relay throttling", text: "312 queued, 2 retrying, 1 failed permanently.", href: "mail.html", action: "Outbox" },
     { module: "scheduler", tone: "warn", icon: "clock", title: "storage.gc failed at 03:30", text: "timeout: storage-svc deadline exceeded.", href: "scheduler.html", action: "Logs" },
   ];

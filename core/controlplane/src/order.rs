@@ -14,20 +14,16 @@ pub mod platform_nav {
 /// `Point::DashboardTile`.
 pub mod dashboard_tile {
     pub const ACCOUNTS: i32 = 10;
-    pub const PORTAL_LORE_SEATS: i32 = 20;
-    pub const PORTAL_LORE_STORE: i32 = 30;
     pub const STORAGE: i32 = 40;
     pub const MAIL: i32 = 50;
     pub const EVENTS: i32 = 60;
     pub const WALLET: i32 = 70;
-    pub const PORTAL_MATCHES: i32 = 80;
 }
 
 /// `Point::DashboardAttention`.
 pub mod dashboard_attention {
     pub const PORTAL_SERVICES: i32 = 10;
     pub const EVENTS: i32 = 20;
-    pub const PORTAL_LORE: i32 = 30;
     pub const MAIL: i32 = 40;
     pub const SCHEDULER: i32 = 50;
     pub const CHARACTERS_PURGES: i32 = 61;

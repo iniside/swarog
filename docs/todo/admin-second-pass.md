@@ -40,15 +40,6 @@ _None._
   ADMIN2-04. Mockup: the top-bar bell's five entries. Fake: core/admin/src/fakes.rs:98
   (`notifications()`), used at core/admin/src/routes.rs:140: no operator feed exists.
   Replaced by: an operator feed fed by health, the event plane and audit.
-- [ ] **Lore tiles and stale-locks attention**
-  ADMIN2-05. Mockup: "Lore seats" and "Lore store used" tiles, "2 stale Lore locks"
-  attention. Fakes: core/admin/src/fakes.rs:113 (`lore_seats`), :127 (`lore_store`), :171
-  (`attention_lore`): there is no Lore module. Replaced by: a Lore module, or dropping the
-  elements by owner decision.
-- [ ] **Matches in progress tile**
-  ADMIN2-06. Mockup: "Matches in progress" KPI. Fake: core/admin/src/fakes.rs:141
-  (`matches_in_progress`): `match.matches` holds finished matches only. Replaced by:
-  in-flight match tracking in the match module.
 - [ ] **Scheduler run outcomes**
   ADMIN2-07. Mockup: the dashboard's "storage.gc failed at 03:30" attention item, and the
   Scheduler page's Target, Last result and Enabled columns and each Recent fires entry's

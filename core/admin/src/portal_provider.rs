@@ -12,11 +12,7 @@ use crate::fakes;
 
 pub(crate) const MODULE: &str = "portal";
 
-const TILE_LORE_SEATS: &str = "tile.lore-seats";
-const TILE_LORE_STORE: &str = "tile.lore-store";
-const TILE_MATCHES: &str = "tile.matches";
 const ATTENTION_SERVICES: &str = "attention.services";
-const ATTENTION_LORE: &str = "attention.lore";
 const HEALTH: &str = "health";
 
 pub(crate) struct PortalProvider;
@@ -56,39 +52,11 @@ impl Provider for PortalProvider {
             module: MODULE.to_string(),
             contributions: vec![
                 contribution(
-                    TILE_LORE_SEATS,
-                    Point::DashboardTile,
-                    order::dashboard_tile::PORTAL_LORE_SEATS,
-                    "Lore seats",
-                    "",
-                ),
-                contribution(
-                    TILE_LORE_STORE,
-                    Point::DashboardTile,
-                    order::dashboard_tile::PORTAL_LORE_STORE,
-                    "Lore store used",
-                    "",
-                ),
-                contribution(
-                    TILE_MATCHES,
-                    Point::DashboardTile,
-                    order::dashboard_tile::PORTAL_MATCHES,
-                    "Matches in progress",
-                    "",
-                ),
-                contribution(
                     ATTENTION_SERVICES,
                     Point::DashboardAttention,
                     order::dashboard_attention::PORTAL_SERVICES,
                     "Service health",
                     "alert",
-                ),
-                contribution(
-                    ATTENTION_LORE,
-                    Point::DashboardAttention,
-                    order::dashboard_attention::PORTAL_LORE,
-                    "Lore locks",
-                    "lock",
                 ),
                 contribution(HEALTH, Point::DashboardWide, order::dashboard_wide::PORTAL_HEALTH, "Service health", ""),
             ],
@@ -100,11 +68,7 @@ impl Provider for PortalProvider {
     async fn panel(&self, req: PanelQuery) -> Result<PanelBody, opsapi::Error> {
         Ok(PanelBody::new(match req.contribution.as_str() {
             HEALTH => return Ok(health()),
-            TILE_LORE_SEATS => Primitive::KpiTile(fakes::lore_seats()),
-            TILE_LORE_STORE => Primitive::KpiTile(fakes::lore_store()),
-            TILE_MATCHES => Primitive::KpiTile(fakes::matches_in_progress()),
             ATTENTION_SERVICES => Primitive::AttentionItems(fakes::attention_services()),
-            ATTENTION_LORE => Primitive::AttentionItems(fakes::attention_lore()),
             other => return Err(opsapi::Error::not_found(format!("{MODULE} has no contribution {other:?}"))),
         }))
     }
