@@ -27,6 +27,8 @@ pub(crate) use controlplane::INVOKE_DEADLINE;
 
 /// A claim older than this is abandoned and may be taken over; it exceeds [`INVOKE_DEADLINE`].
 pub(crate) const CLAIM_WINDOW: Duration = Duration::from_secs(30);
+// A takeover must never meet an invoke still in flight, or it runs the invoke twice.
+const _: () = assert!(CLAIM_WINDOW.as_nanos() > INVOKE_DEADLINE.as_nanos());
 /// A click claim consumed less than this ago answers a repeated click.
 pub(crate) const CLICK_REPEAT_WINDOW: Duration = Duration::from_secs(5);
 /// Lifetime of a form instance or click row.

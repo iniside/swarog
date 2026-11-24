@@ -2,6 +2,22 @@
 
 Last updated: 2026-11-24
 
+- [x] **`INVOKE_DEADLINE` doc separates prepare from invoke** (2026-11-24, admin-second-pass step 15)
+  ADMIN2-72. The doc on `controlplane::INVOKE_DEADLINE` no longer promises "outcome unknown"
+  for every call past the deadline: a prepare is answered as retryable (the 504 "try again"),
+  an invoke as outcome unknown.
+
+- [x] **`CLAIM_WINDOW` > `INVOKE_DEADLINE` is checked** (2026-11-24, admin-second-pass step 15)
+  ADMIN2-73. A const assert after `CLAIM_WINDOW` (core/admin/src/engine/actions.rs) fails the
+  build when the claim window no longer exceeds the deadline that now lives in controlplane, so
+  a claim takeover cannot meet an invoke still in flight and run it twice.
+
+- [x] **Scheduler's Fire now margin has a floor** (2026-11-24, admin-second-pass step 15)
+  ADMIN2-74. The assert `FIRE_NOW_TOTAL < INVOKE_DEADLINE`, which followed from the
+  `saturating_sub` and failed only at a zero margin, is replaced by `FIRE_NOW_MARGIN >= 1 s`
+  (modules/scheduler/src/admin.rs), the minimum room for the `cp.invoke` QUIC round trip in the
+  split. A margin cut to 1 ms now fails the build.
+
 - [x] **Scheduler Fire now** (2026-11-24, admin-second-pass step 15)
   ADMIN2-64. The Schedules row menu's "Fire now" (`schedule.fire`) is implemented and
   `scheduler` declares `writes: true`. It runs the tick's fire path with the due re-check

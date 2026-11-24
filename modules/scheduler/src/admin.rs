@@ -57,8 +57,9 @@ pub(crate) const FIRE_NOW_MARGIN: Duration = Duration::from_secs(2);
 /// the portal's [`controlplane::INVOKE_DEADLINE`]. Cancelling the fire at this bound is
 /// abort-safe: its dedicated connection closes (see the crate docs).
 pub(crate) const FIRE_NOW_TOTAL: Duration = controlplane::INVOKE_DEADLINE.saturating_sub(FIRE_NOW_MARGIN);
-// A Fire now answers inside the portal's deadline and leaves room for at least one statement.
-const _: () = assert!(FIRE_NOW_TOTAL.as_nanos() < controlplane::INVOKE_DEADLINE.as_nanos());
+// The margin is at least the minimum room for the `cp.invoke` QUIC round trip in the split,
+// and the whole Fire now leaves room for at least one statement.
+const _: () = assert!(FIRE_NOW_MARGIN.as_nanos() >= Duration::from_secs(1).as_nanos());
 const _: () = assert!(FIRE_NOW_TOTAL.as_nanos() > FIRE_NOW_DEADLINE.as_nanos());
 
 pub(crate) struct SchedulerAdmin {
