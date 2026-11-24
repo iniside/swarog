@@ -3241,3 +3241,133 @@ async fn only_an_entity_tabs_declared_params_reach_its_panel_query() {
 
     cleanup_user(&pool, &user).await;
 }
+
+// ---- classify_form / classify_click tables -------------------------------------------
+//
+// The two classifiers read no clock: each case passes the row as the classifying SELECT
+// returned it and that SELECT's Postgres `now` (microseconds), so every boundary is exact.
+
+mod classify {
+    use crate::engine::actions::{classify_click, classify_form, Claim, Claimant, FormRow, StoredSpec};
+
+    const NOW: i64 = 1_800_000_000_000_000;
+
+    fn ago(micros: i64) -> Option<i64> {
+        Some(NOW - micros)
+    }
+
+    fn who() -> Claimant {
+        Claimant { login: "op".to_string(), module: "ledger".to_string(), action: "grant".to_string() }
+    }
+
+    /// A free row of `who()`: unclaimed, unconsumed, expiring a minute after `NOW`.
+    fn free(spec: StoredSpec) -> FormRow {
+        FormRow {
+            id: "f-1".to_string(),
+            login: "op".to_string(),
+            module: "ledger".to_string(),
+            action: "grant".to_string(),
+            contribution: None,
+            entity: None,
+            item: None,
+            spec,
+            generation: 0,
+            incarnation: "i-1".to_string(),
+            claimed_at: None,
+            consumed_at: None,
+            expires_at: NOW + 60_000_000,
+        }
+    }
+
+    fn form() -> FormRow {
+        free(StoredSpec::Form { form: Box::new(super::moded_spec(Vec::new())), chrome: Default::default() })
+    }
+
+    fn click() -> FormRow {
+        free(StoredSpec::Click)
+    }
+
+    /// Each step 5 table row in order, its boundaries, and the row order: a mismatch beats a
+    /// repeat, a repeat beats expiry.
+    #[test]
+    fn classify_form_follows_the_table_in_order() {
+        let other_login = FormRow { login: "other".to_string(), ..form() };
+        let other_module = FormRow { module: "other".to_string(), ..form() };
+        let other_action = FormRow { action: "other".to_string(), ..form() };
+        let cases: Vec<(&str, Option<FormRow>, Claim)> = vec![
+            ("1: a missing row", None, Claim::Reject),
+            ("2: a click row posted as a form", Some(click()), Claim::Reject),
+            ("2: another login's free row", Some(other_login.clone()), Claim::Reject),
+            ("2: another module", Some(other_module), Claim::Reject),
+            ("2: another action", Some(other_action), Claim::Reject),
+            (
+                "2 before 3: another login's consumed row",
+                Some(FormRow { consumed_at: ago(1), ..other_login }),
+                Claim::Reject,
+            ),
+            ("3: consumed", Some(FormRow { consumed_at: ago(60_000_000), ..form() }), Claim::Repeated),
+            ("3: claimed 29.99 s ago", Some(FormRow { claimed_at: ago(29_990_000), ..form() }), Claim::Repeated),
+            (
+                "3 before 4: expired, claimed < 30 s ago",
+                Some(FormRow { claimed_at: ago(1_000_000), expires_at: NOW - 1, ..form() }),
+                Claim::Repeated,
+            ),
+            (
+                "3 before 4: expired and consumed",
+                Some(FormRow { consumed_at: ago(1), expires_at: NOW - 1, ..form() }),
+                Claim::Repeated,
+            ),
+            ("4: expired", Some(FormRow { expires_at: NOW - 1, ..form() }), Claim::Reject),
+            ("4: expiring exactly now", Some(FormRow { expires_at: NOW, ..form() }), Claim::Reject),
+            (
+                "4: expired, claimed 30.01 s ago",
+                Some(FormRow { claimed_at: ago(30_010_000), expires_at: NOW - 1, ..form() }),
+                Claim::Reject,
+            ),
+            ("5: claimed 30.01 s ago", Some(FormRow { claimed_at: ago(30_010_000), ..form() }), Claim::Retry),
+            ("5: free (released between UPDATE and SELECT)", Some(form()), Claim::Retry),
+        ];
+        for (case, row, want) in cases {
+            assert_eq!(classify_form(row.as_ref(), &who(), NOW), want, "{case}");
+        }
+    }
+
+    /// The inverse of the click claim's WHERE, first match wins: missing, mismatch, held or
+    /// recently consumed, anything else.
+    #[test]
+    fn classify_click_is_the_inverse_of_the_claim() {
+        let other_login = FormRow { login: "other".to_string(), ..click() };
+        let cases: Vec<(&str, Option<FormRow>, Claim)> = vec![
+            ("a missing row (wiped between upsert and UPDATE)", None, Claim::Retry),
+            ("another login's free row", Some(other_login.clone()), Claim::Reject),
+            ("another login's held row", Some(FormRow { claimed_at: ago(1), ..other_login }), Claim::Reject),
+            ("another module", Some(FormRow { module: "other".to_string(), ..click() }), Claim::Reject),
+            ("another action", Some(FormRow { action: "other".to_string(), ..click() }), Claim::Reject),
+            (
+                "claimed 29.99 s ago, unconsumed",
+                Some(FormRow { claimed_at: ago(29_990_000), ..click() }),
+                Claim::Repeated,
+            ),
+            ("claimed 30.01 s ago, unconsumed", Some(FormRow { claimed_at: ago(30_010_000), ..click() }), Claim::Retry),
+            (
+                "consumed 4.99 s ago",
+                Some(FormRow { claimed_at: ago(6_000_000), consumed_at: ago(4_990_000), ..click() }),
+                Claim::Repeated,
+            ),
+            (
+                "consumed 5.01 s ago",
+                Some(FormRow { claimed_at: ago(6_000_000), consumed_at: ago(5_010_000), ..click() }),
+                Claim::Retry,
+            ),
+            (
+                "consumed 5.01 s ago, its claim < 30 s old",
+                Some(FormRow { claimed_at: ago(5_020_000), consumed_at: ago(5_010_000), ..click() }),
+                Claim::Retry,
+            ),
+            ("free (claimable between UPDATE and SELECT)", Some(click()), Claim::Retry),
+        ];
+        for (case, row, want) in cases {
+            assert_eq!(classify_click(row.as_ref(), &who(), NOW), want, "{case}");
+        }
+    }
+}
