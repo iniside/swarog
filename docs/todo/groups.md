@@ -1,6 +1,6 @@
 # Groups
 
-Last updated: 2026-11-22
+Last updated: 2026-11-24
 
 ## In progress
 
@@ -10,7 +10,10 @@ _None._
 
 - [ ] **Flaky purge fire bound test**
   `groups::purge_tests::one_sweep_fire_stamps_at_most_64_players` failed intermittently in
-  workspace runs during the admin redesign (2026-11) and passed on rerun; not diagnosed.
+  workspace runs during the admin redesign (2026-11) and passed on rerun. On 2026-11-24 it
+  failed alone too (`-- --test-threads=1`): its precondition (`purge_tests.rs:418`) found
+  foreign `groups.purged_players` rows already in the shared DB, so it fails whenever earlier
+  runs or seeded players leave due tombstones behind; the test assumes an empty table.
 - [ ] **Push nudge or notification for group invites and membership changes**
   GROUPS-01. Neither `modules/groups` nor `modules/notifications/src` handles
   group events (Grep lower bound: no `nudge`/`pushapi`/`notificationsapi` in
