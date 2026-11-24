@@ -157,14 +157,14 @@ window.DATA = (() => {
   ];
 
   const audit = [
-    { t: "14:12:08", actor: "marta.k", topic: "admin.action", action: "wallet.currency.grant", target: "player:f6c4d097", detail: "ok — reason: CS ticket #4471" },
-    { t: "13:58:41", actor: "system", topic: "wallet.changed", action: "changed", target: "player:f6c4d097", detail: "+500 EMB · CS ticket #4471" },
-    { t: "12:40:02", actor: "system", topic: "player.registered", action: "registered", target: "player:e8d24c61", detail: "Elena Petrova · google" },
+    { t: "12:40:02", actor: "system", topic: "player.registered", action: "registered", target: "player:28be71f5", detail: "guest-28be71f5 · guest" },
     { t: "11:15:20", actor: "marta.k", topic: "admin.action", action: "core.events.sub.pause", target: "subscription:inventory.on_purchase.v1", detail: "ok" },
-    { t: "10:02:13", actor: "jonas.l", topic: "admin.action", action: "config.setting.edit", target: "—", detail: "ok" },
+    { t: "10:02:13", actor: "system", topic: "wallet.changed", action: "changed", target: "player:f6c4d097", detail: "+500 EMB · CS ticket #4471" },
+    { t: "10:02:13", actor: "jonas.l", topic: "admin.action", action: "wallet.currency.grant", target: "player:f6c4d097", detail: "ok" },
     { t: "09:30:00", actor: "system", topic: "config.changed", action: "changed", target: "season4/enabled", detail: "update · rev 41" },
+    { t: "09:30:00", actor: "jonas.l", topic: "admin.action", action: "config.setting.edit", target: "—", detail: "ok" },
     { t: "08:51:36", actor: "marta.k", topic: "admin.action", action: "apikeys.key.create", target: "—", detail: "ok" },
-    { t: "08:12:09", actor: "aiko.tanaka", topic: "admin.action", action: "login-succeeded", target: "user:aiko.tanaka", detail: "ip:83.4.x.x" },
+    { t: "08:12:09", actor: "aiko.tanaka", topic: "admin.action", action: "login-succeeded", target: "user:aiko.tanaka", detail: "ip:203.0.113.24" },
   ];
 
   const ledger = [

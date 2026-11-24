@@ -113,7 +113,7 @@
     meta: { nav: "audit", crumbs: [plat, ["Audit log"]] },
     render: () => {
       const topics = ["character.created", "character.deleted", "player.registered", "player.promoted", "player.deleted", "config.changed", "match.finished", "admin.action", "wallet.changed", "friend.requested", "friend.accepted", "friend.removed", "group.created", "group.member_joined", "group.member_left", "group.role_changed"];
-      const actors = [...new Set(D.audit.filter(a => a.topic === "admin.action").map(a => a.actor)), "system"];
+      const actors = [...[...new Set(D.audit.filter(a => a.topic === "admin.action").map(a => a.actor))].sort(), "system"];
       const tf = P.auditTopic;
       const list = D.audit.filter(a => !tf || a.topic === tf);
       return P.head("Audit log", "Append-only record of operator, key and system actions.") +
