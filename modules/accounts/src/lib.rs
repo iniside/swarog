@@ -1033,7 +1033,7 @@ impl accountsapi::Auth for Service {
                     "consumed refresh token replayed outside the grace window — revoking the token family"
                 );
                 match self.store.kill_family_tx(&mut tx, &family_id).await {
-                    Ok(()) => Err(Error::unauthorized("invalid refresh token")),
+                    Ok(_) => Err(Error::unauthorized("invalid refresh token")),
                     Err(e) => Err(internal(e)),
                 }
             }

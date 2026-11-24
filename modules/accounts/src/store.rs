@@ -583,14 +583,17 @@ impl Store {
     }
 
     /// Deletes the player row on the caller's transaction, answering whether it was
-    /// there. The schema's `ON DELETE CASCADE`s take its identities, sessions, refresh
-    /// tokens and delete ticket with it — THE session revocation, committing with
-    /// whatever else this transaction carries.
+    /// there. Its sessions end first through [`Store::kill_player_families_tx`] — THE
+    /// session revocation, committing with whatever else this transaction carries — and
+    /// the schema's `ON DELETE CASCADE`s take its identities and delete ticket.
     pub async fn delete_player_tx(
         &self,
         conn: &mut PgConnection,
         player_id: &str,
     ) -> Result<bool, sqlx::Error> {
+        if self.kill_player_families_tx(conn, player_id).await?.is_none() {
+            return Ok(false);
+        }
         let res = sqlx::query("DELETE FROM accounts.players WHERE id = $1::uuid")
             .bind(player_id)
             .execute(&mut *conn)
@@ -901,20 +904,94 @@ impl Store {
     /// other logins. Deletion, not a flag: with the rows gone every token of the family
     /// answers as unknown, so a replay can never resurrect the family through the grace
     /// window.
+    ///
+    /// Answers how many rows it deleted, tokens and sessions together: 0 when the family
+    /// held nothing.
     pub async fn kill_family_tx(
         &self,
         conn: &mut PgConnection,
         family_id: &str,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM accounts.refresh_tokens WHERE family_id = $1::uuid")
+    ) -> Result<u64, sqlx::Error> {
+        let tokens = sqlx::query("DELETE FROM accounts.refresh_tokens WHERE family_id = $1::uuid")
             .bind(family_id)
             .execute(&mut *conn)
             .await?;
-        sqlx::query("DELETE FROM accounts.sessions WHERE family_id = $1::uuid")
+        let sessions = sqlx::query("DELETE FROM accounts.sessions WHERE family_id = $1::uuid")
             .bind(family_id)
             .execute(&mut *conn)
             .await?;
-        Ok(())
+        Ok(tokens.rows_affected() + sessions.rows_affected())
+    }
+
+    /// Takes the player row FOR UPDATE on the caller's tx, answering whether the player
+    /// exists. FOR UPDATE conflicts with the FOR KEY SHARE every login and refresh takes on
+    /// that row through its family, token or session insert, so a login either commits
+    /// before the lock is granted or waits until the locking transaction ends.
+    pub async fn lock_player_row_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let row: Option<(i32,)> =
+            sqlx::query_as("SELECT 1 FROM accounts.players WHERE id = $1::uuid FOR UPDATE")
+                .bind(player_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+        Ok(row.is_some())
+    }
+
+    /// Whether `family_id` names a refresh family of `player_id` that still holds a token
+    /// or a session.
+    pub async fn family_of_player_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        family_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let row: Option<(i32,)> = sqlx::query_as(
+            "SELECT 1 FROM accounts.refresh_tokens \
+              WHERE family_id = $1::uuid AND player_id = $2::uuid \
+             UNION ALL \
+             SELECT 1 FROM accounts.sessions \
+              WHERE family_id = $1::uuid AND player_id = $2::uuid \
+             LIMIT 1",
+        )
+        .bind(family_id)
+        .bind(player_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+        Ok(row.is_some())
+    }
+
+    /// Revokes every refresh family of a player on the caller's tx: all its refresh tokens
+    /// and access sessions. `None` when there is no such player; otherwise the rows
+    /// deleted, tokens and sessions together.
+    ///
+    /// Lock order: the player row first ([`Store::lock_player_row_tx`]), then its token
+    /// and session rows — the order a login takes them (FOR KEY SHARE on the player by its
+    /// family insert, then its own rows) and the order [`Store::delete_player_tx`] takes
+    /// them through this function. Holding the player row makes the two deletes one cut:
+    /// a login racing this either committed before the lock was granted and both deletes
+    /// see its rows, or waits on the lock and commits after, whole. A refresh that already
+    /// holds its token row when this takes the player row deadlocks with it; Postgres
+    /// aborts one of the two, whole, never half.
+    pub async fn kill_player_families_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<Option<u64>, sqlx::Error> {
+        if !self.lock_player_row_tx(conn, player_id).await? {
+            return Ok(None);
+        }
+        let tokens = sqlx::query("DELETE FROM accounts.refresh_tokens WHERE player_id = $1::uuid")
+            .bind(player_id)
+            .execute(&mut *conn)
+            .await?;
+        let sessions = sqlx::query("DELETE FROM accounts.sessions WHERE player_id = $1::uuid")
+            .bind(player_id)
+            .execute(&mut *conn)
+            .await?;
+        Ok(Some(tokens.rows_affected() + sessions.rows_affected()))
     }
 
     /// Resolves a bearer token to its player, ignoring expired sessions. `Ok(None)`

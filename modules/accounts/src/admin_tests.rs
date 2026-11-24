@@ -5,13 +5,17 @@ use std::sync::Arc;
 
 use accountsapi::Auth as _;
 use controlplane::{
-    CellKind, DataTable, EntityRef, Link, PanelBody, PanelQuery, Primitive, Provider as _, SearchQuery,
+    CellKind, DataTable, EntityRef, InvokeCall, InvokeOutcome, Link, PanelBody, PanelQuery,
+    PrepareCall, Primitive, Provider as _, SearchQuery, Then,
 };
 use opsapi::Status;
 use sqlx::PgPool;
 use testdb::test_pool;
 
-use super::{fake_client, fake_ip, mask, thousands, AccountsAdmin, MAX_NEEDLE_BYTES, PAGE_SIZE};
+use super::{
+    fake_client, fake_ip, mask, thousands, AccountsAdmin, MAX_NEEDLE_BYTES, PAGE_SIZE, REVOKE_ALL,
+    REVOKE_SESSION,
+};
 use crate::tests::{cleanup_player, suffix, wired};
 
 /// A canonical uuid no registration mints: registrations are v4, this is v0.
@@ -325,6 +329,13 @@ fn manifest_declares_only_the_actions_the_portal_can_refuse() {
     ids.sort_unstable();
     assert_eq!(ids, ["delete-account", "revoke-all", "revoke-session", "suspend", "suspend-header"]);
     assert!(m.pages.iter().all(|p| p.head_actions.is_empty()), "no page-head action remains");
+    assert!(m.writes, "the session revocations write");
+    let action = |id: &str| m.actions.iter().find(|a| a.id == id).unwrap();
+    let all = action(REVOKE_ALL);
+    assert!(all.implemented && all.danger && all.prepare, "Revoke all is a prepared danger Confirm");
+    assert!(matches!(all.then, Then::Confirm(_)));
+    let one = action(REVOKE_SESSION);
+    assert!(one.implemented && !one.prepare && matches!(one.then, Then::Invoke));
 }
 
 #[tokio::test]
@@ -420,6 +431,243 @@ async fn active_tile_and_profile_draw_nothing_the_store_cannot_back() {
     };
     let labels: Vec<&str> = list.items.iter().map(|(label, _)| label.as_str()).collect();
     assert!(!labels.contains(&"Country"), "no country is stored for an account: {labels:?}");
+}
+
+fn revoke(action: &str, player: Option<&str>, item: Option<&str>) -> InvokeCall {
+    InvokeCall {
+        module: "accounts".to_string(),
+        action: action.to_string(),
+        entity: player.map(|id| EntityRef { kind: "player".to_string(), id: id.to_string() }),
+        input: BTreeMap::new(),
+        expected_revision: None,
+        reason: None,
+        operator: "op".to_string(),
+        item: item.map(str::to_string),
+        request_id: None,
+    }
+}
+
+/// Refresh tokens and access sessions left in one family.
+async fn family_rows(pool: &PgPool, family: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM accounts.refresh_tokens WHERE family_id = $1::uuid) \
+              + (SELECT count(*) FROM accounts.sessions WHERE family_id = $1::uuid)",
+    )
+    .bind(family)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// Refresh tokens and access sessions left to one player.
+async fn player_rows(pool: &PgPool, player: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM accounts.refresh_tokens WHERE player_id = $1::uuid) \
+              + (SELECT count(*) FROM accounts.sessions WHERE player_id = $1::uuid)",
+    )
+    .bind(player)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// Polls until a backend waits on a lock held by `holder`; false when none does within
+/// about twenty seconds, which only happens when nothing contends for the held row.
+async fn waits_on(pool: &PgPool, holder: i32) -> bool {
+    for _ in 0..4000 {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity \
+              WHERE datname = current_database() AND wait_event_type = 'Lock' \
+                AND $1::int = ANY(pg_blocking_pids(pid))",
+        )
+        .bind(holder)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if waiting > 0 {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    false
+}
+
+async fn backend_pid(conn: &mut sqlx::PgConnection) -> i32 {
+    sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(conn).await.unwrap()
+}
+
+#[tokio::test]
+async fn revoke_session_ends_one_family_and_a_repeat_or_a_foreign_family_is_noop() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let email = format!("rev1-{}@test.local", suffix());
+    let first = svc.register(email.clone(), "pw".into(), "RevOne".into()).await.unwrap();
+    let second = svc.login(email, "pw".into()).await.unwrap();
+    let id = first.player_id.clone();
+    let other_email = format!("rev1o-{}@test.local", suffix());
+    let other = svc.register(other_email, "pw".into(), "RevOther".into()).await.unwrap();
+    let (a, b, foreign) = (
+        family_of(&pool, &first.refresh_token).await,
+        family_of(&pool, &second.refresh_token).await,
+        family_of(&pool, &other.refresh_token).await,
+    );
+    let admin = AccountsAdmin::new(Arc::clone(&svc));
+    let revoked = admin.invoke(revoke(REVOKE_SESSION, Some(&id), Some(&a))).await;
+    let rows = (family_rows(&pool, &a).await, family_rows(&pool, &b).await);
+    let refresh = svc.refresh(first.refresh_token.clone()).await.map(|_| ());
+    let verified = accountsapi::Sessions::verify_session(&*svc, first.token.clone()).await;
+    let repeat = admin.invoke(revoke(REVOKE_SESSION, Some(&id), Some(&a))).await;
+    let cross = admin.invoke(revoke(REVOKE_SESSION, Some(&id), Some(&foreign))).await;
+    let foreign_rows = family_rows(&pool, &foreign).await;
+    cleanup_player(&pool, &id).await;
+    cleanup_player(&pool, &other.player_id).await;
+
+    assert!(matches!(revoked.unwrap(), InvokeOutcome::Ok { ref message, .. } if message == "Session revoked"));
+    assert_eq!(rows.0, 0, "the revoked family keeps no token and no session");
+    assert_eq!(rows.1, 2, "the player's other login keeps its token and session");
+    assert_eq!(refresh.unwrap_err().status, Status::Unauthorized, "the revoked refresh token is dead");
+    assert_eq!(verified.unwrap(), None, "the revoked access token is dead");
+    assert!(matches!(repeat.unwrap(), InvokeOutcome::NoOp { .. }), "a repeat finds nothing to revoke");
+    assert!(matches!(cross.unwrap(), InvokeOutcome::NoOp { .. }), "another player's family is not this player's");
+    assert_eq!(foreign_rows, 2, "another player's family survives a revoke bound to this player");
+}
+
+#[tokio::test]
+async fn revoke_all_ends_every_family_of_the_player_only_and_a_repeat_is_noop() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let email = format!("rev2-{}@test.local", suffix());
+    let first = svc.register(email.clone(), "pw".into(), "RevAll".into()).await.unwrap();
+    svc.login(email, "pw".into()).await.unwrap();
+    let id = first.player_id.clone();
+    let other_email = format!("rev2o-{}@test.local", suffix());
+    let other = svc.register(other_email, "pw".into(), "RevAllOther".into()).await.unwrap();
+    let admin = AccountsAdmin::new(Arc::clone(&svc));
+    let before = player_rows(&pool, &id).await;
+    let revoked = admin.invoke(revoke(REVOKE_ALL, Some(&id), None)).await;
+    let after = player_rows(&pool, &id).await;
+    let others = player_rows(&pool, &other.player_id).await;
+    let repeat = admin.invoke(revoke(REVOKE_ALL, Some(&id), None)).await;
+    let player_kept = svc.store.player_row(&id).await.unwrap().is_some();
+    cleanup_player(&pool, &id).await;
+    cleanup_player(&pool, &other.player_id).await;
+
+    assert_eq!(before, 4, "two logins: two tokens and two sessions");
+    assert!(matches!(revoked.unwrap(), InvokeOutcome::Ok { ref message, .. } if message == "All sessions revoked"));
+    assert_eq!(after, 0, "every token and session of the player is gone");
+    assert_eq!(others, 2, "another player's login is untouched");
+    assert!(matches!(repeat.unwrap(), InvokeOutcome::NoOp { .. }), "a repeat finds nothing to revoke");
+    assert!(player_kept, "revoking sessions keeps the account");
+}
+
+#[tokio::test]
+async fn revoke_actions_refuse_a_missing_or_malformed_binding_and_an_overlong_input() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let admin = AccountsAdmin::new(svc);
+    let status = |r: Result<InvokeOutcome, opsapi::Error>| r.unwrap_err().status;
+    for action in [REVOKE_ALL, REVOKE_SESSION] {
+        let item = Some(NO_PLAYER);
+        assert_eq!(status(admin.invoke(revoke(action, None, item)).await), Status::Invalid, "{action}");
+        assert_eq!(status(admin.invoke(revoke(action, Some("not-a-uuid"), item)).await), Status::Invalid);
+        assert_eq!(status(admin.invoke(revoke(action, Some(NO_PLAYER), item)).await), Status::NotFound);
+        let mut long = revoke(action, Some(NO_PLAYER), item);
+        long.input.insert("x".to_string(), "a".repeat(controlplane::MAX_INPUT_VALUE_BYTES + 1));
+        assert_eq!(status(admin.invoke(long).await), Status::Invalid, "{action}");
+    }
+    let no_item = admin.invoke(revoke(REVOKE_SESSION, Some(NO_PLAYER), None)).await;
+    assert_eq!(status(no_item), Status::Invalid);
+    let bad_item = admin.invoke(revoke(REVOKE_SESSION, Some(NO_PLAYER), Some("fam"))).await;
+    assert_eq!(status(bad_item), Status::Invalid);
+}
+
+#[tokio::test]
+async fn revoke_all_prepare_names_the_player_and_counts_live_sessions() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let email = format!("rev3-{}@test.local", suffix());
+    let first = svc.register(email.clone(), "pw".into(), "RevPrep".into()).await.unwrap();
+    svc.login(email, "pw".into()).await.unwrap();
+    let id = first.player_id.clone();
+    let handle = svc.store.player_row(&id).await.unwrap().map(|r| {
+        crate::store::render_handle(&r.display_name, &r.discriminator)
+    });
+    let call = |id: &str| PrepareCall {
+        module: "accounts".to_string(),
+        action: REVOKE_ALL.to_string(),
+        entity: Some(EntityRef { kind: "player".to_string(), id: id.to_string() }),
+        item: None,
+        operator: "op".to_string(),
+    };
+    let admin = AccountsAdmin::new(Arc::clone(&svc));
+    let spec = admin.prepare(call(&id)).await;
+    let rows = player_rows(&pool, &id).await;
+    let missing = admin.prepare(call(NO_PLAYER)).await;
+    cleanup_player(&pool, &id).await;
+
+    let Then::Confirm(spec) = spec.unwrap() else { panic!("revoke-all prepares a Confirm") };
+    assert_eq!(spec.title, format!("Revoke all sessions of {}?", handle.unwrap()));
+    assert_eq!(spec.impact.len(), 1);
+    assert_eq!(spec.impact[0].0, "Active sessions");
+    assert_eq!(spec.impact[0].1.value, "2");
+    assert_eq!(rows, 4, "prepare writes nothing");
+    assert_eq!(missing.unwrap_err().status, Status::NotFound);
+}
+
+/// A login holding the player row (FOR KEY SHARE through its family insert) when Revoke all
+/// starts: the revoke waits for it, then takes its family too.
+#[tokio::test(flavor = "multi_thread")]
+async fn revoke_all_waits_for_a_racing_login_and_revokes_it_whole() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let email = format!("rev4-{}@test.local", suffix());
+    let id = svc.register(email, "pw".into(), "RevRace".into()).await.unwrap().player_id;
+    let mut login = pool.begin().await.unwrap();
+    let login_pid = backend_pid(&mut login).await;
+    let (refresh, access) = (crate::store::new_token(), crate::store::new_token());
+    let family = svc.store.insert_refresh_family_tx(&mut login, &refresh, &id).await.unwrap();
+    svc.store.insert_session_tx(&mut login, &id, &access, &family).await.unwrap();
+    let task = {
+        let admin = AccountsAdmin::new(Arc::clone(&svc));
+        let id = id.clone();
+        tokio::spawn(async move { admin.invoke(revoke(REVOKE_ALL, Some(&id), None)).await })
+    };
+    let waited = waits_on(&pool, login_pid).await;
+    login.commit().await.unwrap();
+    let revoked = task.await.unwrap();
+    let left = family_rows(&pool, &family).await;
+    cleanup_player(&pool, &id).await;
+
+    assert!(waited, "Revoke all must wait on the login holding the player row");
+    assert!(matches!(revoked.unwrap(), InvokeOutcome::Ok { .. }));
+    assert_eq!(left, 0, "the login that committed first is revoked whole: token and session");
+}
+
+/// Revoke all holding the player row when a login starts: the login waits, then commits
+/// after it, whole.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_login_racing_revoke_all_waits_and_survives_whole() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let email = format!("rev5-{}@test.local", suffix());
+    let id = svc.register(email.clone(), "pw".into(), "RevLate".into()).await.unwrap().player_id;
+    let mut gate = pool.begin().await.unwrap();
+    let gate_pid = backend_pid(&mut gate).await;
+    let killed = svc.store.kill_player_families_tx(&mut gate, &id).await.unwrap();
+    let task = {
+        let svc = Arc::clone(&svc);
+        tokio::spawn(async move { svc.login(email, "pw".into()).await })
+    };
+    let waited = waits_on(&pool, gate_pid).await;
+    gate.commit().await.unwrap();
+    let session = task.await.unwrap();
+    let left = player_rows(&pool, &id).await;
+    cleanup_player(&pool, &id).await;
+
+    assert_eq!(killed, Some(2), "the registration's token and session are revoked");
+    assert!(waited, "the login must wait on Revoke all's player row lock");
+    session.unwrap();
+    assert_eq!(left, 2, "the login after the revoke survives whole: token and session");
 }
 
 #[test]

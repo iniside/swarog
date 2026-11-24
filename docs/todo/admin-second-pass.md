@@ -96,11 +96,6 @@ modules/accounts/src/admin.rs, as committed in admin-control-plane-redesign step
   ADMIN2-28. Mockup: the row menu's "Delete account…". Action `DELETE_ACCOUNT`,
   `implemented: false`: modules/accounts/src/admin.rs:412; deletion is the player's own
   two-step flow. Replaced by: an operator path into the same deletion.
-- [ ] **Revoke sessions**
-  ADMIN2-31. Mockup: the Active sessions "Revoke all" tool and each row's "Revoke".
-  Actions `REVOKE_ALL` and `REVOKE_SESSION`, `implemented: false`:
-  modules/accounts/src/admin.rs:429-430; no operator revocation exists. Replaced by: an
-  operator call into the family revocation (`Store::kill_family_tx`).
 - [ ] **Players total at scale**
   ADMIN2-32. The players page total and the nav counter run an exact `count(*)` over
   `accounts.players` on every load (`Store::player_count`, modules/accounts/src/store.rs),

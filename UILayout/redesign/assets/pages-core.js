@@ -23,6 +23,11 @@ window.PAGES = window.PAGES || {};
     impact: [["Modules that purge", "11"], ["Cloud saves", "3 slots · 41 MB"], ["Wallet balance", "unknown (wallet unavailable)"]],
     reason: "GDPR request id", typeToConfirm: h, confirm: "Delete account", done: "Deletion saga started",
   });
+  P.revokeAllSessions = h => UI.confirm({
+    c: { module: "accounts", point: "entity.user.tab", prim: "ConfirmAction" },
+    title: `Revoke all sessions of ${h}?`, body: "The player is signed out on every device and must log in again.",
+    impact: [["Active sessions", `${sessions.length}`]], confirm: "Revoke all", done: "All sessions revoked",
+  });
   P.changeRole = (h = P.currentUser?.handle) => {
     const u = D.byHandle[h];
     UI.modal(`${frag({ module: "lore", point: "entity.user.header_action", prim: "Form" }, `<div class="modal-head"><div class="modal-icon ok">${icon("shield")}</div><div><h2>Change Lore role — ${esc(h)}</h2><div class="muted" style="font-size:12px">Global role; per-repository overrides stay in place.</div></div></div><div class="modal-body">${UI.form({ actions: false, fields: [
@@ -118,8 +123,8 @@ window.PAGES = window.PAGES || {};
     ${panel({ c: { module: "accounts", point: "entity.user.tab", prim: "PropertyList" }, title: "Profile", body: props([["User id", `<span class="mono">${u.id}</span> ${UI.ref("user", u.id)}`], ["Handle", esc(u.handle)], ["Display name", esc(u.name)], ["Kind", badge(u.kind, u.kind === "staff" ? "accent" : "", true)], ["Status", status(u.status)], ["Created", u.created], ["Last seen", u.lastSeen]]) })}
     ${panel({ c: { module: "accounts", point: "entity.user.tab", prim: "DataTable" }, title: "Linked identities", meta: `${u.providers.length}`, flush: true,
       body: table({ pager: false, cols: [{ label: "Provider" }, { label: "Subject" }, { label: "Linked" }, { label: "Last used" }], rows: u.providers.map((p, i) => [`<span class="tag">${p}</span>`, `<span class="mono">${p === "google" ? "1094…" + u.id.slice(0, 4) : p === "epic" ? "epic|" + u.id.slice(2, 8) : u.id}</span>`, u.created, i ? "3 d ago" : u.lastSeen]) }) })}
-    ${panel({ c: { module: "accounts", point: "entity.user.tab", prim: "DataTable" }, title: "Active sessions", meta: "2", flush: true, tools: `<button class="btn sm danger-ghost">Revoke all</button>`,
-      body: table({ pager: false, cols: [{ label: "Client" }, { label: "IP" }, { label: "Started" }, { label: "Expires" }, { label: "" }], rows: sessions.map(s => [...s.map(x => esc(x)), `<button class="btn sm ghost">Revoke</button>`]) }) })}
+    ${panel({ c: { module: "accounts", point: "entity.user.tab", prim: "DataTable" }, title: "Active sessions", meta: "2", flush: true, tools: `<button class="btn sm danger-ghost" onclick="PAGES.revokeAllSessions('${esc(u.handle)}')">Revoke all</button>`,
+      body: table({ pager: false, cols: [{ label: "Client" }, { label: "IP" }, { label: "Started" }, { label: "Expires" }, { label: "" }], rows: sessions.map(s => [...s.map(x => esc(x)), `<button class="btn sm ghost" onclick="UI.toast('Session revoked')">Revoke</button>`]) }) })}
   </div>`;
   tabRender.characters = u => {
     const list = D.characters.filter(c => c.player_id === u.id);

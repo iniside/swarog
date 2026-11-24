@@ -1,18 +1,18 @@
 //! The `accounts` control-plane provider: the Users & players page, the `player` entity
 //! (header, facts, the Profile & identities tab), the player search, the active-players
-//! tile and the nav counter.
+//! tile, the nav counter and the operator session revocations.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use controlplane::{
-    fake_hash, ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ContributionDecl, DataTable,
-    Emphasis, EntityHeader, EntityKindDecl, EntityRef, FilterDef, FilterKind, InvokeCall,
-    InvokeOutcome, KpiTile, Layout, Link, Manifest, NavEntry, Noun, PageDecl, PageInfo, Palette,
-    PanelBody, PanelQuery, Point, Primitive, PropertyList, Provider, Role, Row, SearchDecl,
-    SearchHit, SearchQuery, SortDir, Then, DEFAULT_PANEL_DEADLINE_MS,
-    DEFAULT_SEARCH_DEADLINE_MS,
+    fake_hash, ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ConfirmSpec, ConfirmTone,
+    ContributionDecl, DataTable, Emphasis, EntityHeader, EntityKindDecl, EntityRef, FilterDef,
+    FilterKind, InvokeCall, InvokeOutcome, KpiTile, Layout, Link, Manifest, NavEntry, Noun,
+    PageDecl, PageInfo, Palette, PanelBody, PanelQuery, Point, PrepareCall, Primitive,
+    PropertyList, Provider, ReasonReq, Role, Row, SearchDecl, SearchHit, SearchQuery, SortDir,
+    Then, DEFAULT_PANEL_DEADLINE_MS, DEFAULT_SEARCH_DEADLINE_MS,
 };
 use controlplane::order;
 use opsapi::Error;
@@ -40,8 +40,8 @@ const LABEL: &str = "label";
 const SUSPEND: &str = "suspend";
 const DELETE_ACCOUNT: &str = "delete-account";
 const SUSPEND_HEADER: &str = "suspend-header";
-const REVOKE_ALL: &str = "revoke-all";
-const REVOKE_SESSION: &str = "revoke-session";
+pub(crate) const REVOKE_ALL: &str = "revoke-all";
+pub(crate) const REVOKE_SESSION: &str = "revoke-session";
 
 /// The players table's filter keys in `PanelQuery::params`.
 const FILTER_KIND: &str = "kind";
@@ -63,7 +63,7 @@ const MAX_NEEDLE_BYTES: usize = 256;
 const PROVIDERS: [&str; 4] = [GUEST, DEV, EPIC, GOOGLE];
 
 /// The length of the canonical uuid spelling, hyphens included.
-const UUID_BYTES: usize = 36;
+pub(crate) const UUID_BYTES: usize = 36;
 
 /// The largest cursor µs `store::players_page` compares exactly: its
 /// `$7 * interval '1 microsecond'` multiplies through float8, exact up to 2^53, which is
@@ -91,6 +91,25 @@ fn is_uuid(value: &str) -> bool {
             8 | 13 | 18 | 23 => *b == b'-',
             _ => b.is_ascii_hexdigit(),
         })
+}
+
+/// The player an action is bound to: its entity, a uuid-shaped `player` ref, checked
+/// before any statement.
+fn bound_player(entity: Option<&EntityRef>) -> Result<&str, Error> {
+    match entity {
+        Some(e) if e.kind == KIND && is_uuid(&e.id) => Ok(&e.id),
+        Some(e) if e.kind == KIND => Err(Error::invalid("accounts: malformed player id")),
+        _ => Err(Error::invalid("accounts: this action needs a player")),
+    }
+}
+
+/// Every input value is at most [`controlplane::MAX_INPUT_VALUE_BYTES`].
+fn input_within_cap(input: &BTreeMap<String, String>) -> bool {
+    input.values().all(|v| v.len() <= controlplane::MAX_INPUT_VALUE_BYTES)
+}
+
+fn done(message: &str) -> InvokeOutcome {
+    InvokeOutcome::Ok { message: message.to_string(), reveal: None, redirect: None }
 }
 
 /// `"<created_at µs>.<id>"` of the last row shown.
@@ -315,6 +334,37 @@ fn not_implemented(
     }
 }
 
+/// `revoke-all`'s modal; `prepare` names the player and counts the live sessions.
+fn revoke_all_spec(title: String, impact: Vec<(String, Cell)>) -> ConfirmSpec {
+    ConfirmSpec {
+        title,
+        body: "The player is signed out on every device and must log in again.".to_string(),
+        tone: ConfirmTone::Danger,
+        impact,
+        reason: ReasonReq::None,
+        reason_hint: None,
+        type_to_confirm: None,
+        confirm_label: "Revoke all".to_string(),
+    }
+}
+
+/// An action `invoke` runs; a Confirm asks `prepare` for its modal.
+fn implemented(
+    id: &str,
+    point: ActionPoint,
+    label: &str,
+    danger: bool,
+    emphasis: Emphasis,
+    then: Then,
+) -> ActionDecl {
+    ActionDecl {
+        prepare: matches!(then, Then::Confirm(_)),
+        then,
+        implemented: true,
+        ..not_implemented(id, point, label, "", 10, danger, emphasis)
+    }
+}
+
 fn manifest() -> Manifest {
     let row = || ActionPoint::RowAction(KIND.to_string());
     let tool = |c: &str| ActionPoint::PanelTool(c.to_string());
@@ -412,9 +462,15 @@ fn manifest() -> Manifest {
                 true,
                 plain,
             ),
-            // NEW: no operator revocation exists.
-            not_implemented(REVOKE_ALL, tool(SESSIONS), "Revoke all", "", 10, true, plain),
-            not_implemented(REVOKE_SESSION, table_row(SESSIONS), "Revoke", "", 10, false, ghost),
+            implemented(
+                REVOKE_ALL,
+                tool(SESSIONS),
+                "Revoke all",
+                true,
+                plain,
+                Then::Confirm(revoke_all_spec("Revoke all sessions?".to_string(), Vec::new())),
+            ),
+            implemented(REVOKE_SESSION, table_row(SESSIONS), "Revoke", false, ghost, Then::Invoke),
         ],
         search: vec![SearchDecl {
             kind: KIND.to_string(),
@@ -422,7 +478,7 @@ fn manifest() -> Manifest {
             icon: "user".to_string(),
             deadline_ms: DEFAULT_SEARCH_DEADLINE_MS,
         }],
-        writes: false,
+        writes: true,
     }
 }
 
@@ -608,6 +664,64 @@ impl AccountsAdmin {
         })
     }
 
+    /// Revokes one login of the bound player: the family in `req.item`, its refresh
+    /// tokens and access sessions, under the player row lock, so a refresh rotating inside
+    /// it either landed before and goes with it or finds its token gone. A family holding
+    /// nothing, or not this player's, is NoOp.
+    async fn revoke_session(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let player = bound_player(req.entity.as_ref())?;
+        let family = match req.item.as_deref() {
+            Some(item) if is_uuid(item) => item,
+            _ => return Err(Error::invalid("accounts: revoke-session needs a session family id")),
+        };
+        let store = &self.svc.store;
+        let mut tx = store.pool.begin().await.map_err(internal)?;
+        if !store.lock_player_row_tx(&mut tx, player).await.map_err(internal)? {
+            return Err(Error::not_found(format!("accounts: no player {player}")));
+        }
+        if !store.family_of_player_tx(&mut tx, player, family).await.map_err(internal)? {
+            tx.rollback().await.map_err(internal)?;
+            return Ok(InvokeOutcome::NoOp { message: "That session is no longer active".to_string() });
+        }
+        store.kill_family_tx(&mut tx, family).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(done("Session revoked"))
+    }
+
+    /// Revokes every login of the bound player in one transaction
+    /// (`Store::kill_player_families_tx`). A player with no token or session left is NoOp.
+    async fn revoke_all(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let player = bound_player(req.entity.as_ref())?;
+        let store = &self.svc.store;
+        let mut tx = store.pool.begin().await.map_err(internal)?;
+        match store.kill_player_families_tx(&mut tx, player).await.map_err(internal)? {
+            None => Err(Error::not_found(format!("accounts: no player {player}"))),
+            Some(0) => {
+                tx.rollback().await.map_err(internal)?;
+                Ok(InvokeOutcome::NoOp { message: "The player has no sessions".to_string() })
+            }
+            Some(_) => {
+                tx.commit().await.map_err(internal)?;
+                Ok(done("All sessions revoked"))
+            }
+        }
+    }
+
+    /// The Revoke all modal, naming the player and counting its live sessions.
+    async fn prepare_revoke_all(&self, req: &PrepareCall) -> Result<Then, Error> {
+        let player = bound_player(req.entity.as_ref())?;
+        let store = &self.svc.store;
+        let row = store
+            .player_row(player)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| Error::not_found(format!("accounts: no player {player}")))?;
+        let (_, live) = store.live_families(player, 1).await.map_err(internal)?;
+        let handle = render_handle(&row.display_name, &row.discriminator);
+        let impact = vec![("Active sessions".to_string(), text(CellKind::Text, live.to_string()))];
+        Ok(Then::Confirm(revoke_all_spec(format!("Revoke all sessions of {handle}?"), impact)))
+    }
+
     /// Each requested player's handle, keyed by id; an id naming no player is left out.
     async fn labels(&self, req: &PanelQuery) -> Result<Primitive, Error> {
         let players = self.svc.store.players_by_id(&req.refs).await.map_err(internal)?;
@@ -726,11 +840,26 @@ impl Provider for AccountsAdmin {
     }
 
     async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, Error> {
+        if !input_within_cap(&req.input) {
+            return Err(Error::invalid(format!(
+                "an input value is longer than {} bytes",
+                controlplane::MAX_INPUT_VALUE_BYTES
+            )));
+        }
         match req.action.as_str() {
-            SUSPEND | DELETE_ACCOUNT | SUSPEND_HEADER | REVOKE_ALL | REVOKE_SESSION => {
+            REVOKE_SESSION => self.revoke_session(&req).await,
+            REVOKE_ALL => self.revoke_all(&req).await,
+            SUSPEND | DELETE_ACCOUNT | SUSPEND_HEADER => {
                 Err(Error::forbidden("not implemented yet"))
             }
             other => Err(Error::not_found(format!("{MODULE} has no action {other:?}"))),
+        }
+    }
+
+    async fn prepare(&self, req: PrepareCall) -> Result<Then, Error> {
+        match req.action.as_str() {
+            REVOKE_ALL => self.prepare_revoke_all(&req).await,
+            other => Err(Error::not_found(format!("{MODULE} prepares no action {other:?}"))),
         }
     }
 }

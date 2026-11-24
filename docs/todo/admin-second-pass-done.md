@@ -2,6 +2,15 @@
 
 Last updated: 2026-11-24
 
+- [x] **Revoke sessions** (2026-11-24, admin-second-pass step 13)
+  ADMIN2-31. Mockup: the Active sessions "Revoke all" tool and each row's "Revoke". Both are
+  implemented and `accounts` declares `writes: true`. Revoke ends the row's refresh family
+  (`Store::kill_family_tx`) under the player row lock; a family holding nothing, or not this
+  player's, is NoOp "That session is no longer active". Revoke all is a prepared danger
+  Confirm naming the player and counting its live sessions; it deletes every refresh token
+  and session of the player in one transaction (`Store::kill_player_families_tx`, which
+  self-delete now shares). No event. The mockup's Revoke all opens the same Confirm and
+  Revoke toasts "Session revoked".
 - [x] **Identity last used** (2026-11-24, admin-second-pass step 12)
   ADMIN2-22. Mockup: the Linked identities Last used column. Removed: `fake_last_used`.
   Replaced by `accounts.identities.last_used_at`, stamped in the session-minting transaction

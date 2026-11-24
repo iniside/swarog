@@ -3,13 +3,16 @@
 //! Policy and expected outcomes live in the tool. These probes only exercise
 //! the same production validators and service path used by real requests.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
 use accountsapi::Auth as _;
+use controlplane::{EntityRef, InvokeCall, Provider as _};
 use opsapi::Identity;
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 
+use crate::admin::{AccountsAdmin, REVOKE_SESSION};
 use crate::password::ArgonVerifier;
 use crate::providers::{Providers, Resolution, EPIC, GOOGLE, GUEST};
 use crate::store::Store;
@@ -283,6 +286,70 @@ fn dead_pool() -> PgPool {
 }
 
 const DEAD_DSN: &str = "postgres://gamebackend:gamebackend@127.0.0.1:1/gamebackend?sslmode=disable";
+
+/// The cap `AccountsAdmin::invoke` applies to every input value before anything else.
+pub const CP_INVOKE_INPUT_VALUE_BYTES: usize = controlplane::MAX_INPUT_VALUE_BYTES;
+
+/// The one length the admin's `is_uuid` admits for a bound player or session family.
+pub const UUID_SHAPE_BYTES: usize = crate::admin::UUID_BYTES;
+
+/// A `len`-byte value with the four dashes at their uuid positions, so only the length
+/// varies between the two probe calls.
+fn uuid_shaped(len: usize) -> String {
+    (0..len)
+        .map(|i| match i {
+            8 | 13 | 18 | 23 => '-',
+            _ => 'a',
+        })
+        .collect()
+}
+
+/// Drives `revoke-session` through `AccountsAdmin::invoke` over the dead pool; `true` when
+/// the call is refused as `Invalid`. Every guard runs before the transaction opens, so a
+/// value that passes them reaches the dead store and answers `Internal`.
+fn revoke_refused(input: BTreeMap<String, String>, player: String, family: String) -> bool {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread runtime");
+    let admin = {
+        let _guard = rt.enter();
+        AccountsAdmin::new(Arc::new(service_on(dead_pool())))
+    };
+    let call = InvokeCall {
+        module: "accounts".to_string(),
+        action: REVOKE_SESSION.to_string(),
+        entity: Some(EntityRef { kind: "player".to_string(), id: player }),
+        input,
+        expected_revision: None,
+        reason: None,
+        operator: "conformance".to_string(),
+        item: Some(family),
+        request_id: None,
+    };
+    matches!(rt.block_on(admin.invoke(call)), Err(e) if e.status == opsapi::Status::Invalid)
+}
+
+/// [`CP_INVOKE_INPUT_VALUE_BYTES`], executed through `AccountsAdmin::invoke`: at the cap the
+/// call passes the input guard and reaches the dead store, over it the guard answers first.
+#[doc(hidden)]
+pub fn conformance_cp_invoke_input_rejected(len: usize) -> bool {
+    let input = BTreeMap::from([("value".to_string(), "a".repeat(len))]);
+    revoke_refused(input, uuid_shaped(UUID_SHAPE_BYTES), uuid_shaped(UUID_SHAPE_BYTES))
+}
+
+/// The bound player id's shape, on the same authority: any length but the uuid's is
+/// `bound_player`'s own `Invalid` ahead of the checkout.
+#[doc(hidden)]
+pub fn conformance_admin_player_rejected(len: usize) -> bool {
+    revoke_refused(BTreeMap::new(), uuid_shaped(len), uuid_shaped(UUID_SHAPE_BYTES))
+}
+
+/// The bound session family's shape (`req.item`), on the same authority and reasoning.
+#[doc(hidden)]
+pub fn conformance_admin_family_rejected(len: usize) -> bool {
+    revoke_refused(BTreeMap::new(), uuid_shaped(UUID_SHAPE_BYTES), uuid_shaped(len))
+}
 
 /// Whether `accountsapi::Auth::delete_account` rejects a ticket of `len` bytes, driven
 /// through the op on a pool that CANNOT connect — the `refresh` case's shape, and for the
