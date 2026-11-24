@@ -25,13 +25,6 @@ _None._
   when it finds no writer at all; a floor that fails the phase on zero would catch a scan that
   silently stopped matching (proof audit of 38a51fdf).
 
-### Known limits (admin-control-plane-redesign step 20)
-
-- [ ] **The cp.invoke request_id policy row does not list notifications**
-  `CONTROL_PLANE_INVOKE_REQUEST_ID_RATIONALE` (`tools/conformance/src/policy.rs:76-79`)
-  says how mail and wallet persist the request id; notifications, which hashes it into its
-  operator dedup key since Step 20, is missing from that text.
-
 ### Known limits (admin-control-plane-redesign step 15)
 
 - [ ] **Admin form CapCase rows are listed by hand**
