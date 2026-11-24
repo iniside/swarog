@@ -50,7 +50,7 @@ Per-module mechanics live in each `modules/<name>/src/lib.rs` header and the
   BEFORE trigger (writers never supply it); the admin edit compares-and-swaps on it.
   The column rolls out by `DROP SCHEMA config CASCADE` and a fresh boot, no data
   migration: an old table boots but fails on its first write.
-- **admin** — GameOps portal at `/admin` (minijinja over the embedded Go-era theme),
+- **admin** — `core/admin` (a core module, not under `modules/`): GameOps portal at `/admin` (minijinja over the embedded Go-era theme),
   owning schema `admin`. CSRF is checked BEFORE the local/remote editability
   decision; one generic 401 for wrong-pass/unknown-user/locked (no username oracle);
   `Secure` cookie unless `ADMIN_COOKIE_SECURE=0` (dev opt-out, loud warn). The argon2
@@ -65,8 +65,9 @@ Per-module mechanics live in each `modules/<name>/src/lib.rs` header and the
   AND CSRF (deliberately open local portal, loud warn). `ADMIN_USER`/`ADMIN_PASS` no
   longer exist. Emits durable `admin.action` (login events local in BOTH topologies;
   form-submit where the form's module is co-hosted; field names only, never values).
-  Remote items fan out over QUIC via `admin.adminData`
-  (`adminrpc::admin_remote_factory`). admin-svc has a DB (schema `admin` + the
+  Remote providers are reached over the QUIC `cp.*` face
+  (`controlplanerpc::register_face` / `remote_factory`; providers contribute to
+  `controlplane::PROVIDER_SLOT`). admin-svc has a DB (schema `admin` + the
   durable plane).
 - **audit** — zero-coupling raw durable sinks for the 16 ledger topics
   (`character.created/deleted`, `player.registered`, `player.promoted`,
@@ -96,8 +97,8 @@ Per-module mechanics live in each `modules/<name>/src/lib.rs` header and the
   `dev-key-client` (NO `match.report`) + `dev-key-server` (`full`) seed ONLY when
   `APIKEYS_DEV_SEED` is explicitly truthy; a gateway process without the capability
   FAILS STARTUP unless `APIKEYS_DEV_ALLOW=1` (allow-all, loud warn). The admin page
-  is remotely editable via `adminapi::AdminSubmit`/`admin.adminSubmit` in both
-  topologies.
+  is a `controlplane::Provider` in `PROVIDER_SLOT`, remotely reachable via the
+  `cp.*` face in both topologies.
 - **wallet** — `credit`/`debit` are wire-only (no `#[http]`, no `Identity`): a client
   can never move its own money. A movement's idempotency identity is `(player_id,
   currency, signed delta, reason)` under a REQUIRED, ledger-`UNIQUE`

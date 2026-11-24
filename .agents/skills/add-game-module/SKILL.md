@@ -28,7 +28,7 @@ wrong, is what later reads as "just import the other module":
 | "Tell whoever cares that X happened" (async, cross-module) | Durable event: `bus::define` in `<name>events`, `emit_tx` in the store tx, consumer `on_tx(SubscriptionSpec…)` |
 | Same-module async reaction | Plain `emit`/`on` (in-process only — NEVER cross-module) |
 | Replica-local cache freshness | `ctx.invalidation().register(channel, name, cb)` — never a durable sub |
-| Cross-cutting collection (admin page, ops, readiness) | `ctx.contribute(slot, v)` — `adminapi::SLOT`, `opsapi::{SLOT,BINDING_SLOT,LOCAL_SLOT}` |
+| Cross-cutting collection (admin page, ops, readiness) | `ctx.contribute(slot, v)` — `controlplane::PROVIDER_SLOT`, `opsapi::{SLOT,BINDING_SLOT,LOCAL_SLOT}` |
 | Wire exposure of own ops | `edge::EDGE_SLOT` contribution (own generated glue), unconditional in `init` |
 
 Red flags at this stage: an "event" whose result the producer waits for
@@ -43,7 +43,8 @@ capability or projection).
 - `<name>api` — pure `#[rpc]` traits, transport-free. `#[http(...)]` on
   player-facing ops, plain for wire-only.
 - `<name>rpc` — the one-liner `<prefix>_<snake>_meta!(rpc_macro::generate_glue);`
-  (+ re-export `adminrpc::register_admin` if it has an admin page). Importable
+  (no admin glue: an admin page is a `controlplane::Provider`, served by the
+  `controlplanerpc` face). Importable
   ONLY by its own module, `cmd/*` roots, and other `api/*/rpc` crates.
 
 ## Step 3 — The module (`modules/<name>/`)
@@ -61,8 +62,8 @@ tripwire that catches the common violations (see its banner in
 `tools/archcheck/src/main.rs`); no data migrations, wipe is the strategy; test helpers build schemas through the module's `migrate`),
 `start`/`stop`. In `init`:
 
-- contribute ops to `opsapi` slots, edge face to `edge::EDGE_SLOT`, admin item
-  to `adminapi::SLOT`;
+- contribute ops to `opsapi` slots, edge face to `edge::EDGE_SLOT`, admin page
+  (`controlplane::Provider`) to `controlplane::PROVIDER_SLOT`;
 - subscribe: `on_tx(SubscriptionSpec { id: "<name>.<topic-kebab>.v1", start: StartPosition::… }, …)`
   — the id is a durable contract; choose `start` deliberately (no default);
 - resolve every `require` HERE (a `start`-time require escapes requirecheck).

@@ -59,7 +59,7 @@ Three seams carry all extensibility; almost everything else follows from them:
    durable subscription.
 
 Plus two minor seams: **`ctx.contribute(slot, v)` / `ctx.contributions(slot)`** — a
-multi-value registry for cross-cutting collections (admin items via `adminapi::SLOT`,
+multi-value registry for cross-cutting collections (control-plane providers via `controlplane::PROVIDER_SLOT`,
 ops via `opsapi::{SLOT,BINDING_SLOT,LOCAL_SLOT}`, readiness checks, remote boot
 hooks) — and **`edge::EDGE_SLOT`**: a module contributes its QUIC edge registrations
 (`edge::EdgeReg` wrapping its own generated `register_server` glue) UNCONDITIONALLY
@@ -73,10 +73,13 @@ never a silent last-writer-wins overwrite.
 
 1. **Foundations (`core/*`) never depend on a module or an `api/` crate.**
    Dependency only ever points module → core. (`core/` = app, bus, contrib, edge, push,
-   lifecycle, opsapi, registry, asyncevents, invalidation, remote, metrics, httpmw —
+   lifecycle, opsapi, registry, asyncevents, invalidation, remote, metrics, httpmw,
+   controlplane, controlplane-rpc, admin —
    `asyncevents` (durable event log + pull workers) and `invalidation` (broadcast
    cache refresh) are app-owned planes (DB ⇒ plane), NOT modules; remote/metrics/
-   httpmw are process infrastructure, not domains; `push` is the server→client
+   httpmw are process infrastructure, not domains; `admin` (`core/admin`, the GameOps
+   portal) is core, not a module, and `controlplane`/`controlplane-rpc` are the
+   provider contract and its `cp.*` edge glue; `push` is the server→client
    delivery model (`Target`/`Message`/`Sink`), transport-free — the socket-owning
    transport lives in `modules/gateway`. Module SQL may call the plane's
    SQL functions (`asyncevents.append_event`, `asyncevents.ensure_history_contract`)
@@ -160,8 +163,8 @@ never a silent last-writer-wins overwrite.
     via capability or synced via durable events. **Tests live in separate files**
     (`src/tests.rs` / `src/<file>_tests.rs`), never inline in impl files. One shared
     HTTP framework (axum) is blessed the same way — `ctx.mount(Router)` is the
-    sanctioned surface for the HTTP-surface owners (webui, admin, accounts-OAuth,
-    gateway).
+    sanctioned surface for the HTTP-surface owners (webui, `core/admin`,
+    accounts-OAuth, gateway).
 
 ## Adding a module
 
