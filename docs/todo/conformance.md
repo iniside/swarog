@@ -8,6 +8,17 @@ _None._
 
 ## Open
 
+- [ ] **A CapCase label is not tied to the probe it runs**
+  CONFORMANCE-NEXT. A case's `writer` field (tools/conformance/src/model.rs CapCase) and the
+  `CREDENTIAL_CAPS` case names (tools/conformance/src/checks.rs:118-200) are labels. Nothing ties a
+  label to the function its probe calls: a case marked `mail` that runs wallet's probe stays green,
+  and so does the google credential case if it runs the epic probe (both share the 65 536 cap).
+  Fix: derive the cases instead of declaring them. For cp writers, one constructor takes the
+  Provider, sets `writer` from `manifest().module` and drives `invoke` with an oversized value.
+  For credentials, build one case per `credential_caps()` entry through
+  `accounts::conformance::registry_credential_rejected` (modules/accounts/src/conformance.rs:238-252).
+  Use one typed link on CapCase, not a second field.
+  Source: proof-auditor review of the typed-writer-link change, admin-second-pass step 13 (2026-11-24).
 - [ ] **`Validated { cap }` policy numbers not linked to `CapCase`**
   CONFORMANCE-01. tools/conformance/src/policy.rs:70-80 still carry literal caps (e.g. 320, 1024) with
   prose bases; only `checks::CREDENTIAL_CAPS` binds.

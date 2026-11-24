@@ -13,6 +13,16 @@ _None._
 
 ## Open
 
+- [ ] **Providers do not bound their work under the portal's invoke deadline**
+  `controlplane::INVOKE_DEADLINE` (core/controlplane/src/lib.rs) tells each provider to keep its
+  per-call work under it. Only the scheduler does (modules/scheduler/src/admin.rs FIRE_NOW_TOTAL).
+  About 14 other `Provider::invoke` impls have no bound (e.g. modules/accounts/src/admin.rs:847,
+  modules/wallet/src/admin.rs:1031, modules/mail/src/admin.rs:535). After the deadline the portal
+  reports "outcome unknown" while the work runs on. In the split nothing cancels the call on the
+  provider's process (the edge server dispatch has no deadline).
+  Fix at the source: enforce the bound once on the serving path, where `LocalFace` /
+  `controlplanerpc::register_face` hand a call to `Provider::invoke`, rather than per-module copies.
+  Source: proof-auditor review of the INVOKE_DEADLINE change, admin-second-pass step 15 (2026-11-24).
 - [ ] **Operator attribution on portal money movements**
   WALLET-07. `admin.action` records the actor and field names only, and
   `adminSubmit` carries no operator identity across the edge to the wallet. Source:

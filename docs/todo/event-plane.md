@@ -8,6 +8,13 @@ _None._
 
 ## Open
 
+- [ ] **Scheduled prune tests seed rows far from the retention edge**
+  The audit, groups, mail and notifications prune tests seed stale rows well past retention
+  (e.g. modules/notifications/src/tests.rs:1315 at DEFAULT_RETENTION_DAYS + 5, modules/audit/src/tests.rs:326),
+  so a cutoff in the wrong unit (hours for days) or off by days still passes. The inventory grants
+  prune test now seeds RETENTION±1 days and pins the constant (modules/inventory/src/tests.rs). Apply
+  the same pattern to each sibling, and prove each with an hours-unit revert check.
+  Source: proof-auditor review of the inventory grants prune, admin-second-pass step 14 (2026-11-24).
 - [ ] **deliver_all call sites in notifications and mail tests**
   EVENT-PLANE-01. `modules/notifications/src/tests.rs` has 16 and
   `modules/mail/src/projection_tests.rs` has 13 `deliver_all()` call sites

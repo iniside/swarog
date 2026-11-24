@@ -360,7 +360,7 @@ service.rs:181-220, admin_tests.rs. Mail already has writes: true and its CapCas
 (c) Retry now: pending AND last_error IS NOT NULL to next_attempt_at = now(), generation + 1
 (D6). Park: pending to parked. Cancel parked: Confirm, parked to cancelled, body kept. Each
 answers NoOp on 0 rows. Pause sending stays disabled.
-(d) [sonnet] core-implementer. Waits for the owner ruling on what a resume from parked does with last_error (Step 6 review).
+(d) [sonnet] core-implementer. Owner ruling (2026-11-24): a resume from parked clears last_error (modules/mail/src/store.rs requeue_parked_tx).
 
 ### Step 17a: friend.removed reason operator-removed
 (a) api/friends/events/src/lib.rs (reason constant, Removed doc, golden_samples),
