@@ -56,7 +56,7 @@ window.REG = (() => {
   // dashboard.attention — modules surface things needing an operator.
   const attention = [
     { module: "wallet", tone: "err", icon: "alert", title: "wallet-svc unavailable", text: "7 restarts in 15 min; grants and ledger are offline.", href: "economy.html", action: "Open" },
-    { module: "core.events", tone: "err", icon: "zap", title: "Subscription paused by poison event", text: "inventory.on_purchase.v1 stopped at seq 12,905 · 118 behind.", href: "events.html", action: "Resolve" },
+    { module: "core.events", tone: "err", icon: "zap", title: "Subscription paused by poison event", text: "inventory.on_purchase.v1 stopped · 118 behind.", href: "events.html", action: "Resolve" },
     { module: "mail", tone: "warn", icon: "mail", title: "Mail relay throttling", text: "312 queued, 2 retrying, 1 failed permanently.", href: "mail.html", action: "Outbox" },
   ];
 

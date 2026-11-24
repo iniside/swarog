@@ -151,22 +151,22 @@ window.DATA = (() => {
     { id: "notifications.lore-resource-locked.v1", topic: "lore.resource.locked", module: "notifications", cursor: "1/9204/0", lag: "6", state: "running" },
     { id: "wallet.on_match.v1", topic: "match.finished", module: "wallet", cursor: "1/40118/0", lag: "273", state: "lagging" },
     { id: "notifications.mail-sent.v1", topic: "mail.sent", module: "notifications", cursor: "1/88160/0", lag: "6", state: "running" },
-    { id: "inventory.on_purchase.v1", topic: "wallet.debited", module: "inventory", cursor: "1/12904/0", lag: "118", state: "paused", poison: { seq: 12_905, err: "decode: unknown currency code \"TOK2\" at $.amount.currency", at: "2026-10-22 09:41" } },
+    { id: "inventory.on_purchase.v1", topic: "wallet.debited", module: "inventory", cursor: "1/12904/0", lag: "118", state: "paused", poison: { id: "a3f9c2d1", err: "decode: unknown currency code \"TOK2\" at $.amount.currency", at: "2026-10-22 09:41" } },
     { id: "leaderboard.on_rating.v1", topic: "rating.updated", module: "leaderboard", cursor: "1/220418/0", lag: "0", state: "running" },
     { id: "storage.player-deleted.v1", topic: "player.deleted", module: "storage", cursor: "1/311/0", lag: "0", state: "running" },
   ];
 
   const audit = [
     { t: "14:12:08", actor: "marta.k", topic: "lore.permission", action: "override.set", target: "user:e8d24c61 → repository:marketing-capture", detail: "Viewer → Developer" },
-    { t: "13:58:41", actor: "apikey:ak_c4a8", topic: "lore.presign", action: "presign.issue", target: "repository:ashfall-game", detail: "214 URLs · ttl 15m" },
+    { t: "13:58:41", actor: "system", topic: "lore.presign", action: "presign.issue", target: "repository:ashfall-game", detail: "214 URLs · ttl 15m" },
     { t: "12:40:02", actor: "marta.k", topic: "lore.lock", action: "lock.force_unlock", target: "repository:ashfall-game · DA_GameRules.uasset", detail: "owner sam.o · reason: owner offboarded" },
     { t: "11:15:20", actor: "marta.k", topic: "lore.branch", action: "branch.protect", target: "repository:ashfall-game · release/0.9", detail: "PROTECT set" },
     { t: "10:02:13", actor: "jonas.l", topic: "wallet", action: "grant", target: "user:f6c4d097", detail: "+500 EMB · reason: CS ticket #4471" },
-    { t: "09:44:57", actor: "system", topic: "events", action: "subscription.paused", target: "inventory.on_purchase.v1", detail: "poison event seq 12905" },
+    { t: "09:44:57", actor: "system", topic: "events", action: "subscription.paused", target: "inventory.on_purchase.v1", detail: "poison event a3f9c2d1" },
     { t: "09:30:00", actor: "jonas.l", topic: "config", action: "flag.update", target: "flag:season4.enabled", detail: "false → true · rev 41" },
     { t: "08:51:36", actor: "marta.k", topic: "apikeys", action: "key.create", target: "apikey:ak_c4a8", detail: "horde-agents · role ci-build" },
     { t: "08:12:09", actor: "aiko.tanaka", topic: "accounts", action: "admin.login", target: "admin portal", detail: "google · 83.4.x.x" },
-    { t: "07:00:00", actor: "scheduler", topic: "scheduler", action: "fire", target: "daily.leaderboard_reset", detail: "ok · 1.2 s" },
+    { t: "07:00:00", actor: "system", topic: "scheduler", action: "fire", target: "daily.leaderboard_reset", detail: "ok · 1.2 s" },
   ];
 
   const ledger = [
