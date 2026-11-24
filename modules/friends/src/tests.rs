@@ -2536,3 +2536,56 @@ async fn admin_remove_prepare_names_both_handles() {
     })
     .await;
 }
+
+/// The edge vanishing between the operator's read and its delete is `Gone`, not an error and
+/// not a removal: no event is emitted for a row this call did not delete.
+#[tokio::test]
+async fn operator_remove_reports_gone_when_the_edge_vanishes_after_the_read() {
+    let Some(pool) = test_pool().await else { return };
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+    let (low, high) = (low_uuid(), high_uuid());
+    dir.insert(&low, "Lo#0001");
+    dir.insert(&high, "Hi#0002");
+    let ids = vec![low.clone(), high.clone()];
+    let (p, lo, hi) = (pool.clone(), low, high);
+    with_cleanup(&pool, ids, async move {
+        let edge_id = insert_edge_raw(&p, &lo, &hi, &hi, STATE_ACCEPTED).await;
+        let edge = svc.operator_view(&edge_id).await.unwrap().expect("the accepted edge is readable");
+
+        sqlx::query("DELETE FROM friends.edges WHERE id = $1::uuid")
+            .bind(&edge_id)
+            .execute(&p)
+            .await
+            .unwrap();
+
+        let outcome = svc.operator_remove(&edge_id, &edge).await.unwrap();
+        assert_eq!(outcome, crate::service::OperatorRemoval::Gone);
+        assert!(removed_events(&p, &edge_id).await.is_empty(), "a vanished edge emits nothing");
+    })
+    .await;
+}
+
+/// `friend.removed` is appended inside the delete transaction: when the append fails the
+/// invoke is Internal, the edge is still there and no event row exists.
+#[tokio::test]
+async fn admin_remove_rolls_back_the_delete_when_the_append_fails() {
+    let Some(pool) = test_pool().await else { return };
+    let dir = Arc::new(FakeDirectory::new());
+    let (low, high) = (low_uuid(), high_uuid());
+    dir.insert(&low, "Lo#0001");
+    dir.insert(&high, "Hi#0002");
+    let svc = wired_with_failing_bus(&pool, dir.clone()).await;
+    let ids = vec![low.clone(), high.clone()];
+    let (p, lo, hi) = (pool.clone(), low, high);
+    with_cleanup(&pool, ids, async move {
+        let edge_id = insert_edge_raw(&p, &lo, &hi, &hi, STATE_ACCEPTED).await;
+        let admin = admin::FriendsAdmin::new(svc.clone());
+
+        let err = admin.invoke(remove_call(&edge_id)).await.unwrap_err();
+        assert_eq!(err.status, Status::Internal);
+        assert!(edge_exists(&p, &edge_id).await, "the delete must roll back with the failed append");
+        assert!(removed_events(&p, &edge_id).await.is_empty(), "no event may survive the rollback");
+    })
+    .await;
+}
