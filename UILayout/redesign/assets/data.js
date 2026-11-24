@@ -157,14 +157,14 @@ window.DATA = (() => {
   ];
 
   const audit = [
-    { t: "14:12:08", actor: "marta.k", topic: "lore.permission", action: "override.set", target: "user:e8d24c61 → repository:marketing-capture", detail: "Viewer → Developer" },
-    { t: "13:58:41", actor: "system", topic: "lore.presign", action: "presign.issue", target: "repository:ashfall-game", detail: "214 URLs · ttl 15m" },
-    { t: "12:40:02", actor: "marta.k", topic: "lore.lock", action: "lock.force_unlock", target: "repository:ashfall-game · DA_GameRules.uasset", detail: "owner sam.o · reason: owner offboarded" },
-    { t: "11:15:20", actor: "marta.k", topic: "lore.branch", action: "branch.protect", target: "repository:ashfall-game · release/0.9", detail: "PROTECT set" },
-    { t: "10:02:13", actor: "jonas.l", topic: "wallet", action: "grant", target: "user:f6c4d097", detail: "+500 EMB · reason: CS ticket #4471" },
-    { t: "09:30:00", actor: "jonas.l", topic: "config", action: "flag.update", target: "flag:season4.enabled", detail: "false → true · rev 41" },
-    { t: "08:51:36", actor: "marta.k", topic: "apikeys", action: "key.create", target: "apikey:ak_c4a8", detail: "horde-agents · role ci-build" },
-    { t: "08:12:09", actor: "aiko.tanaka", topic: "accounts", action: "admin.login", target: "admin portal", detail: "google · 83.4.x.x" },
+    { t: "14:12:08", actor: "marta.k", topic: "admin.action", action: "wallet.currency.grant", target: "player:f6c4d097", detail: "ok — reason: CS ticket #4471" },
+    { t: "13:58:41", actor: "system", topic: "wallet.changed", action: "changed", target: "player:f6c4d097", detail: "+500 EMB · CS ticket #4471" },
+    { t: "12:40:02", actor: "system", topic: "player.registered", action: "registered", target: "player:e8d24c61", detail: "Elena Petrova · google" },
+    { t: "11:15:20", actor: "marta.k", topic: "admin.action", action: "core.events.sub.pause", target: "subscription:inventory.on_purchase.v1", detail: "ok" },
+    { t: "10:02:13", actor: "jonas.l", topic: "admin.action", action: "config.setting.edit", target: "—", detail: "ok" },
+    { t: "09:30:00", actor: "system", topic: "config.changed", action: "changed", target: "season4/enabled", detail: "update · rev 41" },
+    { t: "08:51:36", actor: "marta.k", topic: "admin.action", action: "apikeys.key.create", target: "—", detail: "ok" },
+    { t: "08:12:09", actor: "aiko.tanaka", topic: "admin.action", action: "login-succeeded", target: "user:aiko.tanaka", detail: "ip:83.4.x.x" },
   ];
 
   const ledger = [

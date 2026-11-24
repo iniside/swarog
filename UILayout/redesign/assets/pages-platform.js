@@ -112,13 +112,14 @@
   P.audit = {
     meta: { nav: "audit", crumbs: [plat, ["Audit log"]] },
     render: () => {
-      const topics = [...new Set(D.audit.map(a => a.topic))];
+      const topics = ["character.created", "character.deleted", "player.registered", "player.promoted", "player.deleted", "config.changed", "match.finished", "admin.action", "wallet.changed", "friend.requested", "friend.accepted", "friend.removed", "group.created", "group.member_joined", "group.member_left", "group.role_changed"];
+      const actors = [...new Set(D.audit.filter(a => a.topic === "admin.action").map(a => a.actor)), "system"];
       const tf = P.auditTopic;
       const list = D.audit.filter(a => !tf || a.topic === tf);
       return P.head("Audit log", "Append-only record of operator, key and system actions.") +
         panel({ c: pg("audit", "DataTable"), flush: true,
           body: table({ searchPlaceholder: "Target or detail contains…", searchWidth: 260,
-            filters: [`<select class="select" style="height:24px;font-size:12px" onchange="PAGES.auditTopic=this.value;REG.render()"><option value="">Topic: all</option>${topics.map(t => `<option ${t === tf ? "selected" : ""}>${t}</option>`).join("")}</select>`, `<select class="select" style="height:24px;font-size:12px"><option>Actor: anyone</option>${["marta.k", "jonas.l", "aiko.tanaka", "system"].map(a => `<option>${a}</option>`).join("")}</select>`, { k: "Time", v: "today" }],
+            filters: [`<select class="select" style="height:24px;font-size:12px" onchange="PAGES.auditTopic=this.value;REG.render()"><option value="">Topic: all</option>${topics.map(t => `<option ${t === tf ? "selected" : ""}>${t}</option>`).join("")}</select>`, `<select class="select" style="height:24px;font-size:12px"><option>Actor: anyone</option>${actors.map(a => `<option>${a}</option>`).join("")}</select>`, { k: "Time", v: "today" }],
             cols: [{ label: "Time", sorted: "desc" }, { label: "Actor" }, { label: "Topic" }, { label: "Action" }, { label: "Target" }, { label: "Detail", wrap: true }],
             rows: list.map(a => [`<span class="mono">${a.t}</span>`, P.actor(a.actor), `<span class="tag">${a.topic}</span>`, `<span class="mono" style="font-weight:500">${a.action}</span>`, `<span class="mono" style="font-size:11.5px">${esc(a.target)}</span>`, `<span class="dim">${esc(a.detail)}</span>`]),
             total: `${list.length} of 1,204 entries today`, page: "1 / 49" }) });
