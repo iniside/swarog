@@ -41,15 +41,6 @@ _None._
 
 modules/config/src/admin.rs landed in b0e8e377; the line numbers are its committed ones.
 
-- [ ] **Config revision writers**
-  ADMIN2-65. Mockup: the "by <user>" actor of each Revisions entry. Fake:
-  modules/config/src/admin.rs:183 (`fake_by`): config.settings stores no writer.
-  Replaced by: the writer recorded with each revision.
-- [ ] **Config prior revisions**
-  ADMIN2-66. Mockup: the Revisions entries before the current one (rev N-1, N-2 and
-  their old values). Fake: modules/config/src/admin.rs:191 (`fake_prior`), :351
-  (`revisions_body`): no history is kept, only each key's current value. Replaced by:
-  a stored per-key revision history.
 - [ ] **Config Edit heading mono key**
   ADMIN2-67. Mockup: the Edit panel title's mono key span (pages-platform.js:96). The
   portal draws "Edit: ns.key" with a separator and no mono span (step 23 checklist H5).

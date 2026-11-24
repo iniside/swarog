@@ -2,6 +2,17 @@
 
 Last updated: 2026-11-24
 
+- [x] **Config revision writers** (2026-11-24, admin-second-pass step 10)
+  ADMIN2-65. Mockup: the "by <user>" actor of each Revisions entry and the Keys row's writer.
+  Removed: `fake_by` and `FAKE_LOGINS`. Replaced by `config.setting_history.by`: the
+  `config.writer` setting the module's writers set for their statement (`InvokeCall.operator`
+  for the admin create and save, "system" for `Service::set` and `set_tx`), else the
+  session's database role.
+- [x] **Config prior revisions** (2026-11-24, admin-second-pass step 10)
+  ADMIN2-66. Mockup: the Revisions entries before the current one. Removed: `fake_prior` and
+  `Selected::at_days_back`. Replaced by `config.setting_history`, one row per insert, update
+  and delete of a setting written by the `config.settings` AFTER trigger with the revision it
+  carries; the Revisions panel draws the key's newest 10 rows.
 - [x] **API key created by** (2026-11-24, admin-second-pass step 9)
   ADMIN2-58. Mockup: the Keys panel's "Created by" operator login. Removed: `fake_creator`
   and `FAKE_CREATORS`. Replaced by `apikeys.keys.created_by` (text NOT NULL, 128-byte cap),

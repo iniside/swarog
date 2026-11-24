@@ -16,7 +16,7 @@ use controlplane::{
 use opsapi::Error;
 use sqlx::PgPool;
 
-use crate::store::{self, KeyPage, KeyRow, Selected};
+use crate::store::{self, KeyPage, KeyRow, Revision, Selected};
 use crate::valid_ident;
 
 const MODULE: &str = "config";
@@ -51,9 +51,6 @@ pub(crate) const MAX_NEEDLE_BYTES: usize = 256;
 
 /// What the Edit and Revisions panels show with no key to show.
 pub(crate) const NO_KEY: &str = "No key selected";
-
-/// The logins the FAKE writer of a revision is drawn from.
-pub(crate) const FAKE_LOGINS: [&str; 4] = ["marta.k", "jonas.l", "ola.w", "piotr.n"];
 
 /// A value's type, derived from its stored text: `config.settings` stores no type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -182,7 +179,7 @@ impl ConfigAdmin {
             Ok(value) => value,
             Err(msg) => return Ok(field_error(FIELD_VALUE, msg)),
         };
-        swap(&self.pool, ns, key, &value, expected).await
+        swap(&self.pool, ns, key, &value, expected, &req.operator).await
     }
 
     /// Inserts a new key; an existing key is the key field's error and is left as it is.
@@ -206,7 +203,7 @@ impl ConfigAdmin {
         let (Some((ns, key)), Some(value)) = (id, value) else {
             return Ok(InvokeOutcome::FieldErrors(errors));
         };
-        if store::create(&self.pool, ns, key, &value).await.map_err(internal)? {
+        if store::create(&self.pool, ns, key, &value, &req.operator).await.map_err(internal)? {
             Ok(InvokeOutcome::Ok { message: format!("Key {ns}.{key} created"), reveal: None, redirect: None })
         } else {
             Ok(field_error(FIELD_KEY, "already exists".to_string()))
@@ -226,8 +223,15 @@ impl ConfigAdmin {
 /// The write of a save whose revision check passed. The update compares the revision again,
 /// so a write that landed in between matches no row: the answer is then the key's revision
 /// now, or `Conflict` when the key is gone.
-async fn swap(pool: &PgPool, ns: &str, key: &str, value: &str, expected: i64) -> Result<InvokeOutcome, Error> {
-    match store::update(pool, ns, key, value, expected).await.map_err(internal)? {
+async fn swap(
+    pool: &PgPool,
+    ns: &str,
+    key: &str,
+    value: &str,
+    expected: i64,
+    by: &str,
+) -> Result<InvokeOutcome, Error> {
+    match store::update(pool, ns, key, value, expected, by).await.map_err(internal)? {
         Some(revision) => Ok(InvokeOutcome::Ok {
             message: format!("Saved {ns}.{key} at rev {revision}"),
             reveal: None,
@@ -295,24 +299,12 @@ fn column(key: &str, label: &str, kind: CellKind) -> Column {
     }
 }
 
-/// The FAKE writer of the revision `id` names.
-pub(crate) fn fake_by(id: &str) -> &'static str {
-    // FAKE: config.settings stores no writer.
-    FAKE_LOGINS[(controlplane::fake_hash("config.by", id) % FAKE_LOGINS.len() as u64) as usize]
-}
-
-/// The FAKE revisions before the current revision `current` of the key `display`, newest
-/// first: each one's revision and how many days before the current one it was written. A
-/// revision below 1 is dropped.
-pub(crate) fn fake_prior(display: &str, current: i64) -> Vec<(i64, usize)> {
-    // FAKE: no history is kept; config.settings holds only each key's current value.
-    let rev = controlplane::fake_hash("config.rev", display);
-    let days = controlplane::fake_hash("config.days", display);
-    let first = current - 1 - (rev % 3) as i64;
-    let second = first - 1 - (rev / 3 % 3) as i64;
-    let first_days = 1 + (days % 7) as usize;
-    let second_days = first_days + 1 + (days / 7 % 7) as usize;
-    [(first, first_days), (second, second_days)].into_iter().filter(|(r, _)| *r >= 1).collect()
+/// The writer cell of a key's current revision: "—" when the history holds no row for it.
+fn writer(by: Option<&str>) -> Cell {
+    match by {
+        Some(by) => cell(CellKind::User, by),
+        None => cell(CellKind::Muted, "—"),
+    }
 }
 
 fn key_link(display: &str, filter: Option<ValueType>, needle: Option<&str>) -> Link {
@@ -342,7 +334,7 @@ fn key_row(row: &KeyRow, kind: ValueType, link: Link, selected: bool) -> Row {
             cell(CellKind::Number, row.revision.to_string()),
             Cell {
                 row: true,
-                more: vec![cell(CellKind::User, fake_by(&display))],
+                more: vec![writer(row.by.as_deref())],
                 ..cell(CellKind::Dim, row.updated.as_str())
             },
         ],
@@ -445,32 +437,35 @@ pub(crate) fn edit_body(row: &KeyRow) -> PanelBody {
 
 /// One Revisions entry, read "rev N by <writer>": the timeline draws the actor before the verb,
 /// so the text is the summary and the writer the one badge, which draw after it.
-fn revision_entry(at: &str, revision: i64, by: &str, value: &str, tone: Option<Tone>) -> TimelineEntry {
+fn revision_entry(rev: &Revision, tone: Option<Tone>) -> TimelineEntry {
+    let revision = rev.revision;
+    let summary = if rev.operation == store::OP_DELETE {
+        format!("rev {revision} deleted by")
+    } else {
+        format!("rev {revision} by")
+    };
     TimelineEntry {
-        at: at.to_string(),
+        at: rev.at.clone(),
         actor: None,
         title: None,
         verb: String::new(),
         target: None,
-        summary: format!("rev {revision} by"),
-        badges: vec![cell(CellKind::User, by)],
-        detail: Some(value.to_string()),
+        summary,
+        badges: vec![cell(CellKind::User, rev.by.as_str())],
+        detail: rev.value.clone(),
         icon: "edit".to_string(),
         tone,
     }
 }
 
-/// The Revisions body: the current revision, then its FAKE prior revisions.
+/// The Revisions body: the selected key's newest revisions, newest first, the newest accented.
 pub(crate) fn revisions_body(sel: &Selected) -> PanelBody {
-    let row = &sel.row;
-    let display = row.display();
-    let at = |days: usize| sel.at_days_back.get(days).map_or("", String::as_str);
-    let mut entries = vec![revision_entry(at(0), row.revision, fake_by(&display), &row.value, Some(Tone::Accent))];
-    for (revision, days) in fake_prior(&display, row.revision) {
-        let by = fake_by(&format!("{display}@{revision}"));
-        // FAKE: no history is kept, so a prior revision shows the current value.
-        entries.push(revision_entry(at(days), revision, by, &row.value, None));
-    }
+    let entries = sel
+        .revisions
+        .iter()
+        .enumerate()
+        .map(|(i, rev)| revision_entry(rev, (i == 0).then_some(Tone::Accent)))
+        .collect();
     PanelBody::new(Primitive::Timeline(Timeline {
         entries,
         cursor_before: None,

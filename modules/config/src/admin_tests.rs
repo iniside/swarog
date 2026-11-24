@@ -1,7 +1,7 @@
-//! The config provider: the manifest, the type rule, the Keys, Edit and Revisions bodies and
-//! their FAKE writers and prior revisions, the value normalisation; and, over a live Postgres,
-//! the store reads through `Provider::panel` (prefix search, type filter, selection, the
-//! SQL-computed times) and the writes through `Provider::invoke`.
+//! The config provider: the manifest, the type rule, the Keys, Edit and Revisions bodies, the
+//! value normalisation; and, over a live Postgres, the store reads through `Provider::panel`
+//! (prefix search, type filter, selection, the SQL-computed times, the revision history and its
+//! writers) and the writes through `Provider::invoke`.
 
 use controlplane::{form_spec_errors, order, CellKind, DataTable, FormSpec, Layout, Point, Primitive, Role, Timeline};
 
@@ -56,6 +56,7 @@ fn row(namespace: &str, key: &str, value: &str, revision: i64) -> KeyRow {
         value: value.into(),
         revision,
         updated: "12:30".into(),
+        by: Some("ola.w".into()),
     }
 }
 
@@ -180,7 +181,11 @@ fn pick_reads_the_key_param() {
 #[test]
 fn keys_body_draws_each_column_and_the_selection() {
     let page = KeyPage {
-        rows: vec![row("game", "hardcore", "true", 4), row("game", "limit", "42", 7), row("store", "rot", "[1]", 9)],
+        rows: vec![
+            row("game", "hardcore", "true", 4),
+            row("game", "limit", "42", 7),
+            KeyRow { by: None, ..row("store", "rot", "[1]", 9) },
+        ],
         total: 12,
         first: Some("game.hardcore".into()),
     };
@@ -209,8 +214,9 @@ fn keys_body_draws_each_column_and_the_selection() {
     assert_eq!((flag[3].kind, flag[3].value.as_str()), (CellKind::Number, "4"));
     assert_eq!((flag[4].kind, flag[4].value.as_str(), flag[4].row), (CellKind::Dim, "12:30", true));
     assert_eq!(flag[4].more.len(), 1);
-    assert_eq!((flag[4].more[0].kind, flag[4].more[0].value.as_str()), (CellKind::User, fake_by("game.hardcore")));
+    assert_eq!((flag[4].more[0].kind, flag[4].more[0].value.as_str()), (CellKind::User, "ola.w"));
     let rot = &t.rows[2].cells;
+    assert_eq!((rot[4].more[0].kind, rot[4].more[0].value.as_str()), (CellKind::Muted, "—"));
     assert_eq!((rot[1].value.as_str(), rot[2].kind, rot[2].value.as_str()), ("json", CellKind::Mono, "[1]"));
     assert_eq!(link_params(&flag[0]), BTreeMap::from([("key".to_string(), "game.hardcore".to_string())]));
 }
@@ -298,52 +304,51 @@ fn edit_body_serves_the_value_under_its_type() {
     }
 }
 
-fn selected(display_key: &str, value: &str, revision: i64) -> Selected {
-    let (ns, key) = display_key.split_once('.').unwrap();
-    Selected {
-        row: row(ns, key, value, revision),
-        at_days_back: (0..=store::MAX_DAYS_BACK).map(|d| format!("day-{d}")).collect(),
+fn revision(revision: i64, value: Option<&str>, operation: &str, by: &str) -> Revision {
+    Revision {
+        revision,
+        value: value.map(str::to_string),
+        operation: operation.into(),
+        by: by.into(),
+        at: format!("at-{revision}"),
     }
 }
 
 #[test]
-fn revisions_body_draws_the_current_then_fake_priors() {
-    let body = revisions_body(&selected("game.limit", "42", 30));
+fn revisions_body_draws_each_stored_revision_newest_first() {
+    let sel = Selected {
+        row: row("game", "limit", "42", 30),
+        revisions: vec![
+            revision(30, Some("42"), "insert", "marta.k"),
+            revision(21, None, "delete", "gamebackend"),
+            revision(20, Some("7"), "update", "system"),
+        ],
+    };
+    let body = revisions_body(&sel);
     let tl = timeline(&body);
     // The timeline draws actor, title, verb, summary, then badges (primitives.html.tmpl
     // `timeline`): with only a summary and one badge an entry reads "rev N by <writer>".
     assert!(tl.date_only && !tl.live && tl.cursor_before.is_none());
-    let current = &tl.entries[0];
-    assert_eq!(current.at, "day-0");
-    assert_eq!((current.verb.as_str(), current.summary.as_str()), ("", "rev 30 by"));
-    assert!(current.actor.is_none() && current.title.is_none() && current.target.is_none());
-    let writer: Vec<(CellKind, &str)> = current.badges.iter().map(|b| (b.kind, b.value.as_str())).collect();
-    assert_eq!(writer, [(CellKind::User, fake_by("game.limit"))]);
-    assert_eq!(current.detail.as_deref(), Some("42"));
-    assert_eq!((current.icon.as_str(), current.tone), ("edit", Some(Tone::Accent)));
-
-    let prior = fake_prior("game.limit", 30);
-    assert_eq!(tl.entries.len(), 1 + prior.len());
-    assert_eq!(prior.len(), 2);
-    assert!(prior[0].0 < 30 && prior[1].0 < prior[0].0);
-    assert!(prior[0].1 >= 1 && prior[1].1 > prior[0].1 && prior[1].1 <= store::MAX_DAYS_BACK as usize);
-    for (entry, (revision, days)) in tl.entries[1..].iter().zip(&prior) {
-        assert_eq!((entry.verb.as_str(), entry.summary.clone()), ("", format!("rev {revision} by")));
-        assert!(entry.actor.is_none());
-        assert_eq!(entry.at, format!("day-{days}"));
-        assert_eq!(entry.detail.as_deref(), Some("42"));
-        assert!(entry.tone.is_none());
-        assert_eq!(entry.badges.len(), 1);
-        assert_eq!(entry.badges[0].kind, CellKind::User);
-        assert!(FAKE_LOGINS.contains(&entry.badges[0].value.as_str()));
+    let drawn: Vec<(&str, &str, Option<&str>, Option<Tone>)> =
+        tl.entries.iter().map(|e| (e.at.as_str(), e.summary.as_str(), e.detail.as_deref(), e.tone)).collect();
+    assert_eq!(
+        drawn,
+        [
+            ("at-30", "rev 30 by", Some("42"), Some(Tone::Accent)),
+            ("at-21", "rev 21 deleted by", None, None),
+            ("at-20", "rev 20 by", Some("7"), None),
+        ]
+    );
+    let writers: Vec<(CellKind, &str)> =
+        tl.entries.iter().flat_map(|e| e.badges.iter().map(|b| (b.kind, b.value.as_str()))).collect();
+    assert_eq!(writers, [(CellKind::User, "marta.k"), (CellKind::User, "gamebackend"), (CellKind::User, "system")]);
+    for entry in &tl.entries {
+        assert!(entry.verb.is_empty() && entry.actor.is_none() && entry.title.is_none() && entry.target.is_none());
+        assert_eq!(entry.icon, "edit");
     }
-    assert_eq!(revisions_body(&selected("game.limit", "42", 30)), body, "stable across reloads");
 
-    let first = revisions_body(&selected("game.limit", "42", 1));
-    assert_eq!(timeline(&first).entries.len(), 1, "no prior revision below 1");
-    let varied: std::collections::BTreeSet<Vec<(i64, usize)>> =
-        (0..20).map(|i| fake_prior(&format!("ns.k{i}"), 100)).collect();
-    assert!(varied.len() > 1);
+    let none = revisions_body(&Selected { row: row("game", "limit", "42", 30), revisions: Vec::new() });
+    assert!(timeline(&none).entries.is_empty());
 }
 
 // ---- Live Postgres --------------------------------------------------------------------
@@ -407,6 +412,9 @@ async fn panels_read_the_store() {
     assert_eq!(highlighted, [limit_key.as_str()]);
     assert_eq!(t.rows[1].cells[3].value, limit_rev.to_string());
     assert!(t.rows.iter().all(|r| is_hh_mm(&r.cells[4].value)));
+    let writers: Vec<(CellKind, &str)> =
+        t.rows.iter().map(|r| (r.cells[4].more[0].kind, r.cells[4].more[0].value.as_str())).collect();
+    assert_eq!(writers, [(CellKind::User, "system"); 5]);
 
     let ints = admin.panel(query(KEYS, Some(&prefix), &[("type", "int")])).await.unwrap();
     let names: Vec<&str> = table(&ints).rows.iter().map(|r| r.cells[0].value.as_str()).collect();
@@ -423,13 +431,12 @@ async fn panels_read_the_store() {
 
     let revisions = admin.panel(query(REVISIONS, None, &[("key", &limit_key)])).await.unwrap();
     let entries = &timeline(&revisions).entries;
+    assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].at, limit_at);
     assert_eq!(entries[0].summary, format!("rev {limit_rev} by"));
     assert!(entries[0].verb.is_empty() && entries[0].actor.is_none());
+    assert_eq!(entries[0].badges[0].value, "system");
     assert_eq!(entries[0].detail.as_deref(), Some("42"));
-    for entry in &entries[1..] {
-        assert!(entry.at < limit_at, "a prior revision is dated before the current one: {}", entry.at);
-    }
 
     for missing in [format!("{ns}.missing"), "Nope".to_string()] {
         for c in [EDIT, REVISIONS] {
@@ -647,11 +654,11 @@ async fn a_write_between_the_check_and_the_update_is_a_conflict() {
     let (_, now) = stored(&pool, &ns, "k").await.unwrap();
     assert!(now > checked);
 
-    let raced = swap(&pool, &ns, "k", "3", checked).await.unwrap();
+    let raced = swap(&pool, &ns, "k", "3", checked, "tester").await.unwrap();
     assert_eq!(raced, InvokeOutcome::Conflict { current_revision: now as u64 });
     assert_eq!(stored(&pool, &ns, "k").await, Some(("2".to_string(), now)));
 
-    let vanished = swap(&pool, &ns, "missing", "3", now).await.unwrap_err();
+    let vanished = swap(&pool, &ns, "missing", "3", now, "tester").await.unwrap_err();
     assert_eq!(vanished.status, opsapi::Status::Conflict);
     assert_eq!(stored(&pool, &ns, "missing").await, None);
     cleanup(&pool, &ns).await;
@@ -665,11 +672,11 @@ async fn the_update_statement_matches_only_the_expected_revision() {
     let ns = unique_ns(&pool).await;
     Service::new(pool.clone()).set(&ns, "k", "1").await.unwrap();
     let (_, rev) = stored(&pool, &ns, "k").await.unwrap();
-    assert_eq!(store::update(&pool, &ns, "k", "2", rev - 1).await.unwrap(), None);
+    assert_eq!(store::update(&pool, &ns, "k", "2", rev - 1, "tester").await.unwrap(), None);
     assert_eq!(stored(&pool, &ns, "k").await, Some(("1".to_string(), rev)));
-    let stamped = store::update(&pool, &ns, "k", "2", rev).await.unwrap();
+    let stamped = store::update(&pool, &ns, "k", "2", rev, "tester").await.unwrap();
     assert_eq!(stored(&pool, &ns, "k").await, Some(("2".to_string(), stamped.unwrap())));
-    assert_eq!(store::update(&pool, &ns, "nope", "2", rev).await.unwrap(), None);
+    assert_eq!(store::update(&pool, &ns, "nope", "2", rev, "tester").await.unwrap(), None);
     cleanup(&pool, &ns).await;
 }
 
@@ -730,5 +737,132 @@ async fn create_inserts_only_a_new_key() {
     assert_eq!(again, InvokeOutcome::FieldErrors(BTreeMap::from([("key".to_string(), "already exists".to_string())])));
     assert_eq!(stored(&pool, &ns, "fresh").await, Some(("3.0".to_string(), rev)), "nothing is written");
     assert_eq!(changed_event_count(&pool, &ns).await, events);
+    cleanup(&pool, &ns).await;
+}
+
+
+/// The `config.setting_history` rows of `(ns, key)`, oldest first: revision, value, operation,
+/// writer.
+async fn history(pool: &PgPool, ns: &str, key: &str) -> Vec<(i64, Option<String>, String, String)> {
+    sqlx::query_as(
+        "SELECT revision, value, operation, by FROM config.setting_history \
+         WHERE namespace = $1 AND key = $2 ORDER BY revision",
+    )
+    .bind(ns)
+    .bind(key)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+/// Every write of a key through the module appends one history row in its own transaction:
+/// after k writes the history holds k rows with strictly increasing revisions, the newest equal
+/// to `config.settings`, written by the operator for an admin write and `system` for
+/// `Service::set` and `set_tx`. A rolled-back `set_tx` leaves no row, and an admin write
+/// that writes nothing (a stale save, a create of an existing key) appends none.
+#[tokio::test]
+async fn every_write_appends_one_history_row_with_its_writer() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    let svc = Service::new(pool.clone());
+    let admin = ConfigAdmin::new(pool.clone());
+    let id = format!("{ns}.limit");
+
+    let created = admin.invoke(call(CREATE, &[("key", &id), ("type", "int"), ("value", "1")], None)).await.unwrap();
+    assert!(matches!(created, InvokeOutcome::Ok { .. }), "{created:?}");
+    let (_, rev) = stored(&pool, &ns, "limit").await.unwrap();
+    let saved = admin.invoke(call(SAVE, &[("key", &id), ("value", "2")], Some(rev as u64))).await.unwrap();
+    assert!(matches!(saved, InvokeOutcome::Ok { .. }), "{saved:?}");
+    let stale = admin.invoke(call(SAVE, &[("key", &id), ("value", "9")], Some(rev as u64))).await.unwrap();
+    assert!(matches!(stale, InvokeOutcome::Conflict { .. }), "{stale:?}");
+    let again = admin.invoke(call(CREATE, &[("key", &id), ("type", "int"), ("value", "9")], None)).await.unwrap();
+    assert!(matches!(again, InvokeOutcome::FieldErrors(_)), "{again:?}");
+    svc.set(&ns, "limit", "3").await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    svc.set_tx(&mut tx, &ns, "limit", "4").await.unwrap();
+    tx.commit().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    svc.set_tx(&mut tx, &ns, "limit", "5").await.unwrap();
+    tx.rollback().await.unwrap();
+
+    let rows = history(&pool, &ns, "limit").await;
+    let drawn: Vec<(Option<&str>, &str, &str)> =
+        rows.iter().map(|(_, v, op, by)| (v.as_deref(), op.as_str(), by.as_str())).collect();
+    assert_eq!(
+        drawn,
+        [
+            (Some("1"), "insert", "tester"),
+            (Some("2"), "update", "tester"),
+            (Some("3"), "update", "system"),
+            (Some("4"), "update", "system"),
+        ]
+    );
+    assert!(rows.windows(2).all(|w| w[0].0 < w[1].0), "strictly increasing revisions: {rows:?}");
+    assert_eq!(rows[0].0, rev, "the history row carries the revision the stamp trigger assigned");
+    let (value, current) = stored(&pool, &ns, "limit").await.unwrap();
+    assert_eq!((rows[3].0, rows[3].1.as_deref()), (current, Some(value.as_str())), "the newest is the stored row");
+
+    let (role,): (String,) = sqlx::query_as("SELECT session_user::text").fetch_one(&pool).await.unwrap();
+    sqlx::query("DELETE FROM config.settings WHERE namespace = $1 AND key = 'limit'")
+        .bind(&ns)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let rows = history(&pool, &ns, "limit").await;
+    assert_eq!(rows.len(), 5);
+    let (deleted_rev, value, op, by) = &rows[4];
+    assert!(*deleted_rev > current, "a delete carries its own bump past the deleted row's revision");
+    let drawn = (value.as_deref(), op.as_str(), by.as_str());
+    assert_eq!(drawn, (None, "delete", role.as_str()), "an unset writer is the role");
+    let (event_rev,): (i64,) = sqlx::query_as(
+        "SELECT (payload->>'revision')::bigint FROM asyncevents.events \
+         WHERE topic = 'config.changed' AND payload->>'namespace' = $1 AND payload->>'operation' = 'delete'",
+    )
+    .bind(&ns)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(*deleted_rev, event_rev, "the history and the event carry the same revision");
+    cleanup(&pool, &ns).await;
+}
+
+/// The Revisions panel draws the newest `MAX_REVISIONS` history rows of the key, newest first,
+/// and the Keys row's writer is the writer of the key's current revision.
+#[tokio::test]
+async fn revisions_panel_draws_the_newest_stored_revisions() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    let svc = Service::new(pool.clone());
+    let admin = ConfigAdmin::new(pool.clone());
+    let id = format!("{ns}.limit");
+    let writes = store::MAX_REVISIONS + 2;
+    for i in 0..writes {
+        svc.set(&ns, "limit", &i.to_string()).await.unwrap();
+    }
+    let (_, rev) = stored(&pool, &ns, "limit").await.unwrap();
+    let saved = admin.invoke(call(SAVE, &[("key", &id), ("value", "99")], Some(rev as u64))).await.unwrap();
+    assert!(matches!(saved, InvokeOutcome::Ok { .. }), "{saved:?}");
+
+    let rows = history(&pool, &ns, "limit").await;
+    assert_eq!(rows.len() as i64, writes + 1);
+    let revisions = admin.panel(query(REVISIONS, None, &[("key", &id)])).await.unwrap();
+    let entries = &timeline(&revisions).entries;
+    let want: Vec<(String, String, Option<String>)> = rows
+        .iter()
+        .rev()
+        .take(store::MAX_REVISIONS as usize)
+        .map(|(r, v, _, by)| (format!("rev {r} by"), by.clone(), v.clone()))
+        .collect();
+    let drawn: Vec<(String, String, Option<String>)> =
+        entries.iter().map(|e| (e.summary.clone(), e.badges[0].value.clone(), e.detail.clone())).collect();
+    assert_eq!(drawn, want);
+    assert_eq!((drawn[0].1.as_str(), drawn[0].2.as_deref()), ("tester", Some("99")));
+    assert!(entries.iter().all(|e| e.at.ends_with('Z') && e.at.len() == 20), "RFC 3339 UTC");
+
+    let keys = admin.panel(query(KEYS, Some(&id), &[])).await.unwrap();
+    let writer = &table(&keys).rows[0].cells[4].more[0];
+    assert_eq!((writer.kind, writer.value.as_str()), (CellKind::User, "tester"));
     cleanup(&pool, &ns).await;
 }

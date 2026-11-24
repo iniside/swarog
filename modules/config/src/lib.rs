@@ -82,6 +82,11 @@ const NOTIFY_CHANNEL: &str = "config_changed";
 /// `RETURN NULL` is correct for an AFTER trigger. `value` is `null` on a DELETE. Each
 /// row mutation emits exactly once, with the revision the row carries.
 ///
+/// The same trigger appends one `config.setting_history` row per mutation, with that revision,
+/// the operation, the new value (`NULL` on a DELETE) and the writer: the `config.writer`
+/// setting the module's writers set for their own statement ([`SET_WRITER`]), else the
+/// session's database role.
+///
 /// Gaps in the global sequence are expected; readers rely only on strict increase. An
 /// `INSERT … ON CONFLICT DO UPDATE` that hits the conflict fires BEFORE INSERT (one
 /// bump, discarded) and then BEFORE UPDATE (the stamped bump) but only the AFTER UPDATE
@@ -120,6 +125,16 @@ CREATE TABLE IF NOT EXISTS config.revision (
 );
 INSERT INTO config.revision (singleton, revision) VALUES (true, 0)
 	ON CONFLICT (singleton) DO NOTHING;
+CREATE TABLE IF NOT EXISTS config.setting_history (
+	namespace text        NOT NULL,
+	key       text        NOT NULL,
+	revision  bigint      NOT NULL,
+	value     text,
+	operation text        NOT NULL CHECK (operation IN ('insert', 'update', 'delete')),
+	by        text        NOT NULL,
+	at        timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (namespace, key, revision)
+);
 CREATE OR REPLACE FUNCTION config.stamp_revision() RETURNS trigger
 	LANGUAGE plpgsql AS $$
 DECLARE
@@ -148,6 +163,7 @@ DECLARE
 	_value   text;
 	_op      text;
 	_rev     bigint;
+	_by      text;
 	_payload jsonb;
 BEGIN
 	IF TG_OP = 'DELETE' THEN
@@ -162,6 +178,11 @@ BEGIN
 		_ns := NEW.namespace; _key := NEW.key; _value := NEW.value; _op := 'insert';
 		_rev := NEW.revision; -- (a) the BEFORE trigger's stamp
 	END IF;
+
+	-- The module's writers set config.writer for their statement; any other writer is its role.
+	_by := coalesce(nullif(current_setting('config.writer', true), ''), session_user);
+	INSERT INTO config.setting_history (namespace, key, revision, value, operation, by)
+		VALUES (_ns, _key, _rev, _value, _op, _by);
 
 	_payload := jsonb_build_object(
 		'namespace', _ns,
@@ -186,6 +207,20 @@ BEGIN
 	RETURN NULL;
 END;
 $$;"#;
+
+/// The writer [`Service::set`] and [`Service::set_tx`] record in `config.setting_history`.
+pub(crate) const SYSTEM_WRITER: &str = "system";
+
+/// A one-row FROM item that sets `config.writer` to `$4` for the statement's transaction,
+/// before the statement writes its row and its triggers read the setting.
+pub(crate) const SET_WRITER: &str = "(SELECT set_config('config.writer', $4::text, true)) AS writer";
+
+static UPSERT_SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "INSERT INTO config.settings (namespace, key, value) SELECT $1::text, $2::text, $3::text FROM {SET_WRITER} \
+         ON CONFLICT (namespace, key) DO UPDATE SET value = excluded.value"
+    )
+});
 
 /// The per-row revision stamp trigger [`SCHEMA_DDL`] describes.
 const SETTINGS_STAMP_TRIGGER_DDL: &str = r#"
@@ -311,21 +346,19 @@ impl Service {
 
     /// Validates the ids, then upserts the row in a single autocommit statement. The
     /// `config.settings` triggers stamp the row's `revision` and `updated_at`, then
-    /// `pg_notify` `config_changed` and append the durable event, in the statement's
-    /// transaction. `set` does NOT
+    /// `pg_notify` `config_changed`, append the durable event and the history row written
+    /// by [`SYSTEM_WRITER`], in the statement's transaction. `set` does NOT
     /// touch the cache: the invalidation callback is the single refresh path, so a
     /// service write and an external `psql` edit are handled identically.
     pub async fn set(&self, ns: &str, key: &str, value: &str) -> anyhow::Result<()> {
         validate_ident(ns, key)?;
-        sqlx::query(
-            "INSERT INTO config.settings (namespace, key, value) VALUES ($1, $2, $3) \
-             ON CONFLICT (namespace, key) DO UPDATE SET value = excluded.value",
-        )
-        .bind(ns)
-        .bind(key)
-        .bind(value)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query(&UPSERT_SQL)
+            .bind(ns)
+            .bind(key)
+            .bind(value)
+            .bind(SYSTEM_WRITER)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -343,15 +376,13 @@ impl Service {
         value: &str,
     ) -> anyhow::Result<()> {
         validate_ident(ns, key)?;
-        sqlx::query(
-            "INSERT INTO config.settings (namespace, key, value) VALUES ($1, $2, $3) \
-             ON CONFLICT (namespace, key) DO UPDATE SET value = excluded.value",
-        )
-        .bind(ns)
-        .bind(key)
-        .bind(value)
-        .execute(conn)
-        .await?;
+        sqlx::query(&UPSERT_SQL)
+            .bind(ns)
+            .bind(key)
+            .bind(value)
+            .bind(SYSTEM_WRITER)
+            .execute(conn)
+            .await?;
         Ok(())
     }
 

@@ -168,6 +168,10 @@ pub(crate) async fn cleanup(pool: &PgPool, ns: &str) {
         .bind(ns)
         .execute(pool)
         .await;
+    let _ = sqlx::query("DELETE FROM config.setting_history WHERE namespace = $1")
+        .bind(ns)
+        .execute(pool)
+        .await;
     let _ = asyncevents::testing::cleanup_events(pool, "namespace", ns).await;
 }
 

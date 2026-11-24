@@ -48,6 +48,9 @@ Per-module mechanics live in each `modules/<name>/src/lib.rs` header and the
   boot-fill-or-fail-startup. Each `config.settings` row carries `revision`, the
   global revision of the write that last wrote it, stamped by the `settings_stamp`
   BEFORE trigger (writers never supply it); the admin edit compares-and-swaps on it.
+  The AFTER trigger appends one `config.setting_history` row per insert, update and
+  delete with that revision and the writer: the `config.writer` setting the module's
+  writers set for their own statement (the operator, or "system"), else the database role.
   The column rolls out by `DROP SCHEMA config CASCADE` and a fresh boot, no data
   migration: an old table boots but fails on its first write.
 - **admin** — `core/admin` (a core module, not under `modules/`): GameOps portal at `/admin` (minijinja over the embedded Go-era theme),
