@@ -228,17 +228,18 @@ Out of this plan (owner, 2026-11-24): no accept file, no crawl, no `PAGE_MAP` ch
 
 ## Owner decisions
 
-Open; each with the recommendation:
+Decided 2026-11-24 (owner: "ok z rekomendacja"), all as recommended:
 
-1. A1: page id `log` (`/admin/p/audit/log`), re-point the apikeys link if needed?
-2. A2: list every `audit.log` topic on the page, not only `admin.action`?
-3. A3: non-operator rows show the `system` actor tag, the topic's verb as Action, the payload subject as Target and a per-topic SQL summary as Detail (config value never shown)?
-4. A4: Topic options = the 16 static `DURABLE_TOPICS`?
-5. A5: Actor options = distinct operator logins (bounded, unindexed) + `system` + FAKE `scheduler` and `apikey:…` options, one todo item?
-6. A6: "Time" as an inert chip, no default "today" narrowing?
-7. A7: foot via `item_noun` ("1,204 entries · showing 1–25") per the standing rule?
-8. A9: Time `HH:MM:SS` today, `Mon DD HH:MM` older, in SQL?
-9. A10: Export `Then::Invoke`, `implemented: false`?
-10. A12-A14: dashboard = newest 7 `admin.action` rows, range ignored, "target · detail" in `detail`, icon/tone from module prefix and outcome?
-11. A15 / §9: a `24t` that re-points AU3 now plus the X5 filter, dashboard and break-run checks, or leave AU3 to 25h1?
-12. Parts: split 24.a1 into a1a/a1b?
+1. A1: page id `log`. The apikeys link already names `log` (`modules/apikeys/src/admin.rs:816-819`): no re-point.
+2. A2: every `audit.log` topic on the page.
+3. A3: (a) `system` actor tag; topic verb, payload subject and per-topic SQL summary; config value never shown.
+4. A4: the 16 static `DURABLE_TOPICS`.
+5. A5: (a) operator logins + `system` + FAKE `scheduler` and `apikey:…` options, one todo item.
+6. A6: (a) inert Time chip, no "today" narrowing.
+7. A7: `item_noun` foot.
+8. A9: (a) `HH:MM:SS` today, `Mon DD HH:MM` older.
+9. A10: Export `Then::Invoke`, `implemented: false`.
+10. A11: (a) empty title, checked first in 24.a1a.
+11. A12-A14: (a) as recommended.
+12. A15: `24t` as in §9 (AU3 re-pointed now, X5 filter, dashboard, break run).
+13. Parts: 24.a1 is split into 24.a1a (store readers, A3 derivation, their tests) and 24.a1b (provider, slot, `Cargo.toml`, todo items, AUDIT-02, svc comments).

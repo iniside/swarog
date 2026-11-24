@@ -21,7 +21,15 @@ _None._
   (docs/research/2026-07-14-2058-timing-sensitive-tests-survey.md:105,
   2026-07-14). Low severity.
 
-### Known limits (admin-control-plane-redesign step 23)
+### Known
+- [ ] **Re-saving a float rewrites its digits**
+  The edit decodes a number through f64 (`modules/config/src/admin.rs`, aaf1ab3b), so
+  saving a key whose stored value is `0.1000000000000000055511` writes `0.1`, and a u64
+  above 2^53 comes back as a rounded float (`…616.0`). Found by the 23a2 review.
+- [ ] **Create refuses an empty string value that edit accepts**
+  `setting.create` cannot make a String key whose value is `""`, while `setting.edit`
+  saves `""` on an existing key. Found by the 23a2 review.
+ limits (admin-control-plane-redesign step 23)
 
 - [ ] **Multi-row config writes can deadlock**
   The `settings_stamp` BEFORE trigger (`modules/config/src/lib.rs`, d3de6666)
