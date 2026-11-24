@@ -32,6 +32,7 @@ use crate::idp::Idp;
 use crate::pushws::{Frame, PushClient};
 
 mod apikeys_admin_checks;
+mod audit_admin_checks;
 mod characters_admin_checks;
 mod expected_red;
 mod friends_admin_checks;
@@ -533,6 +534,7 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
     apikeys_admin_checks::assertions(ctx, pool, p, &m, &jar, "m").await?;
     // Boxed: `run`'s future sits on the main thread's stack under `block_on`.
     Box::pin(scheduler_admin_checks::assertions(ctx, pool, p, &m, &jar, "m")).await?;
+    Box::pin(audit_admin_checks::assertions(ctx, pool, p, &m, &jar, "m")).await?;
     wallet_ledger_checks::assertions(ctx, pool, p, &m, &jar, "m").await?;
     deletion_assertions(ctx, pool, p, &m, None, "m").await?;
     party_checks::deletion_assertion(ctx, pool, p, &m, "m").await?;
@@ -5145,12 +5147,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
         let reg = poll_count(pool, "SELECT count(*) FROM audit.log WHERE topic='player.registered' AND payload->>'player_id'=$1", pid, 1).await;
         p.check("[AU2] audit player.registered", reg, format!("pid={pid}"));
     }
-    // [AU3] /admin/audit-log WITH session -> 200 + a logged topic (E -> F QUIC).
-    let au3 = admin.get(format!("{g}/admin/audit-log")).send().await?;
-    let (au3_code, au3_body) = (au3.status().as_u16(), au3.text().await.unwrap_or_default());
-    let au3_ok = au3_code == 200
-        && (au3_body.contains("character.created") || au3_body.contains("character.deleted") || au3_body.contains("player.registered"));
-    p.check("[AU3] /admin/audit-log renders ledger", au3_ok, format!("code={au3_code}"));
+    // [AU3]-[AU5] (the Audit log page and dashboard panel) live in `audit_admin_checks`.
 
     // --- Scheduler: data-driven schedule fires durably; audit pulls scheduler.fired. ---
     // [SC0] seed an immediately-due 2s schedule (epoch last_fired).
@@ -5837,6 +5834,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     apikeys_admin_checks::assertions(ctx, pool, p, &g, &cfg, "").await?;
     // Boxed: `run`'s future sits on the main thread's stack under `block_on`.
     Box::pin(scheduler_admin_checks::assertions(ctx, pool, p, &g, &cfg, "")).await?;
+    Box::pin(audit_admin_checks::assertions(ctx, pool, p, &g, &cfg, "")).await?;
     wallet_ledger_checks::assertions(ctx, pool, p, &g, &cfg, "").await?;
 
     // --- Parties over the multiplexed socket: every invoke is Remote-dispatched from

@@ -31,7 +31,6 @@ ADX1 | code=404 | reads the retired /admin/players row-menu extensions; re-point
 ADX2 | code=404 | reads the retired /admin/characters?owner= page; re-pointed once the admin panel port is complete (owner 2026-11-21)
 ADX3 | frag_code=404 | reads the retired admin modal fragment; re-pointed once the admin panel port is complete (owner 2026-11-21)
 ADX3b | full_code=404 | reads the retired admin modal page; re-pointed once the admin panel port is complete (owner 2026-11-21)
-AU3 | code=404 | reads the retired /admin/audit-log page; re-pointed once the admin panel port is complete (owner 2026-11-21)
 WL3 | status=404 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
 WL4 | status=404 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
 WL5 | rows=0 want=2 | counts the wallet.changed rows of the WL3/WL4 grants, which the retired /admin/wallet page never makes (owner 2026-11-21)
