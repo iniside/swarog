@@ -60,3 +60,15 @@ _None._
   proven in the split: the page render, the edit and its `admin.action` change note, the
   stale-revision 409, the duplicate-key 422, the refusals, and admin-svc without its config
   peer. Spec: docs/plans/2026-11-23-step23-config-checklist.md §9 (CF1-CF5).
+- [ ] **Config admin writes are not replay-safe**
+  `setting.edit` and `setting.create` (`modules/config/src/admin.rs`, aaf1ab3b) ignore
+  `request_id`: a replayed edit returns a stale-revision Conflict and a replayed create the
+  `key: "already exists"` field error, not the first call's success.
+- [ ] **A duplicate create still advances the global revision**
+  `store::create` (`modules/config/src/store.rs`) inserts with ON CONFLICT DO NOTHING; the
+  `settings_stamp` BEFORE trigger bumps `config.revision` before the conflict check, so a
+  refused duplicate leaves a gap in the numbering (no row change, no event). Fix: check for
+  the key first, or catch the unique violation instead.
+- [ ] **Create does not land on the new key**
+  A successful `setting.create` returns no redirect, so the page does not select the key
+  just created.

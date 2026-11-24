@@ -53,6 +53,11 @@ _None._
 - [ ] **Panel form has no banner for unmatched errors**
   A provider `FieldErrors` on a key the panel form does not draw is not shown on the panel
   re-render; only the modal has an error banner (`core/admin/src/render/modal.rs:114-121`).
+- [ ] **Confirm actions accept a change note they do not draw**
+  `check_form_keys` (`core/admin/src/engine/actions.rs`, ~389) lets `_reason` through for
+  every Confirm action, even one with `ReasonReq::None` whose dialog draws no note, so a
+  hand-posted note reaches the audit row. 9e8577eb closed this for Form only. Fix: the same
+  rule for Confirm, plus a twin of `a_panel_form_without_a_change_note_refuses_a_posted_reason`.
 
 ### Known limits (admin-control-plane-redesign step 22)
 
