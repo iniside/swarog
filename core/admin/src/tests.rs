@@ -3261,6 +3261,8 @@ struct Held {
     entered: tokio::sync::Notify,
     release: tokio::sync::Notify,
     invoked: Mutex<Vec<InvokeCall>>,
+    prepared: Mutex<Result<Then, opsapi::Error>>,
+    prepares: AtomicU32,
 }
 
 impl Held {
@@ -3275,6 +3277,8 @@ impl Held {
             entered: tokio::sync::Notify::new(),
             release: tokio::sync::Notify::new(),
             invoked: Mutex::new(Vec::new()),
+            prepared: Mutex::new(Err(opsapi::Error::not_found("nothing prepared"))),
+            prepares: AtomicU32::new(0),
         })
     }
 
@@ -3327,6 +3331,11 @@ impl controlplane::Provider for Held {
             return Err(error);
         }
         Ok(self.outcome.lock().unwrap().clone())
+    }
+
+    async fn prepare(&self, _req: controlplane::PrepareCall) -> Result<Then, opsapi::Error> {
+        self.prepares.fetch_add(1, Ordering::SeqCst);
+        self.prepared.lock().unwrap().clone()
     }
 }
 
@@ -3853,7 +3862,8 @@ fn flag(attrs: &str, name: &str) -> bool {
 }
 
 /// What a browser posts for the first form in `raw` drawing a `_form`: every named, enabled
-/// `input` (a checkbox only when ticked) and `textarea`, in document order.
+/// `input` (a checkbox only when ticked), `textarea` and `select` (its selected option, else its
+/// first), in document order.
 fn own_inputs(raw: &str) -> Vec<(String, String)> {
     let at = raw.find(r#"name="_form""#).unwrap_or_else(|| panic!("no form instance: {raw}"));
     let start = raw[..at].rfind("<form").expect("the form tag");
@@ -3876,7 +3886,15 @@ fn own_inputs(raw: &str) -> Vec<(String, String)> {
                 let text = &rest[close + 1..];
                 pairs.push((name, unescape(&text[..text.find("</textarea>").expect("a closed textarea")])));
             }
-            "select" => panic!("own_inputs reads no select: {raw}"),
+            "select" => {
+                let text = &rest[close + 1..];
+                let options = &text[..text.find("</select>").expect("a closed select")];
+                let mut drawn = options.split("<option").skip(1);
+                let picked = drawn.clone().find(|o| o.starts_with(" selected")).or_else(|| drawn.next());
+                let value = picked.and_then(|o| o.split_once('>')).map(|(_, t)| t.split('<').next());
+                let value = value.flatten().unwrap_or_default();
+                pairs.push((name, unescape(value)));
+            }
             _ => {}
         }
     }
@@ -4227,6 +4245,380 @@ async fn a_pre_invoke_refusal_releases_and_the_corrected_resubmit_invokes() {
     let resp = portal_send(&engine, &st, &cookie, "/admin/_action/ledger/adjust", &body, false).await;
     assert_completed(&resp, "the resubmit once admitted");
     assert_eq!(ledger.calls().len(), 3, "the admitted resubmit invokes");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// The `admin.forms` rows minted for `login`.
+async fn forms_of(pool: &PgPool, login: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM admin.forms WHERE login = $1")
+        .bind(login)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Makes every `admin.forms` insert for `login` fail until the returned guard drops.
+async fn refuse_mint(pool: &PgPool, name: &str, login: &str) -> Stall {
+    assert!(!login.contains('\''), "the login is quoted into the trigger");
+    let function = format!(
+        "CREATE FUNCTION admin.\"{name}\"() RETURNS trigger LANGUAGE plpgsql AS $f$ \
+         BEGIN RAISE EXCEPTION 'mint refused'; END $f$"
+    );
+    let trigger = format!(
+        "CREATE TRIGGER \"{name}\" BEFORE INSERT ON admin.forms FOR EACH ROW \
+         WHEN (NEW.login = '{login}') EXECUTE FUNCTION admin.\"{name}\"()"
+    );
+    sqlx::query(&function).execute(pool).await.unwrap();
+    let refusal = Stall { pool: pool.clone(), name: name.to_string(), table: "admin.forms" };
+    sqlx::query(&trigger).execute(pool).await.unwrap();
+    refusal
+}
+
+/// A portal GET sent as htmx sends it, answered in full.
+async fn portal_get_htmx(engine: &Arc<Engine>, st: &Arc<AdminState>, cookie: &str, uri: &str) -> Response {
+    let portal = crate::routes::Portal { st: st.clone(), engine: engine.clone() };
+    let req = Request::builder().uri(uri).header("cookie", cookie).header("hx-request", "true");
+    crate::routes::router(portal).oneshot(req.body(Body::empty()).unwrap()).await.unwrap()
+}
+
+/// A confirm of no reason, asking for `type_to_confirm` when given.
+fn confirm_spec(type_to_confirm: Option<&str>) -> controlplane::ConfirmSpec {
+    controlplane::ConfirmSpec {
+        title: "Skip".to_string(),
+        body: "Skip the event.".to_string(),
+        tone: controlplane::ConfirmTone::Danger,
+        impact: Vec::new(),
+        reason: controlplane::ReasonReq::None,
+        reason_hint: None,
+        type_to_confirm: type_to_confirm.map(str::to_string),
+        confirm_label: "Skip".to_string(),
+    }
+}
+
+/// A Money field drawn by the portal and posted back as drawn, its currency picked in a
+/// select keyed `<key>__currency`, reaches the module as one Money object.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_money_field_drawn_by_the_portal_posts_back_as_one_money_object() {
+    use controlplane::{FieldKind, FieldValue};
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-money-own");
+    let cookie = operator_cookie(&pool, &user).await;
+    let kind = FieldKind::Money(vec!["gold".to_string(), "gems".to_string()]);
+    let price = plain_field("price", kind.clone(), Some(r#"{"amount":"12.5","currency":"gems"}"#));
+    let ledger = Held::new(player_owner(module("ledger", Vec::new(), vec![modal_form_of("grant", vec![price])], true)), &user);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_action/ledger/grant?entity=player:p-1").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let drawn = own_inputs(&raw);
+    assert_eq!(values_of(&drawn, "price__currency"), vec!["gems".to_string()], "the default's currency: {raw}");
+    let resp = portal_send(&engine, &st, &cookie, "/admin/_action/ledger/grant", &urlencode(&drawn), false).await;
+    assert_completed(&resp, "the Money form's own inputs");
+    let calls = ledger.calls();
+    assert_eq!(calls.len(), 1, "one invoke");
+    assert_eq!(calls[0].input.keys().collect::<Vec<_>>(), vec!["price"], "the currency key never reaches the module");
+    let want = FieldValue::Money { amount: "12.5".to_string(), currency: "gems".to_string() };
+    assert_eq!(controlplane::decode_field(&kind, &calls[0].input["price"]), Ok(want));
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A form body carrying a key its spec does not draw, or a non-Multi key twice, is a 400 that
+/// never invokes and releases the claim, so the corrected resubmit invokes.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_or_repeated_key_is_a_400_that_releases_the_claim() {
+    use controlplane::FieldKind;
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-form-keys");
+    let cookie = operator_cookie(&pool, &user).await;
+    let count = modal_form_of("count", vec![plain_field("qty", FieldKind::Int, None)]);
+    let ledger = Held::new(player_owner(module("ledger", Vec::new(), vec![count], true)), &user);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+    let (_, raw) = portal_get(&engine, &st, &cookie, "/admin/_action/ledger/count?entity=player:p-1").await;
+    let form_id = form_id_of(&raw);
+    let post = "/admin/_action/ledger/count";
+
+    for (wrong, why) in [("&qty=1&bogus=1", "an unknown key"), ("&qty=1&qty=2", "a repeated key")] {
+        let (status, raw) = portal_post(&engine, &st, &cookie, post, &format!("_csrf=csrf&_form={form_id}{wrong}")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{why}: {raw}");
+        assert!(ledger.calls().is_empty(), "{why}: never invokes");
+        assert_eq!(claim_state(&pool, &form_id).await, (false, false), "{why}: releases the claim");
+    }
+    let resp = portal_send(&engine, &st, &cookie, post, &format!("_csrf=csrf&_form={form_id}&qty=2"), false).await;
+    assert_completed(&resp, "the corrected resubmit");
+    let calls = ledger.calls();
+    assert_eq!(calls.len(), 1, "the corrected resubmit invokes");
+    assert_eq!(calls[0].input, BTreeMap::from([("qty".to_string(), "2".to_string())]));
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A token-less click sends an empty `input`. It is a 400 with zero calls when it posts a field
+/// key, names an action that must be submitted from its form (`Then::Form`, `Then::Confirm`, a
+/// `PanelForm`) or carries a 257-byte `_item`; an action that is not implemented is a 403
+/// with zero calls.
+#[tokio::test(flavor = "multi_thread")]
+async fn token_less_refusals_never_invoke() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-click-refusals");
+    let cookie = operator_cookie(&pool, &user).await;
+    let row = ActionPoint::RowAction("player".to_string());
+    let actions = vec![
+        action_decl("kick", row.clone(), true),
+        action_decl("off", row.clone(), false),
+        modal_form("adjust"),
+        ActionDecl { then: Then::Confirm(confirm_spec(None)), ..action_decl("wipe", row, true) },
+        action_decl("save", ActionPoint::PanelForm("funds".to_string()), true),
+    ];
+    let ledger = Held::new(player_owner(module("ledger", vec![player_tab("funds", "funds")], actions, true)), &user);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+    let long = "x".repeat(257);
+    let cases = [
+        ("kick", "&qty=1".to_string(), StatusCode::BAD_REQUEST, "a field key"),
+        ("adjust", String::new(), StatusCode::BAD_REQUEST, "a Then::Form action"),
+        ("wipe", String::new(), StatusCode::BAD_REQUEST, "a Then::Confirm action"),
+        ("save", String::new(), StatusCode::BAD_REQUEST, "a PanelForm action"),
+        ("kick", format!("&_item={long}"), StatusCode::BAD_REQUEST, "a 257-byte _item"),
+        ("off", String::new(), StatusCode::FORBIDDEN, "an action that is not implemented"),
+    ];
+    for (action, extra, want, why) in cases {
+        let body = format!("_csrf=csrf&_entity=player:p-1{extra}");
+        let (status, raw) = portal_post(&engine, &st, &cookie, &format!("/admin/_action/ledger/{action}"), &body).await;
+        assert_eq!(status, want, "{why}: {raw}");
+        assert!(ledger.calls().is_empty(), "{why}: never invokes");
+    }
+
+    let resp = portal_send(&engine, &st, &cookie, "/admin/_action/ledger/kick", "_csrf=csrf&_entity=player:p-1", false);
+    assert_completed(&resp.await, "a plain click");
+    let calls = ledger.calls();
+    assert_eq!(calls.len(), 1, "a plain click invokes");
+    assert!(calls[0].input.is_empty(), "a click's input is empty");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A modal GET of a `Then::Link` action answers `HX-Redirect` to the link; of a `Then::Invoke`
+/// action, or with a 257-byte `?item=`, a 400. None of them mints a row.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_modal_get_of_a_link_redirects_and_of_an_invoke_is_a_400_minting_no_row() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-modal-get");
+    let cookie = operator_cookie(&pool, &user).await;
+    let row = ActionPoint::RowAction("player".to_string());
+    let actions = vec![
+        ActionDecl { then: Then::Link(Link::Entity(player_ref("p-2"))), ..action_decl("open", row.clone(), true) },
+        action_decl("kick", row, true),
+        modal_form("adjust"),
+    ];
+    let ledger = Held::new(player_owner(module("ledger", Vec::new(), actions, true)), &user);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+
+    let resp = portal_get_htmx(&engine, &st, &cookie, "/admin/_action/ledger/open?entity=player:p-1").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let to = resp.headers().get("hx-redirect").map(|v| v.to_str().unwrap().to_string());
+    assert_eq!(to.as_deref(), Some("/admin/e/player/p-2"), "a link action redirects to its link");
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_action/ledger/kick?entity=player:p-1").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a Then::Invoke action has no modal: {raw}");
+    let long = format!("/admin/_action/ledger/adjust?entity=player:p-1&item={}", "x".repeat(257));
+    let (status, raw) = portal_get(&engine, &st, &cookie, &long).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a 257-byte item: {raw}");
+    assert_eq!(forms_of(&pool, &user).await, 0, "no modal GET above mints a row");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A modal GET asks `prepare` only for an admitted action declaring it: a denied, not
+/// implemented or read-only one is refused first, and one without `prepare` is never asked.
+/// The prepared confirm's `type_to_confirm`, not the declared one, is what the submit
+/// enforces; a failed `prepare` or one answering another variant is a toast minting no row.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_modal_prepares_only_an_admitted_action_and_submits_against_the_prepared_spec() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-modal-prepare");
+    let cookie = operator_cookie(&pool, &user).await;
+    let row = ActionPoint::RowAction("player".to_string());
+    let prepared = |id: &str, point: ActionPoint| ActionDecl {
+        then: Then::Confirm(confirm_spec(None)),
+        prepare: true,
+        ..action_decl(id, point, true)
+    };
+    let saves = ContributionDecl { readonly: Some("inspection only".to_string()), ..player_tab("saves", "saves") };
+    let actions = vec![
+        prepared("skip", row.clone()),
+        ActionDecl { min_role: Role::Admin, ..prepared("purge", row.clone()) },
+        ActionDecl { implemented: false, ..prepared("later", row.clone()) },
+        prepared("wipe", ActionPoint::PanelTool("saves".to_string())),
+        ActionDecl { prepare: false, ..prepared("plain", row) },
+    ];
+    let ledger = Held::new(player_owner(module("ledger", vec![saves], actions, true)), &user);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+    let modal = |action: &str| format!("/admin/_action/ledger/{action}?entity=player:p-1&item=evt-9");
+    let prepares = || ledger.prepares.load(Ordering::SeqCst);
+
+    for (action, why) in [("purge", "a denied action"), ("later", "an action not implemented"), ("wipe", "a read-only one")] {
+        let (status, raw) = portal_get(&engine, &st, &cookie, &modal(action)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{why}: {raw}");
+    }
+    assert_eq!(prepares(), 0, "a refused action is never prepared");
+    let (status, raw) = portal_get(&engine, &st, &cookie, &modal("plain")).await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert_eq!(prepares(), 0, "an action without prepare is never prepared");
+    let minted = forms_of(&pool, &user).await;
+
+    *ledger.prepared.lock().unwrap() = Err(opsapi::Error::unavailable("plane down"));
+    let (status, raw) = portal_get(&engine, &st, &cookie, &modal("skip")).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{raw}");
+    assert!(raw.contains("plane down"), "a failed prepare is the toast: {raw}");
+    *ledger.prepared.lock().unwrap() = Ok(Then::Form(moded_spec(Vec::new())));
+    let (status, raw) = portal_get(&engine, &st, &cookie, &modal("skip")).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "another variant: {raw}");
+    assert_eq!(prepares(), 2);
+    assert_eq!(forms_of(&pool, &user).await, minted, "a failed prepare mints no row");
+
+    *ledger.prepared.lock().unwrap() = Ok(Then::Confirm(confirm_spec(Some("evt-9"))));
+    let (status, raw) = portal_get(&engine, &st, &cookie, &modal("skip")).await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let body = format!("_csrf=csrf&_form={}", form_id_of(&raw));
+    let (status, raw) = portal_post(&engine, &st, &cookie, "/admin/_action/ledger/skip", &body).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "the prepared type-to-confirm is required: {raw}");
+    let typed = format!("{body}&_confirm=evt-9");
+    let resp = portal_send(&engine, &st, &cookie, "/admin/_action/ledger/skip", &typed, false).await;
+    assert_completed(&resp, "the prepared type-to-confirm typed");
+    assert_eq!(ledger.calls().len(), 1, "only the confirmed submit invokes");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A failed mint is the 503 "Form unavailable" toast on a modal and an error panel saying
+/// "Form unavailable" on a panel form; neither draws a form instance.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_mint_is_a_toast_on_a_modal_and_an_error_panel_on_a_panel() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-mint-fails");
+    let cookie = operator_cookie(&pool, &user).await;
+    let actions = vec![modal_form("adjust"), action_decl("save", ActionPoint::PanelForm("funds".to_string()), true)];
+    let ledger = Held::new(player_owner(module("ledger", vec![player_tab("funds", "funds")], actions, true)), &user);
+    *ledger.form.lock().unwrap() = Some(Primitive::Form(moded_spec(Vec::new())));
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+    let refusal = refuse_mint(&pool, &uniq("t-refuse-mint"), &user).await;
+
+    let resp = portal_get_htmx(&engine, &st, &cookie, "/admin/_action/ledger/adjust?entity=player:p-1").await;
+    let (status, retarget, raw) = answered(resp).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{raw}");
+    assert!(raw.contains("Form unavailable"), "{raw}");
+    assert_eq!(retarget.as_deref(), Some("#modal-root"), "the toast lands in the modal root");
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/ledger/funds?entity=player:p-1").await;
+    drop(refusal);
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert!(raw.contains(r#"data-state="error""#) && raw.contains("Form unavailable"), "{raw}");
+    assert!(!raw.contains(r#"name="_form""#), "no form instance is drawn: {raw}");
+    assert_eq!(forms_of(&pool, &user).await, 0);
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// An `ok` Form panel whose spec cannot be served (a `__` field key, an undecodable readonly
+/// default) renders an error panel; one whose `PanelForm` action the viewer may not use, or
+/// that has none, renders readonly. None of them mints a row.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_panel_form_that_cannot_be_served_or_used_mints_no_row() {
+    use controlplane::{Field, FieldKind};
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-panel-unserved");
+    let cookie = operator_cookie(&pool, &user).await;
+    let save = || action_decl("save", ActionPoint::PanelForm("funds".to_string()), true);
+    let spec = |field: Field| controlplane::FormSpec { fields: vec![field], ..moded_spec(Vec::new()) };
+    let undecodable = Field { readonly: true, ..plain_field("qty", FieldKind::Int, Some("x")) };
+    let cases = [
+        (spec(plain_field("a__b", FieldKind::String, None)), vec![save()], "error", "a __ field key"),
+        (spec(undecodable), vec![save()], "error", "an undecodable readonly default"),
+        (
+            spec(plain_field("note", FieldKind::String, None)),
+            vec![ActionDecl { min_role: Role::Admin, ..save() }],
+            "readonly",
+            "a PanelForm action the viewer may not use",
+        ),
+        (spec(plain_field("note", FieldKind::String, None)), Vec::new(), "readonly", "no PanelForm action"),
+    ];
+    for (form, actions, state, why) in cases {
+        let manifest = player_owner(module("ledger", vec![player_tab("funds", "funds")], actions, true));
+        let ledger = Recording::new(manifest, &[("funds", answer(Primitive::Form(form)))]);
+        let engine = Arc::new(sourced(vec![ledger as Arc<dyn controlplane::Provider>]).await);
+        let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/ledger/funds?entity=player:p-1").await;
+        assert_eq!(status, StatusCode::OK, "{why}: {raw}");
+        assert!(raw.contains(&format!(r#"data-state="{state}""#)), "{why} renders {state}: {raw}");
+        assert!(!raw.contains(r#"name="_form""#), "{why}: no form instance: {raw}");
+    }
+    assert_eq!(forms_of(&pool, &user).await, 0, "no panel above mints a row");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A `NoOp` answers a 303 whose flash is an `Info` toast of its message, and its
+/// `admin.action` detail is `noop: <message>`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_noop_is_a_303_with_an_info_flash_and_a_noop_audit() {
+    use crate::engine::actions::{take_flash, FlashTone};
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-noop");
+    let cookie = operator_cookie(&pool, &user).await;
+    let kick = vec![action_decl("kick", ActionPoint::RowAction("player".to_string()), true)];
+    let ledger = Held::new(player_owner(module("ledger", Vec::new(), kick, true)), &user);
+    *ledger.outcome.lock().unwrap() = InvokeOutcome::NoOp { message: "already kicked".to_string() };
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+
+    let body = "_csrf=csrf&_entity=player:p-1";
+    let resp = portal_send(&engine, &st, &cookie, "/admin/_action/ledger/kick", body, false).await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    let at = location_of(&resp);
+    let token = at.split("reveal=").nth(1).and_then(|t| t.split('&').next()).unwrap_or_else(|| panic!("a flash: {at}"));
+    let flash = take_flash(&pool, token).await.expect("the stashed flash");
+    assert_eq!((flash.message.as_str(), flash.tone), ("already kicked", FlashTone::Info));
+    let detail: String = sqlx::query_scalar(
+        "SELECT payload->>'detail' FROM asyncevents.events
+         WHERE topic = 'admin.action' AND payload->>'actor' = $1 AND payload->>'action' = 'ledger.kick'",
+    )
+    .bind(&user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(detail, "noop: already kicked");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// An unknown `range` is a 400 from `GET /admin` and from a dashboard panel's route, which
+/// never asks the provider; a known one serves the panel.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_range_is_a_400_on_the_dashboard_and_its_panel_route() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-range");
+    let cookie = operator_cookie(&pool, &user).await;
+    let tile = contribution("players", Point::DashboardTile, Role::Viewer);
+    let ops = Recording::new(module("ops", vec![tile], Vec::new(), false), &[(
+        "players",
+        answer(Primitive::KpiTile(kpi_tile(Vec::new(), None))),
+    )]);
+    let engine = Arc::new(sourced(vec![ops.clone() as Arc<dyn controlplane::Provider>]).await);
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin?range=30d").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{raw}");
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/ops/players?range=30d").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{raw}");
+    assert!(ops.calls().is_empty(), "an unknown range never reaches the provider");
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/ops/players?range=7d").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert_eq!(ops.calls().len(), 1);
 
     cleanup_user(&pool, &user).await;
 }
