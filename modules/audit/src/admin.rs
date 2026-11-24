@@ -392,9 +392,8 @@ impl Provider for AuditAdmin {
     }
 
     async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, Error> {
-        match req.action.as_str() {
-            other => Err(Error::not_found(format!("{MODULE} has no action {other:?}"))),
-        }
+        let action = req.action;
+        Err(Error::not_found(format!("{MODULE} has no action {action:?}")))
     }
 }
 
