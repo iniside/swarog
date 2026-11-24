@@ -560,8 +560,8 @@ impl Store {
 
     /// Returns ONE parked row to the drain. `attempts = 0` restarts the ladder — the
     /// operator fixed what parked it, so the burnt attempts describe a configuration that
-    /// no longer exists. `last_error` SURVIVES: it is the only record of why the row
-    /// parked, and the next attempt overwrites it anyway.
+    /// no longer exists. `last_error` is CLEARED: a pending row with a `last_error` is the
+    /// Retrying tab, and a resumed row has not failed again, so it reads as Pending.
     ///
     /// The bumped `generation` is what makes resetting `attempts` safe. This statement
     /// hands a row back to the drain, so any attempt still in flight from before it parked
@@ -579,7 +579,7 @@ impl Store {
         let done = sqlx::query(
             "UPDATE mail.outbox \
                 SET state = 'pending', attempts = 0, generation = generation + 1, \
-                    next_attempt_at = now(), updated_at = now() \
+                    last_error = NULL, next_attempt_at = now(), updated_at = now() \
               WHERE id = $1::uuid AND state = 'parked'",
         )
         .bind(id)
@@ -616,7 +616,7 @@ impl Store {
              ) \
              UPDATE mail.outbox m \
                 SET state = 'pending', attempts = 0, generation = generation + 1, \
-                    next_attempt_at = now(), updated_at = now() \
+                    last_error = NULL, next_attempt_at = now(), updated_at = now() \
                FROM batch \
               WHERE m.id = batch.id",
         )

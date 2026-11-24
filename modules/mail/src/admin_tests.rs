@@ -278,6 +278,45 @@ async fn resume_moves_a_parked_row_once() {
     assert_eq!(row_of(&pool, &key).await.0, STATE_PENDING);
 }
 
+/// A parked row carries the `last_error` that parked it. Resuming it clears that error, so
+/// the row reads as Pending and is on neither the Retrying nor the Attention tab.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_clears_last_error_so_the_row_lists_as_pending() {
+    use crate::store::{OutboxListing, OutboxTab};
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let svc = wired(&pool).await;
+    let key = unique_key(&pool, "admin-resume-err").await;
+    let _cleanup = cleanup(&pool, &[&key]);
+    enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
+    let id = id_of(&pool, &key).await;
+    sqlx::query("UPDATE mail.outbox SET state = 'parked', last_error = 'relay refused' WHERE idempotency_key = $1")
+        .bind(&key)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(svc.requeue_parked(&id).await.unwrap(), 1);
+
+    let (_, last_error): (String, Option<String>) =
+        sqlx::query_as("SELECT state, last_error FROM mail.outbox WHERE idempotency_key = $1")
+            .bind(&key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(last_error, None, "a resumed row has not failed again");
+
+    for (tab, listed) in [
+        (OutboxTab::Pending, true),
+        (OutboxTab::Retrying, false),
+        (OutboxTab::Attention, false),
+        (OutboxTab::Parked, false),
+    ] {
+        let listing = OutboxListing { tab, needle: Some(&id), kind: None, after: None, limit: 10 };
+        let (_, rows) = svc.outbox_page(&listing).await.unwrap();
+        assert_eq!(rows.iter().any(|r| r.id == id), listed, "{tab:?} tab");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_outbox_maps_a_row_and_drops_the_total_when_narrowed() {
     let Some(pool) = test_pool().await else { return };
