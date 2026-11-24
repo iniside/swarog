@@ -156,14 +156,16 @@ async fn checks(
     );
 
     // [SH3] the dashboard slots no scheduler contribution: the scheduler declares no attention
-    // item, so no panel under /admin/_panel/scheduler/attention is fetched.
+    // item, so no panel under /admin/_panel/scheduler/attention is fetched. The portal's own
+    // Service health slot must be among the parsed slots, so an unparsed dashboard is red.
     let (d_code, dash) = fetch(admin, &format!("{front}/admin")).await?;
     let dash_slots = attr_values(&dash, "hx-get");
     let scheduler_slot = dash_slots.iter().any(|u| u.starts_with("/admin/_panel/scheduler/"));
+    let portal_slot = dash_slots.iter().find(|u| u.starts_with("/admin/_panel/portal/health"));
     p.check(
         &format!("[SH3{tag}] dashboard slots nothing from the scheduler provider"),
-        d_code == 200 && !scheduler_slot,
-        format!("dashboard={d_code} scheduler_slot={scheduler_slot} slots={dash_slots:?}"),
+        d_code == 200 && portal_slot.is_some() && !scheduler_slot,
+        format!("dashboard={d_code} portal_slot={portal_slot:?} scheduler_slot={scheduler_slot} slots={dash_slots:?}"),
     );
     Ok(())
 }
