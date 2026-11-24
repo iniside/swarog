@@ -162,11 +162,9 @@ window.DATA = (() => {
     { t: "12:40:02", actor: "marta.k", topic: "lore.lock", action: "lock.force_unlock", target: "repository:ashfall-game · DA_GameRules.uasset", detail: "owner sam.o · reason: owner offboarded" },
     { t: "11:15:20", actor: "marta.k", topic: "lore.branch", action: "branch.protect", target: "repository:ashfall-game · release/0.9", detail: "PROTECT set" },
     { t: "10:02:13", actor: "jonas.l", topic: "wallet", action: "grant", target: "user:f6c4d097", detail: "+500 EMB · reason: CS ticket #4471" },
-    { t: "09:44:57", actor: "system", topic: "events", action: "subscription.paused", target: "inventory.on_purchase.v1", detail: "poison event a3f9c2d1" },
     { t: "09:30:00", actor: "jonas.l", topic: "config", action: "flag.update", target: "flag:season4.enabled", detail: "false → true · rev 41" },
     { t: "08:51:36", actor: "marta.k", topic: "apikeys", action: "key.create", target: "apikey:ak_c4a8", detail: "horde-agents · role ci-build" },
     { t: "08:12:09", actor: "aiko.tanaka", topic: "accounts", action: "admin.login", target: "admin portal", detail: "google · 83.4.x.x" },
-    { t: "07:00:00", actor: "system", topic: "scheduler", action: "fire", target: "daily.leaderboard_reset", detail: "ok · 1.2 s" },
   ];
 
   const ledger = [

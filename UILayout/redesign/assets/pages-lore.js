@@ -130,7 +130,7 @@
       } else if (active === "events") {
         body = panel({ c: { module: "lore", point: "entity.repository.tab", prim: "Timeline" }, title: "Events", flush: true, body: timeline(loreTimelineItems(D.loreEvents.filter(e => e.repo === r.name))) });
       } else {
-        body = panel({ c: { module: "audit", point: "entity.repository.tab", prim: "DataTable" }, title: "Audit", meta: `target repository:${r.name}`, flush: true, body: table({ pager: false, cols: [{ label: "Time" }, { label: "Actor" }, { label: "Action" }, { label: "Detail" }], rows: D.audit.filter(a => a.target.includes(r.name)).map(a => [`<span class="mono">${a.t}</span>`, P.actor(a.actor.replace("apikey:", "")), `<span class="mono">${a.action}</span>`, esc(a.detail)]) }) });
+        body = panel({ c: { module: "audit", point: "entity.repository.tab", prim: "DataTable" }, title: "Audit", meta: `target repository:${r.name}`, flush: true, body: table({ pager: false, cols: [{ label: "Time" }, { label: "Actor" }, { label: "Action" }, { label: "Detail" }], rows: D.audit.filter(a => a.target.includes(r.name)).map(a => [`<span class="mono">${a.t}</span>`, P.actor(a.actor), `<span class="mono">${a.action}</span>`, esc(a.detail)]) }) });
       }
       return header + body;
     },

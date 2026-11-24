@@ -53,7 +53,7 @@ window.PAGES = window.PAGES || {};
       const activity = panel({
         c: { module: "audit", point: "dashboard.panel", prim: "Timeline" }, title: "Recent operator activity", meta: "audit", flush: true,
         tools: `<a class="btn sm ghost" href="audit.html">Audit log ${icon("right")}</a>`,
-        body: timeline(D.audit.slice(0, 7).map(a => ({ t: a.t.slice(0, 5), html: `${P.actor(a.actor)} <span class="mono">${esc(a.action)}</span>`, meta: `${esc(a.target)} · ${esc(a.detail)}`, icon: a.topic.startsWith("lore") ? "repo" : a.topic === "wallet" ? "coins" : a.topic === "events" ? "zap" : "activity", tone: a.action.includes("force") || a.action.includes("paused") ? "err" : "" }))),
+        body: timeline(D.audit.filter(a => a.actor !== "system").slice(0, 7).map(a => ({ t: a.t.slice(0, 5), html: `${P.actor(a.actor)} <span class="mono">${esc(a.action)}</span>`, meta: `${esc(a.target)} · ${esc(a.detail)}`, icon: a.topic.startsWith("lore") ? "repo" : a.topic === "wallet" ? "coins" : a.topic === "events" ? "zap" : "activity", tone: a.action.includes("force") || a.action.includes("paused") ? "err" : "" }))),
       });
       const svcs = D.services;
       const health = panel({

@@ -143,20 +143,18 @@
       const poison = panel({ c: pg("core.events", "PoisonEventResolver"), title: `Paused: <span class="mono">${s.id}</span>`, meta: `since ${s.poison.at}`,
         banner: `<div class="banner err">${icon("alert")} Consumer failed 5× on the same event and stopped to preserve ordering. ${s.lag} events are waiting behind it.</div>`,
         body: `${props([["Event", `<span class="mono">wallet.debited #${s.poison.id}</span>`], ["Consumer", s.module], ["Error", `<span class="mono" style="color:var(--err)">${esc(s.poison.err)}</span>`]])}<div class="code" style="margin-top:10px">{
-  "event_id": "a3f9c2d1-7b44-4e0a-9d61-5c2e8f1b0a37",
-  "topic": "wallet.debited",
   "player_id": "${D.byHandle.kestrel.id}",
   "amount": { "value": 1, "currency": "TOK2" },
   "reason": "store.purchase",
   "tx": "tx_89f7"
-}</div><div class="row" style="margin-top:12px;flex-wrap:wrap"><button class="btn primary" onclick="UI.toast('Resumed — retrying wallet.debited #a3f9c2d1')">${icon("play")} Resume (retry event)</button><button class="btn" onclick="PAGES.skipPoison()">${icon("skip")} Skip event…</button><button class="btn ghost">${icon("download")} Copy payload</button><span class="muted" style="font-size:12px">Fix the consumer first, then Resume. Skip advances the checkpoint past this event.</span></div>` });
+}</div><div class="row" style="margin-top:12px;flex-wrap:wrap"><button class="btn primary" onclick="UI.toast('Resumed inventory.on_purchase.v1; its failing event is retried')">${icon("play")} Resume (retry event)</button><button class="btn" onclick="PAGES.skipPoison()">${icon("skip")} Skip event…</button><button class="btn ghost">${icon("download")} Copy payload</button><span class="muted" style="font-size:12px">Fix the consumer first, then Resume. Skip advances the checkpoint past this event.</span></div>` });
       return P.head("Event plane", "Durable topics, subscription checkpoints and lag.", "") + `<div class="grid g-tiles" style="margin-bottom:12px">${tiles}</div><div class="stack">${poison}${subsTbl}</div>`;
     },
   };
   P.skipPoison = () => UI.confirm({ c: { module: "core.events", point: "page", prim: "ConfirmAction" }, title: "Skip event a3f9c2d1?", icon: "skip",
-    body: "The checkpoint advances past this event and the subscription resumes. The inventory grant for this purchase will NOT be applied unless done by hand.",
+    body: "The checkpoint advances past this event and the subscription resumes. The consumer never applies this event unless it is done by hand.",
     impact: [["Subscription", '<span class="mono">inventory.on_purchase.v1</span>'], ["Event", '<span class="mono">wallet.debited #a3f9c2d1</span>']],
-    reason: "e.g. bad currency code from store hotfix, compensated manually", typeToConfirm: "a3f9c2d1", confirm: "Skip and resume", done: "Skipped; subscription resumed" });
+    reason: "e.g. malformed payload from a producer bug, compensated manually", typeToConfirm: "a3f9c2d1", confirm: "Skip and resume", done: "Skipped event a3f9c2d1 on inventory.on_purchase.v1; the subscription resumed" });
 
   // ---------- economy ----------
   P.economy = {
