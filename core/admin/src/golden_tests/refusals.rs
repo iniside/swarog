@@ -9,10 +9,16 @@
 use super::*;
 
 /// The titled disabled controls that are no action, each with why it carries no action id.
-const NOT_ACTIONS: &[(&str, &str)] = &[(
-    "Read-only",
-    "panel_form's Save of a form drawn with no form id: a form control, not an action, so it has no action id to carry",
-)];
+const NOT_ACTIONS: &[(&str, &str)] = &[
+    (
+        "Read-only",
+        "panel_form's Save of a form drawn with no form id: a form control, not an action, so it has no action id to carry",
+    ),
+    (
+        "No payload to copy",
+        "action_button's copy action in a panel with no code block: the action is admitted, there is nothing to copy, so no refusal kind applies",
+    ),
+];
 
 /// The title the row menu gives each item of a group whose module is down, after the module:
 /// `menu` in `primitives.html.tmpl`.

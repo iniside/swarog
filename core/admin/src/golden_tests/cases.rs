@@ -298,6 +298,30 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
             )
         },
     );
+    let copy_payload = decl("copy-payload", "Copy payload", "copy", Then::Copy);
+    panel!(
+        "props_copy_code_footer",
+        PanelCase {
+            actions: vec![tool(&copy_payload)],
+            ..PanelCase::new(
+                PanelState::Ok,
+                Some(body(Primitive::PropertyList(PropertyList {
+                    code: Some("{\"kind\":\"poison\"}".to_string()),
+                    ..props(vec![("Subscription", cell(CellKind::Mono, "audit.v1"))])
+                }))),
+            )
+        },
+    );
+    panel!(
+        "props_copy_no_code",
+        PanelCase {
+            actions: vec![tool(&copy_payload)],
+            ..PanelCase::new(
+                PanelState::Ok,
+                Some(body(Primitive::PropertyList(props(vec![("Subscription", cell(CellKind::Mono, "audit.v1"))])))),
+            )
+        },
+    );
     panel!(
         "props_item_head_tools",
         PanelCase {

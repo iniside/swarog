@@ -233,3 +233,26 @@ fn a_foot_count_of_one_takes_the_singular() {
     assert_eq!(total(queue(Some(1))), "1 job");
     assert_eq!(total(queue(Some(3))), "1 of 3 jobs");
 }
+
+/// A copy action is drawn enabled, with its `data-copy` name, only in a panel whose body holds the
+/// `data-copy-source` block it copies; a panel with no code block draws it disabled, never an
+/// enabled button admin.js would find no source for.
+#[test]
+fn a_copy_action_is_drawn_enabled_only_where_the_panel_holds_its_source() {
+    let env = render::env().expect("templates compile");
+    let all = cases(&env);
+    let raw = |name: &str| all.iter().find(|c| c.name == name).unwrap_or_else(|| panic!("case {name}")).raw.clone();
+
+    let with_code = raw("props_copy_code_footer");
+    assert!(with_code.contains("data-copy-source=\"code\""), "{with_code}");
+    assert!(with_code.contains("data-copy=\"code\""), "the footer's copy is enabled: {with_code}");
+    assert!(!with_code.contains("No payload to copy"), "{with_code}");
+
+    let no_code = raw("props_copy_no_code");
+    assert!(!no_code.contains("data-copy-source"), "{no_code}");
+    assert!(!no_code.contains("data-copy="), "no enabled copy button without a source: {no_code}");
+    assert!(
+        no_code.contains(r#"disabled title="No payload to copy""#) && no_code.contains("Copy payload"),
+        "the head's copy is disabled with its hint: {no_code}"
+    );
+}

@@ -113,14 +113,19 @@
 {%- endif -%}
 {%- endmacro %}
 
-{#- `size` is `""` or `"sm"`. A danger action is `danger-ghost` whatever its emphasis. -#}
-{%- macro action_button(a, size="") -%}
+{#- `size` is `""` or `"sm"`. A danger action is `danger-ghost` whatever its emphasis. `source` is
+    whether the panel body holds the `data-copy-source` block a copy action copies: a PropertyList
+    with a code block, drawn by `props`, whose footer passes it. Without it a copy action is drawn
+    disabled, never enabled and inert. -#}
+{%- macro action_button(a, size="", source=false) -%}
 {%- set look = "danger-ghost" if a.danger else {"primary": "primary", "ghost": "ghost"}[a.emphasis] or "" -%}
 {%- set c = (size ~ " " ~ look)|trim -%}
 {%- set content = action_content(a) -%}
 {%- if not a.enabled %}<button type="button" class="btn{{ ' ' ~ c if c }}" disabled title="{{ a.hint }}"{{ refused(a) }}>{{ content }}</button>
 {%- elif a.then == "link" %}<a class="btn{{ ' ' ~ c if c }}" href="{{ a.href }}" style="text-decoration:none">{{ content }}</a>
-{#- A copy action sends no request: admin.js copies the `data-copy-source` block its panel body holds. -#}
+{#- A copy action sends no request: admin.js copies the `data-copy-source` block its panel body holds. It is
+    no refusal of the action, so the disabled copy carries no `refused()`. -#}
+{%- elif a.then == "copy" and not source %}<button type="button" class="btn{{ ' ' ~ c if c }}" disabled title="No payload to copy">{{ content }}</button>
 {%- elif a.then == "copy" %}<button type="button" class="btn{{ ' ' ~ c if c }}" data-copy="code">{{ content }}</button>
 {%- else %}<button type="button" class="btn{{ ' ' ~ c if c }}"{{ hx_action(a) }}>{{ content }}</button>
 {%- endif -%}
@@ -468,7 +473,7 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- if p.state == "ok" and p.body and p.body.type == "Form" and p.body.banner %}<div class="banner err">{{ icon("alert") }} {{ p.body.banner }}</div>{% endif -%}
 <div class="panel-body{% if flush %} flush{% endif %}">
 {%- if live and p.body %}{{ body(p.body, p) }}
-{%- if footer and (p.tools or p.note) %}<div class="row" style="margin-top:12px;flex-wrap:wrap">{% for a in p.tools %}{{ action_button(a) }}{% endfor %}{% if p.note %}<span class="muted" style="font-size:12px">{{ p.note }}</span>{% endif %}</div>{% endif -%}
+{%- if footer and (p.tools or p.note) %}<div class="row" style="margin-top:12px;flex-wrap:wrap">{% for a in p.tools %}{{ action_button(a, source=true) }}{% endfor %}{% if p.note %}<span class="muted" style="font-size:12px">{{ p.note }}</span>{% endif %}</div>{% endif -%}
 {%- elif p.state == "empty" %}{{ empty_body(p) }}
 {%- elif p.state == "denied" %}{{ state_block("denied", "Permission denied", denied_detail(p.min_role)) }}
 {%- else %}{{ state_block("error", p.module ~ " module unavailable", (p.error or "No answer") ~ ". The rest of this page is unaffected.", retry=true) }}
