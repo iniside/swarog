@@ -16,8 +16,9 @@ server-side browser session distinct from the player bearer, and one gateway-svc
 passthrough entry for the prefix.
 
 **Excluded (owner):** self-registration with email verification is Step 1b
-(roadmap owner question 2). No OIDC endpoints yet (Steps 2–4). Weles is untouched
-beyond the env names its fleet files already carry.
+(roadmap owner question 2). No OIDC endpoints yet (Steps 2–4). Weles code is untouched; its fleet
+tomls get env lines like every other fleet (Step 2), which is fleet config, not a Lore
+install.
 
 **What exists (verified 2026-11-24, lines are lower bounds from grep + reads):**
 - The `dev` identity is a `provider="dev"` row in `accounts.identities`
@@ -73,163 +74,208 @@ beyond the env names its fleet files already carry.
 
 ## Steps
 
-**Step 1: Password identity and the split gate.**
+**Step 1: Password identity, one registration flag, one email boundary.**
 - (a) `api/accounts/events/src/lib.rs` (`providers::DEV` → `providers::PASSWORD = "password"`),
-  `modules/accounts/src/{providers.rs,lib.rs,store.rs,admin.rs,ops.rs}`, the
-  accounts tests that set `dev_auth` (`tests.rs`, `tests/{delete,directory,guest,dev_auth_gate}.rs`,
-  `conformance.rs`, `oidc_tests.rs`), `modules/gateway/src/verifier.rs`,
-  `modules/gateway/src/{lib.rs,tests.rs}` mentions, public-api baseline
-  `accountsevents.txt`.
+  `modules/accounts/src/{providers.rs,lib.rs,store.rs,admin.rs,ops.rs}`, the accounts
+  tests that set `dev_auth` or assert `"dev"` (`tests.rs`, `admin_tests.rs:196,213,336`,
+  `tests/{delete,directory,guest,dev_auth_gate,last_used}.rs`, `conformance.rs`,
+  `oidc_tests.rs`; start from `rg -n '"dev"|dev_auth|providers::DEV' modules/accounts`),
+  `modules/gateway/src/verifier.rs`, `modules/gateway/src/{lib.rs,tests.rs}` mentions,
+  public-api baseline `accountsevents.txt`.
 - (b) Every later step signs in with this identity.
 - (c)
-  - Rename the field `Service.dev_auth` to two typed booleans read once in
-    `register()`: login is always on (no flag); `register` is gated by
-    `ACCOUNTS_OPEN_REGISTRATION` (explicit-only, default off, loud warn) until Step 1b
-    replaces it with verified self-registration (owner question 1).
-  - Email: trimmed and lowercased (ASCII lowercase of the whole address) at the one
-    boundary `register`/`login`/operator-create share, before the advisory lock key
-    and the PK; the existing length cap applies to the normalised value.
-  - Gateway: `dev_auth_explicitly_on` reads `GATEWAY_DEV_VERIFIER` instead; the
-    stale "default-ON convenience" comment goes.
+  - `Service.dev_auth` becomes one boolean `open_registration` from
+    `ACCOUNTS_OPEN_REGISTRATION` (explicit-only, default off, loud warn), gating only
+    `register`. Login has no flag. Step 1b replaces the flag with verified
+    self-registration (owner question 1).
+  - `normalize_email` (trim + ASCII lowercase, then the existing length cap) is called
+    first thing in `register`, `login`, and later in operator-create (Step 6) and the
+    web form (Step 4b). Every later use (`password_identity`,
+    `register_hashed_with_token`, `issue_password_session(&p, &email)`) gets the
+    normalised value. The password path has no advisory lock today; the identities PK
+    stays the only uniqueness guard.
+  - Pull the body of the `login` op (caps, decoy hash, argon permit, identity lookup)
+    into one `verify_password` function that the op and Step 4b's form both call.
+  - Gateway: `dev_auth_explicitly_on` reads `GATEWAY_DEV_VERIFIER` instead; the stale
+    "default-ON convenience" comment goes.
   - Wipe: existing `provider='dev'` rows are not migrated (DROP + boot fresh).
-  - Tests: login without any env succeeds; register without the flag is 404 and with
-    it 201; `A@X.io` registered then `a@x.io` login succeeds and a second register
-    is 409; the gateway picks `DevSessionVerifier` only on `GATEWAY_DEV_VERIFIER=1`.
+  - Tests: login without any env succeeds; register without the flag is 404 and with it
+    201; `A@X.io` registered then `a@x.io` login succeeds and the reverse; a second
+    register with other case is 409; `last_used` is recorded for a mixed-case login;
+    the gateway picks `DevSessionVerifier` only on `GATEWAY_DEV_VERIFIER=1`.
 - (d) `[opus]` core-implementer.
 
 **Step 2: Env and tooling sweep.**
-- (a) `ACCOUNTS_DEV_AUTH` → `ACCOUNTS_OPEN_REGISTRATION` (accounts processes and the
-  monolith) and `GATEWAY_DEV_VERIFIER` (only where a gateway runs without accounts):
-  `tools/processctl/src/fleet.rs:26,47,911,943,996,1021` (allowlists and builders;
-  `MONOLITH_BASE_ENV` is a fixed-size array), `tools/processctl/src/fleet_tests.rs:53,63`,
-  `tools/devctl/src/tests.rs:191,210,231`, `weles/fleet.monolith.toml:33`,
-  `weles/fleet.split.toml:49`, `deploy/gen-3/fleet.toml:49`, `compose.dev.yaml:25`,
-  `weles/master/src/manifest_tests.rs:113,365`, `tools/verifyctl/src/stages/csharp.rs:224`,
-  `tools/routecheck/src/main.rs:109`, `cmd/gateway-svc/tests/tls_front.rs:192`
-  (→ `GATEWAY_DEV_VERIFIER`), `cmd/gateway-svc/src/main.rs:15`,
-  `tools/demoseed/src/{report.rs:249,report_tests.rs:97,lib.rs:118}` (the hint names
-  the new flag).
+- (a) Code and fleet config:
+  - `ACCOUNTS_DEV_AUTH` → `ACCOUNTS_OPEN_REGISTRATION` (accounts processes and the
+    monolith) or `GATEWAY_DEV_VERIFIER` (only where a gateway runs without accounts):
+    `tools/processctl/src/fleet.rs:26,47,911,943,996,1021` (allowlists and builders;
+    `MONOLITH_BASE_ENV` is a fixed-size array), `tools/processctl/src/fleet_tests.rs:53,63`,
+    `tools/devctl/src/tests.rs:191,210,231`, `weles/fleet.monolith.toml:33`,
+    `weles/fleet.split.toml:49`, `compose.dev.yaml:25`,
+    `weles/master/src/manifest_tests.rs:113,365`, `tools/verifyctl/src/stages/csharp.rs:224`,
+    `tools/routecheck/src/main.rs:109`, `cmd/gateway-svc/tests/tls_front.rs:192`
+    (→ `GATEWAY_DEV_VERIFIER`), `cmd/gateway-svc/src/main.rs:15`,
+    `tools/demoseed/src/{report.rs:249,report_tests.rs:97,lib.rs:118}` (the hint names
+    the new flag). `deploy/` is gitignored and not touched.
+  - New env for Step 4: `ACCOUNTS_COOKIE_SECURE=0` wherever a fleet serves plain http
+    (processctl dev and proof fleets, `MONOLITH_BASE_ENV`, `compose.dev.yaml`, the weles
+    tomls), and `TRUSTED_PROXY_CIDRS` for accounts-svc in the split (the
+    `ACCOUNTS_OVERRIDEABLE_ENV` allowlist `fleet.rs:26`, the processctl split builder
+    next to admin-svc's `fleet.rs:900,906`, `weles/fleet.split.toml` accounts-svc
+    block, as `:254` does for admin-svc).
 - (b) Step 1 changed the names; nothing boots right until the tooling follows.
-- (c) The sites above are a grep lower bound: the step starts with a repo-wide
-  `rg ACCOUNTS_DEV_AUTH` over code and live docs (not `docs/{plans,reviews,research,design,status}`,
-  which are archives) and ends with that grep empty outside archives. splitproof
-  check A5 (`tools/splitproof/src/main.rs:4415`) keeps its meaning: gateway-svc never
-  sets `GATEWAY_DEV_VERIFIER`; its message is updated.
+- (c) The sites are a grep lower bound: the step starts and ends with
+  `rg ACCOUNTS_DEV_AUTH` over everything except `docs/`, `.claude/`, `.agents/`
+  (Step 8) and `experiments/` (not maintained), and ends with that grep empty.
+  splitproof A5 (`tools/splitproof/src/main.rs:4415`) keeps its meaning: gateway-svc
+  never sets `GATEWAY_DEV_VERIFIER`; its message is updated. `fleet_tests` assert that
+  accounts-svc gets `TRUSTED_PROXY_CIDRS` in the split.
 - (d) `[sonnet]` core-implementer (mechanical).
 
 **Step 3: One passthrough entry for both accounts browser prefixes.**
 - (a) `cmd/gateway-svc/src/addrs.rs` (`AddrClass::Passthrough { prefixes: &'static [&'static str] }`,
   the accounts row carries `["/accounts/epic", "/accounts/oidc"]`, `to_wiring` calls
   `with_passthrough` once per prefix), `addrs_tests.rs`, the table doc comment.
-- (b) Step 4's pages must be reachable through gateway-svc before they exist in the
-  split proof.
-- (c) The address count stays ten; managed mode (`addrs.rs:425` `exactly_one`,
+- (b) Step 4's pages must be reachable through gateway-svc.
+- (c) The address count stays ten; managed mode (`addrs.rs:422-425` `exactly_one`,
   `tools/verifyctl/src/stages/weles_managed_gateway.rs:61`) resolves one origin per
-  provider as today. Test: the wiring holds both prefixes for one origin, and
-  `/accounts/oidcx` does not match.
+  provider as today. Test: the wiring for the accounts origin holds both prefixes
+  (fails on revert).
 - (d) `[opus]` core-implementer.
 
-**Step 4: Browser session and the hosted login page.**
-- (a) `modules/accounts/src/web/` (new: `mod.rs` router, `session.rs`, `templates/`),
-  `modules/accounts/src/lib.rs` (schema + unconditional `ctx.mount`), `store.rs`
-  (session rows; `delete_account` and the expiry sweep at `store.rs:1026,1095`),
-  `modules/accounts/Cargo.toml` (`minijinja`, `httpmw`).
-- (b) Steps 2–4 of the roadmap (authorize, device approval) need a signed-in browser.
+**Step 4a: Browser session storage.**
+- (a) `modules/accounts/src/{lib.rs,store.rs,admin.rs}`, new `modules/accounts/src/web/session.rs`.
+- (b) Roadmap Steps 2–4 (authorize, device approval) need a signed-in browser.
 - (c)
-  - Table `accounts.browser_sessions`: `token_digest` (SHA-256 of the opaque
-    32-byte token, PK), `player_id` (FK `players` ON DELETE CASCADE, same module),
-    `csrf_token`, `created_at`, `expires_at` (12 h). Never readable by
-    `player_by_session`.
-  - Cookie `swarog_session`: `HttpOnly`, `Path=/accounts/oidc`, `SameSite=Lax`
-    (Step 3's authorize is a cross-site top-level GET; `Strict` would drop it),
-    `Secure` unless `ACCOUNTS_COOKIE_SECURE=0` (loud warn, the admin precedent).
+  - Table `accounts.browser_sessions`: `token_digest` (SHA-256 of an opaque 32-byte
+    token, PK), `player_id` (FK `players` ON DELETE CASCADE, same module),
+    `csrf_token`, `created_at`, `expires_at` (12 h). `player_by_session` never reads it.
+  - Store: create, look up (expired = absent), delete one, delete all for a player.
+    The expiry sweep next to `store.rs:1095` removes expired rows. `kill_player_families_tx`
+    (`store.rs:1022-1026`) and `revoke_player_families_tx` (the operator "Revoke all",
+    `admin.rs:694-700`) also delete the player's browser sessions.
+  - Tests: a browser token never authenticates an op (`player_by_session` misses);
+    deleting the player removes its rows; Revoke all removes them; expired rows are
+    swept and not returned.
+- (d) `[opus]` core-implementer.
+
+**Step 4b: Hosted login page.**
+- (a) `modules/accounts/src/web/{mod.rs,templates/}`, `modules/accounts/src/lib.rs`
+  (unconditional `ctx.mount` for `/accounts/oidc`), `modules/accounts/Cargo.toml`
+  (`minijinja`, `httpmw`).
+- (c)
+  - Cookie `swarog_session`: `HttpOnly`, `Path=/accounts/oidc`, `SameSite=Lax` (roadmap
+    Step 3's authorize is a cross-site top-level GET; `Strict` would drop it).
+  - One `Secure` rule for every accounts cookie: `ACCOUNTS_COOKIE_SECURE`, default on,
+    `0` opts out with a loud warn (the `ADMIN_COOKIE_SECURE` precedent). Epic's
+    scheme-derived flag (`epic_oauth.rs:49,56-76`) is replaced by it.
   - Routes: `GET /accounts/oidc/login`, `POST /accounts/oidc/login`,
     `POST /accounts/oidc/logout` (session + CSRF), `GET /accounts/oidc/` (signed-in
     landing: handle, logout).
   - Login CSRF: a pre-session double-submit cookie `swarog_login_csrf`
-    (`Path=/accounts/oidc`, `SameSite=Strict`, 10 min) compared in constant time with
-    the form field.
-  - `return_to`: accepted only as a path starting with `/accounts/oidc/`, no scheme,
-    no `//`, no backslash; otherwise the landing page. No open redirect.
-  - The POST calls the same verification as the `login` op (Step 1), so caps, decoy
-    timing and the argon permit are shared; plus a per-IP limiter resolved via
-    `httpmw` + `TRUSTED_PROXY_CIDRS` (the gateway in the split must be inside it; the
-    fleet sets it in Step 2's files). One generic error for unknown email and wrong
-    password.
-  - Security headers on this router only (CSP without inline script, `frame-ancestors 'none'`,
-    `no-store`), copied from `core/admin`.
+    (`Path=/accounts/oidc`, `SameSite=Strict`, 10 min), compared in constant time.
+  - `return_to`: a path starting with `/accounts/oidc/`, query string kept (Step 3's
+    authorize parameters ride on it), at most 2048 bytes, no scheme, no `//`, no
+    backslash; anything else lands on the landing page.
+  - POST calls Step 1's `verify_password` (shared caps, decoy timing, argon permit) plus
+    a per-IP limiter via `httpmw` + `TRUSTED_PROXY_CIDRS` (Step 2 sets it in the split).
+    One generic error for unknown email and wrong password.
+  - Security headers on this router only (CSP without inline script,
+    `frame-ancestors 'none'`, `no-store`), copied from `core/admin`.
   - Templates embedded, styled like `core/admin`'s login (owner question 2).
-  - Tests: cookie session never authenticates an op; logout without CSRF is 403;
-    `return_to=//evil` lands on the landing page; deleting the player removes its
-    browser sessions; expired sessions are swept.
+  - Tests: login sets both cookie attributes; logout without CSRF is 403;
+    `return_to=//evil` and `return_to=https://x` land on the landing page; a valid
+    `return_to` keeps its query; two client IPs behind a trusted proxy have separate
+    limiter buckets.
 - (d) `[opus]` core-implementer.
 
 **Step 5: Epic on the hosted login page.**
-- (a) `modules/accounts/src/epic_oauth.rs`, the `oauth_states` table (`lib.rs:197`),
-  the login template.
-- (b) The roadmap puts the configured federated providers on the page; Epic is the
-  only one with a server redirect flow.
-- (c) `oauth_states` gains `intent` (`player` | `browser`) and `return_to`. The
-  login page shows "Continue with Epic" only when Epic is configured; it posts to
-  `/accounts/epic/start` with `intent=browser`. A browser-intent callback creates a
-  `browser_sessions` row (Step 4) instead of a player session and redirects to the
-  validated `return_to`. The player intent is unchanged. Google stays off the page
-  (no redirect flow); it is listed as a leftover, not built.
-  Tests: browser intent sets `swarog_session` and issues no player session; player
-  intent unchanged.
+- (a) `modules/accounts/src/{epic_oauth.rs,lib.rs}` (`oauth_states` at `lib.rs:186-197`,
+  `external_login` at `lib.rs:381`), `web/` templates and router.
+- (b) The roadmap puts the configured federated providers on the page.
+- (c)
+  - `oauth_states` gets one `intent` column (`login` | `link` | `browser`) in place
+    of the empty-`session_token` encoding, plus `return_to`. Wipe: the table is
+    DROPped and recreated (DROP + boot fresh); no ALTER.
+  - The login page shows "Continue with Epic" only when Epic is configured: a form
+    `POST /accounts/oidc/epic` (login CSRF, `return_to`) on Step 4b's router writes a
+    `browser` state row and answers 303 to the Epic authorize URL. No script.
+    The existing `/accounts/epic/start` (JSON for the game client) is unchanged.
+  - The callback branches on `intent`: `browser` resolves or creates the player
+    through an `external_login` variant that issues no player session, creates a
+    `browser_sessions` row, sets `swarog_session` and 303s to the stored
+    `return_to`. `login`/`link` behave as today.
+  - Tests: browser intent sets `swarog_session` and issues no player session or
+    refresh token; login and link intents unchanged.
 - (d) `[opus]` core-implementer.
 
 **Step 6: Operator-created accounts and password reset.**
-- (a) `modules/accounts/src/admin.rs` (a `PageHead` "Create account" on `players`;
-  a `RowAction`/entity action "Reset password"), `store.rs`, `admin_tests.rs`,
-  `conformance.rs`, `tools/admindiff/accept/players*.txt`.
-- (b) Owner question 2 of the roadmap: operator-created accounts come first. Without
-  a reset, a forgotten password has no recovery until 1b.
+- (a) `modules/accounts/src/admin.rs` (`PageHead` "Create account" on `players`; entity
+  action "Reset password"), `store.rs`, `admin_tests.rs`, `conformance.rs`,
+  `tools/admindiff/accept/`: `players.txt` (reason text naming "(dev)" at `:27`), the
+  user menus `players.menu.user.txt`, `player.menu.user.txt`, `player.*.menu.user.txt`.
+- (b) Roadmap owner question 2: operator-created accounts come first. Without a reset,
+  a forgotten password has no recovery until 1b.
 - (c)
-  - Create: fields email and display name; `prepare` returns the `FormSpec`;
-    `invoke` normalises the email, generates a 20-character random password, hashes
-    it on the argon permit, inserts the player + `password` identity and emits
+  - Create: fields email and display name; `prepare` returns the `FormSpec`; `invoke`
+    calls `normalize_email`, generates a 20-character random password, hashes it on the
+    argon permit, inserts the player + `password` identity and emits
     `player.registered` in one tx (the `register_hashed_with_token` core without the
-    session), and returns it once as `SecretReveal`. A taken email is
+    session), and returns the password once as `SecretReveal`. A taken email is
     `field_error(email)`.
-  - Reset: new random password, same reveal, and in the same tx deletes the player's
-    `browser_sessions` and `sessions`. Only for players with a `password` identity.
+  - Reset: only for players with a `password` identity; a new random password, the
+    same reveal, and in the same tx `kill_player_families_tx` (sessions, refresh tokens,
+    browser sessions after 4a).
   - Both run on the `cp.*` face, so the split works through admin-svc unchanged.
-  - Tests per apikeys: reveal shown once, field error on duplicate, reset revokes
-    sessions; conformance input caps.
-- (d) Backend `[opus]` core-implementer; the head action renders with the existing
-  generic form modal, so no view part unless owner question 2 asks for a mockup.
+  - Tests per apikeys: the reveal is shown once; field error on duplicate (other case
+    too); after a reset the old refresh token fails and the browser session is gone;
+    conformance input caps.
+- (d) Backend `[opus]` core-implementer; both actions render through the existing
+  generic form modal and entity menu, so no view part unless owner question 2 asks for a
+  mockup.
 
 **Step 7: Split proof.**
 - (a) `tools/splitproof/src/main.rs` next to the Epic passthrough proof (`:4426-4449`)
   and the accounts admin checks.
-- (b) Proves the at-risk topology: the page and cookie through gateway-svc → accounts-svc.
-- (c) Assertions: `GET {g}/accounts/oidc/login` 200 with `swarog_login_csrf`;
-  `POST` with an operator-created account (created over `cp.invoke`) 303 with
-  `swarog_session` (`Path=/accounts/oidc`, `HttpOnly`); that cookie value as a bearer
-  on an op is 401; `GET {g}/accounts/oidc/` shows the handle; logout clears it.
-  Each assertion is shown failing against a reverted Step 3 or 4.
+- (b) Proves the at-risk topology: page and cookie through gateway-svc → accounts-svc.
+- (c) Assertions: `GET {g}/accounts/oidc/login` 200 with `swarog_login_csrf`; `POST`
+  with an operator-created account (created over `cp.invoke`) 303 with `swarog_session`
+  (`Path=/accounts/oidc`, `HttpOnly`); that cookie value as a bearer on an op is 401;
+  `GET {g}/accounts/oidc/` shows the handle; logout clears it; a failed-login burst
+  from one `X-Forwarded-For` client does not lock out a second one (the split
+  `TRUSTED_PROXY_CIDRS`). Each assertion is shown failing against a reverted Step 3,
+  4b, or 2's CIDR line.
 - (d) `[test-author]` opus.
 
 **Step 8: Docs.**
-- (a) `.claude/rules/domain-modules.md` (accounts and gateway bullets),
+- (a) `.claude/rules/domain-modules.md:22-23` (accounts and gateway bullets),
   `docs/reference/hetzner-deploy-checklist.md:39`, `docs/reference/weles-fleet-parity.md:129`,
-  `docs/roadmap/feature-tracker.md` (accounts row), `.agents/skills/architecture-review/SKILL.md:86`,
+  `docs/roadmap/feature-tracker.md:144`, `.agents/skills/architecture-review/SKILL.md:86`,
   `.agents/skills/split-topology-debugger/SKILL.md:32,84`, `docs/todo/accounts.md`
-  (Google on the hosted page; 1b).
-- (b) Closes the step; archives are not rewritten.
+  (1b; Google on the page if owner question 4 defers it).
+- (b) Closes the step; archives (`docs/{plans,reviews,research,design,status}`) are not
+  rewritten.
+- (c) Ends with `rg ACCOUNTS_DEV_AUTH docs/reference docs/roadmap .claude .agents` empty.
 - (d) `[docs]` docs-writer sonnet.
 
 Verification per step follows the `safe-verification` skill (one rollout at a time);
-Steps 3 and 7 end with the split proof, Steps 1, 4, 6 with `verifyctl --fast`.
+Steps 3 and 7 end with the split proof, Steps 1, 4a, 4b, 5, 6 with `verifyctl --fast`.
 
 ## Owner questions
 
 1. **Self-registration until 1b.** Proposal: login is always on; `/accounts/register`
    stays off in production behind `ACCOUNTS_OPEN_REGISTRATION` (dev fleets, demoseed
    and the C# stage set it) until 1b adds verified registration. OK?
-2. **No mockup for the hosted login page or the create-account form.** Proposal: the
-   login page copies `core/admin`'s login look, and the create form is the generic
-   form modal apikeys uses. Or a mockup first?
-3. **Operator password reset in Step 6.** Not named in the roadmap; proposed because
-   otherwise a forgotten password cannot be recovered before 1b. OK?
+2. **No mockup for the login page, the create form, or the reset action.** Proposal:
+   the login page copies `core/admin`'s login look; create and reset use the generic
+   form modal and entity menu as apikeys does. Or a mockup first?
+3. **Operator password reset in Step 6.** Not in the roadmap; proposed because otherwise
+   a forgotten password cannot be recovered before 1b. OK?
+4. **Google on the login page.** The roadmap puts configured federated providers on
+   the page, but Google today only takes a client-side id token; there is no server
+   redirect flow. Options: (A) defer Google to a TODO and ship Epic only; (B) add a
+   server-side Google OIDC redirect flow as Step 5b in this phase.
+5. **Starter currency for studio users.** Operator-created and Epic-browser accounts
+   emit `player.registered` like any player, so where the wallet starter grant is
+   configured they get it. Proposal: accept (a studio user is a player). OK?
