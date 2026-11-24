@@ -11,7 +11,7 @@ use opsapi::Status;
 use sqlx::PgPool;
 use testdb::test_pool;
 
-use super::{fake_client, fake_country, fake_ip, mask, thousands, AccountsAdmin, MAX_NEEDLE_BYTES, PAGE_SIZE};
+use super::{fake_client, fake_ip, mask, thousands, AccountsAdmin, MAX_NEEDLE_BYTES, PAGE_SIZE};
 use crate::tests::{cleanup_player, suffix, wired};
 
 /// A canonical uuid no registration mints: registrations are v4, this is v0.
@@ -362,9 +362,31 @@ async fn player_search_answers_nothing_for_another_kind_or_a_blank_query() {
     assert_eq!(blank.unwrap(), Vec::new(), "a blank query finds nothing, not every player");
 }
 
+#[tokio::test]
+async fn active_tile_and_profile_draw_nothing_the_store_cannot_back() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let email = format!("prof-{}@test.local", suffix());
+    let id = svc.register(email, "pw".into(), "Prof".into()).await.unwrap().player_id;
+    let admin = AccountsAdmin::new(Arc::clone(&svc));
+    let tile = admin.panel(query("tile.active")).await;
+    let profile = admin.panel(player_query("profile", &id)).await;
+    cleanup_player(&pool, &id).await;
+
+    let Primitive::KpiTile(tile) = tile.unwrap().primitive else {
+        panic!("the active tile is a KpiTile");
+    };
+    assert!(tile.delta.is_none(), "no daily history exists to compare against");
+    assert!(tile.series.is_empty(), "no daily history exists to draw");
+    let Primitive::PropertyList(list) = profile.unwrap().primitive else {
+        panic!("the profile panel is a PropertyList");
+    };
+    let labels: Vec<&str> = list.items.iter().map(|(label, _)| label.as_str()).collect();
+    assert!(!labels.contains(&"Country"), "no country is stored for an account: {labels:?}");
+}
+
 #[test]
 fn fakes_draw_pinned_values_from_the_shared_helper() {
-    assert_eq!(fake_country("p-1"), "ES");
     assert_eq!(fake_ip("fam-1"), "198.51.100.64");
 }
 

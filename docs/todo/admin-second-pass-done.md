@@ -2,6 +2,15 @@
 
 Last updated: 2026-11-24
 
+- [x] **Player country** (2026-11-24, admin-second-pass step 7a)
+  ADMIN2-21. Mockup: the Profile panel's Country. Removed: `fake_country`, the profile row,
+  its test and the mockup row and sample `country` values. No country is stored for an account.
+
+- [x] **Active players delta and sparkline** (2026-11-24, admin-second-pass step 7a)
+  ADMIN2-24. Mockup: the "Active players (24 h)" tile's "▲ 6.1% vs prev. day" and its
+  sparkline. Removed: the tile has no delta and no series, and the mockup, catalog and
+  design-system tiles no delta and no spark. No daily history of active players is kept.
+
 - [x] **Define mail "retrying" so a healthy first send is not one** (2026-11-24, admin-second-pass step 6)
   ADMIN2-19. Plan D6: retrying is `state = 'pending' AND last_error IS NOT NULL` and pending is
   `state = 'pending' AND last_error IS NULL`, in the tab predicates, the stats count and

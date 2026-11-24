@@ -7,11 +7,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use controlplane::{
-    fake_hash, ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ContributionDecl, DataTable, Delta,
+    fake_hash, ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ContributionDecl, DataTable,
     Emphasis, EntityHeader, EntityKindDecl, EntityRef, FilterDef, FilterKind, InvokeCall,
     InvokeOutcome, KpiTile, Layout, Link, Manifest, NavEntry, Noun, PageDecl, PageInfo, Palette,
     PanelBody, PanelQuery, Point, Primitive, PropertyList, Provider, Role, Row, SearchDecl,
-    SearchHit, SearchQuery, SortDir, Then, Tone, DEFAULT_PANEL_DEADLINE_MS,
+    SearchHit, SearchQuery, SortDir, Then, DEFAULT_PANEL_DEADLINE_MS,
     DEFAULT_SEARCH_DEADLINE_MS,
 };
 use controlplane::order;
@@ -152,11 +152,6 @@ fn thousands(n: i64) -> String {
 
 fn fake_pick(salt: &str, id: &str, options: &[&'static str]) -> &'static str {
     options[(fake_hash(salt, id) % options.len() as u64) as usize]
-}
-
-// FAKE: no country is stored for an account.
-fn fake_country(player_id: &str) -> &'static str {
-    fake_pick("country", player_id, &["JP", "PL", "SE", "ES", "IN", "DE", "US", "BR", "FR", "UA"])
 }
 
 // FAKE: no identity records when it was last used.
@@ -489,14 +484,8 @@ impl AccountsAdmin {
             label: "Active players (24 h)".to_string(),
             value: thousands(active),
             unit: None,
-            // FAKE: no daily history of active players is kept.
-            delta: Some(Delta {
-                value: "▲ 6.1%".to_string(),
-                period: "vs prev. day".to_string(),
-                tone: Some(Tone::Ok),
-            }),
-            // FAKE: see the delta.
-            series: vec![31.0, 30.0, 33.0, 32.0, 35.0, 34.0, 36.0, 35.0, 37.0, 38.4],
+            delta: None,
+            series: Vec::new(),
             spark: Palette::Chart1,
             capacity: None,
             link: Some(players_page()),
@@ -595,7 +584,6 @@ impl AccountsAdmin {
                 prop("Display name", text(CellKind::Text, row.display_name.clone())),
                 prop("Kind", text(CellKind::Label, ACCOUNT_KIND)),
                 prop("Status", text(CellKind::Badge, ACCOUNT_STATUS)),
-                prop("Country", text(CellKind::Text, fake_country(&row.id))),
                 prop("Created", text(CellKind::Text, row.created.clone())),
                 prop("Last seen", text(CellKind::Text, last_seen(&row))),
             ],

@@ -46,7 +46,7 @@ window.REG = (() => {
 
   // dashboard.tile
   const tiles = [
-    { module: "accounts", label: "Active players (24 h)", value: "38,412", delta: '<span class="up">▲ 6.1%</span> vs prev. day', spark: [31, 30, 33, 32, 35, 34, 36, 35, 37, 38.4], href: "players.html" },
+    { module: "accounts", label: "Active players (24 h)", value: "38,412", href: "players.html" },
     { module: "storage", label: "Cloud saves used", value: "1.82", unit: "TB", delta: "64 MB quota / player", spark: [1.5, 1.55, 1.6, 1.64, 1.7, 1.76, 1.82], sparkColor: "var(--chart-2)" },
     { module: "mail", label: "Mail queue", value: "312", href: "mail.html" },
     { module: "core.events", label: "Paused subscriptions", value: "1", unit: "/ 7", delta: '<span class="down">inventory.character-created.v1</span>', href: "events.html" },

@@ -97,10 +97,6 @@ modules/mail/src/admin.rs landed in 544dd4e5; the line numbers are its committed
 
 modules/accounts/src/admin.rs, as committed in admin-control-plane-redesign step 13 part a.
 
-- [ ] **Player country**
-  ADMIN2-21. Mockup: the Profile panel's Country. Fake: modules/accounts/src/admin.rs:188
-  (`fake_country`, a hash of the player id): no country is stored for an account.
-  Replaced by: a country recorded at registration or login.
 - [ ] **Identity last used**
   ADMIN2-22. Mockup: the Linked identities Last used column. Fake:
   modules/accounts/src/admin.rs:193 (`fake_last_used`): no identity records its last use.
@@ -110,10 +106,6 @@ modules/accounts/src/admin.rs, as committed in admin-control-plane-redesign step
   modules/accounts/src/admin.rs:199 (`fake_client`) and :214 (`fake_ip`), hashes of the
   refresh family id, never the token: a refresh family stores neither. Replaced by: the
   client and address recorded when a family is born.
-- [ ] **Active players delta and sparkline**
-  ADMIN2-24. Mockup: the "Active players (24 h)" tile's "▲ 6.1% vs prev. day" and its
-  sparkline. Fakes: modules/accounts/src/admin.rs:478 and :484: no daily history of active
-  players is kept. Replaced by: a sampled daily active-player count.
 - [ ] **Export CSV**
   ADMIN2-25. Mockup: the Users & players "Export CSV" head action. Action `EXPORT_CSV`,
   `implemented: false`: modules/accounts/src/admin.rs:406; no export exists. Replaced by:

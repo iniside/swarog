@@ -104,7 +104,7 @@ KpiTile {
       actions: ["Click → link"],
       states: ["ok", "loading", "empty", "stale", "error", "denied"],
       points: ["dashboard.tile", "page"],
-      demo: () => `<div class="grid g-2">${kpi({ c: C("accounts", "dashboard.tile", "KpiTile"), label: "Active players (24 h)", value: "38,412", delta: '<span class="up">▲ 6.1%</span> vs prev. day', spark: [31, 30, 33, 32, 35, 34, 36, 35, 37, 38.4], noForce: true })}${kpi({ c: C("wallet", "dashboard.tile", "KpiTile"), label: "Embers spent (24 h)", value: "1.94 M", state: "error", noForce: true })}</div>`,
+      demo: () => `<div class="grid g-2">${kpi({ c: C("accounts", "dashboard.tile", "KpiTile"), label: "Active players (24 h)", value: "38,412", noForce: true })}${kpi({ c: C("wallet", "dashboard.tile", "KpiTile"), label: "Embers spent (24 h)", value: "1.94 M", state: "error", noForce: true })}</div>`,
     },
     {
       id: "Timeline", name: "Event timeline / log", used: ["lore-events.html", "index.html", "scheduler.html", "config.html", "player.html?tab=inbox"],
