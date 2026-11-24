@@ -48,9 +48,13 @@ pub(crate) const DISABLED_BANNER: &str = "Scheduler disabled on this process: no
 pub(crate) const DISABLED_REFUSAL: &str = "Scheduler disabled on this process: Fire now is refused";
 pub(crate) const FIRE_BUSY: &str = "Another Fire now is running on this process; try again";
 
-/// The `statement_timeout` of a Fire now. With the dedicated connect's 5 s bound it ends
-/// before the portal's 10 s invoke deadline.
+/// The `statement_timeout` of a Fire now. It bounds each statement, not the fire.
 pub(crate) const FIRE_NOW_DEADLINE: Duration = Duration::from_secs(3);
+/// The whole Fire now (connect, lock, update, emit, commit, unlock), so it answers before
+/// the portal's 10 s `INVOKE_DEADLINE` (`core/admin`, not reachable from a module) with
+/// room for the `cp.invoke` round trip in the split. Cancelling the fire at this bound is
+/// abort-safe: its dedicated connection closes (see the crate docs).
+pub(crate) const FIRE_NOW_TOTAL: Duration = Duration::from_secs(8);
 
 pub(crate) struct SchedulerAdmin {
     pool: PgPool,
@@ -75,7 +79,16 @@ impl SchedulerAdmin {
         let Ok(_firing) = self.firing.try_lock() else {
             return Err(Error::conflict(FIRE_BUSY));
         };
-        match fire(&self.pool, &self.bus, name, FIRE_NOW_DEADLINE, Due::Forced).await.map_err(internal)? {
+        let fire_now = fire(&self.pool, &self.bus, name, FIRE_NOW_DEADLINE, Due::Forced);
+        let fired = tokio::time::timeout(FIRE_NOW_TOTAL, fire_now)
+            .await
+            .map_err(|_| {
+                Error::unavailable(format!(
+                    "Fire now of {name} did not finish in {} s; check last_fired",
+                    FIRE_NOW_TOTAL.as_secs()
+                ))
+            })?;
+        match fired.map_err(internal)? {
             FireOutcome::Fired => {
                 Ok(InvokeOutcome::Ok { message: format!("Fired {name}"), reveal: None, redirect: None })
             }

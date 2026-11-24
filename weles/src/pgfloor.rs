@@ -24,11 +24,11 @@
 //!    refuse rollouts that fit.
 //! 2. **The scheduler's extra dedicated fire connection is not charged.** processctl
 //!    charges it (`SCHEDULER_FIRE_SESSIONS`) because it knows which service is the
-//!    scheduler; weles knows service names, never their meaning, so its total is one
-//!    session short of processctl's for a fleet containing a scheduler — 98 rather than
-//!    99 for `fleet.split.toml`. An under-count of one, recorded rather than guessed at
-//!    by name-matching `"scheduler-svc"`, which would be exactly the domain knowledge
-//!    the fleet file exists to keep out of weles.
+//!    scheduler; weles knows service names, never their meaning, so its total is short of
+//!    processctl's by `SCHEDULER_FIRE_SESSIONS` (the dedicated fire sessions one
+//!    scheduler-svc holds) for each scheduler in the fleet. An under-count recorded rather
+//!    than guessed at by name-matching `"scheduler-svc"`, which would be exactly the
+//!    domain knowledge the fleet file exists to keep out of weles.
 //! 3. **A malformed `DATABASE_POOL_MAX_CONNECTIONS` is REFUSED, not skipped.**
 //!    `core/app` falls back to a real pool for an unparseable value, so skipping it
 //!    would under-charge a service that goes on to open ten connections.

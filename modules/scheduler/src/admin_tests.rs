@@ -391,7 +391,9 @@ async fn fire_now_fires_on_demand_and_answers_each_outcome() {
         .await
         .unwrap();
     assert!(held);
-    assert_eq!(p.invoke(fire_call(&name)).await.unwrap_err().status, Status::Conflict);
+    let busy = p.invoke(fire_call(&name)).await.unwrap_err();
+    assert_eq!(busy.status, Status::Conflict);
+    assert!(busy.msg.contains("is firing now"), "a held lock answers the lock message: {}", busy.msg);
     assert_eq!(ft.count(&name), 2, "a held lock fires nothing");
     holder.close().await.unwrap();
 
