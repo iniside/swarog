@@ -61,8 +61,13 @@ use super::{
 };
 use crate::config::{MailConfig, DEFAULT_MAX_ATTEMPTS, DEFAULT_RETENTION_DAYS, DEFAULT_SEND_TIMEOUT_MS};
 use crate::service::{NewMail, Service};
-use crate::store::{OutboxListRow, OutboxStats, STATE_CANCELLED, STATE_PARKED, STATE_PENDING, STATE_SENT};
-use crate::tests::{cleanup, enqueue, id_of, mail_of, row_of, test_pool, unique_key, wired, DB_LOCK};
+use crate::store::{
+    Disposition, OutboxListRow, OutboxStats, Store, STATE_CANCELLED, STATE_PARKED, STATE_PENDING, STATE_SENT,
+};
+use crate::tests::{
+    cleanup, enqueue, id_of, mail_of, quarantine_foreign_pending, row_of, test_pool, unique_key, wired, DB_LOCK,
+};
+use crate::worker::bounded_tx;
 
 fn admin(svc: Arc<Service>) -> MailAdmin {
     let cfg = MailConfig {
@@ -122,14 +127,14 @@ fn query(contribution: &str, state: Option<&str>, search: Option<&str>) -> Panel
     }
 }
 
-fn listed(state: &str, attempts: i32) -> OutboxListRow {
+fn listed(state: &str, attempts: i32, last_error: Option<&str>) -> OutboxListRow {
     OutboxListRow {
         id: ID.to_string(),
         recipient: "a@example.com".to_string(),
         kind: "verification".to_string(),
         state: state.to_string(),
         attempts,
-        last_error: String::new(),
+        last_error: last_error.map(str::to_string),
         next_attempt_in_secs: None,
         created_at_micros: 0,
     }
@@ -137,15 +142,17 @@ fn listed(state: &str, attempts: i32) -> OutboxListRow {
 
 #[test]
 fn a_row_shows_its_tab_and_only_that_tabs_actions() {
-    for (state, attempts, shown, actions) in [
-        (STATE_PENDING, 0, "pending", vec!["cancel"]),
-        (STATE_PENDING, 1, "retrying", vec!["retry-now", "park", "cancel"]),
-        (STATE_PARKED, 3, "parked", vec!["resume", "cancel-parked"]),
-        (STATE_SENT, 1, "sent", vec![]),
-        (STATE_CANCELLED, 0, "cancelled", vec![]),
+    let failed = Some("mail provider unavailable: transient error (421)");
+    for (state, attempts, last_error, shown, actions) in [
+        (STATE_PENDING, 0, None, "pending", vec!["cancel"]),
+        (STATE_PENDING, 1, None, "pending", vec!["cancel"]),
+        (STATE_PENDING, 1, failed, "retrying", vec!["retry-now", "park", "cancel"]),
+        (STATE_PARKED, 3, failed, "parked", vec!["resume", "cancel-parked"]),
+        (STATE_SENT, 1, None, "sent", vec![]),
+        (STATE_CANCELLED, 0, None, "cancelled", vec![]),
     ] {
-        let row = listed(state, attempts);
-        assert_eq!(shown_state(&row), shown, "{state} after {attempts} attempts");
+        let row = listed(state, attempts, last_error);
+        assert_eq!(shown_state(&row), shown, "{state} after {attempts} attempts, last error {last_error:?}");
         assert_eq!(row_actions(shown_state(&row)), actions, "{shown}");
     }
 }
@@ -360,4 +367,72 @@ async fn the_template_filter_pages_past_a_full_page_by_cursor() {
     seen.sort();
     ids.sort();
     assert_eq!(seen, ids, "the two pages cover every row once");
+}
+
+/// D6: a row claimed for its first send has burnt an attempt but failed none, so it stays
+/// pending in the tab predicates, the stats count and `shown_state`; only a failed attempt's
+/// `last_error` makes it retrying.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_row_claimed_for_its_first_send_is_pending_until_an_attempt_fails() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let svc = wired(&pool).await;
+    let p = admin(svc.clone());
+    let key = unique_key(&pool, "admin-first-send").await;
+    let _cleanup = cleanup(&pool, &[&key]);
+    enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
+    quarantine_foreign_pending(&pool, &key).await;
+    let id = id_of(&pool, &key).await;
+    let before = svc.outbox_stats().await.unwrap();
+
+    let mut tx = bounded_tx(&pool, std::time::Duration::from_secs(5)).await.unwrap();
+    let claimed = Store.claim_due_tx(&mut tx, 30.0).await.unwrap().expect("this test's row is due");
+    tx.commit().await.unwrap();
+    assert_eq!((claimed.id.as_str(), claimed.attempts), (id.as_str(), 1), "the claim burnt the first attempt");
+
+    let tab = |state: &'static str| {
+        let p = &p;
+        let id = id.clone();
+        async move {
+            match p.panel(query("outbox", Some(state), Some(&id))).await.unwrap().primitive {
+                Primitive::WorkQueue(q) => q.items,
+                other => panic!("the outbox is a work queue, got {other:?}"),
+            }
+        }
+    };
+    let in_flight = svc.outbox_stats().await.unwrap();
+    assert_eq!(
+        (in_flight.pending, in_flight.retrying),
+        (before.pending, before.retrying),
+        "a first send is not retrying"
+    );
+    let pending = tab("pending").await;
+    let [item] = pending.as_slice() else { panic!("the claimed row lists under Pending, got {pending:?}") };
+    assert_eq!((item.state.as_str(), item.attempts), ("pending", 1));
+    assert_eq!(item.actions, ["cancel"]);
+    assert!(tab("retrying").await.is_empty(), "a first send is not under Retrying");
+    assert!(tab("attention").await.is_empty(), "a first send needs no attention");
+
+    let failure = Disposition::Retry {
+        last_error: "mail provider unavailable: transient error (421)".to_string(),
+        backoff_secs: 60.0,
+    };
+    let mut tx = bounded_tx(&pool, std::time::Duration::from_secs(5)).await.unwrap();
+    assert_eq!(Store.finish_tx(&mut tx, &claimed, &failure, "fake").await.unwrap(), 1);
+    tx.commit().await.unwrap();
+
+    let failed = svc.outbox_stats().await.unwrap();
+    assert_eq!(
+        (failed.pending, failed.retrying),
+        (before.pending - 1, before.retrying + 1),
+        "a failed attempt is retrying"
+    );
+    assert!(tab("pending").await.is_empty(), "a failed row leaves Pending");
+    for state in ["retrying", "attention"] {
+        let items = tab(state).await;
+        let [item] = items.as_slice() else { panic!("the failed row lists once under {state}, got {items:?}") };
+        assert_eq!(item.state, "retrying", "under {state}");
+        assert_eq!(item.actions, ["retry-now", "park", "cancel"]);
+        assert_eq!(item.last_error.as_deref(), Some("mail provider unavailable: transient error (421)"));
+    }
 }

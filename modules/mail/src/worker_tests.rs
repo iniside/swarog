@@ -14,8 +14,8 @@ use crate::store::{
     Disposition, Store, STATE_CANCELLED, STATE_PARKED, STATE_PENDING, STATE_SENT,
 };
 use crate::tests::{
-    cleanup, enqueue, expire_lease, id_of, mail_of, row_of, test_pool, unique_key, wired, DB_LOCK,
-    DEFAULT_DSN,
+    cleanup, enqueue, expire_lease, id_of, mail_of, quarantine_foreign_pending, row_of, test_pool, unique_key,
+    wired, DB_LOCK, DEFAULT_DSN,
 };
 use crate::worker::{
     backoff_secs, bounded_tx, claim_lease, disposition, drain_pass, pass_budget, send_cas_misses,
@@ -159,20 +159,6 @@ fn drain_with(pool: &PgPool, sender: Arc<dyn Sender>, max_attempts: i32) -> Drai
         send_timeout: SEND_TIMEOUT,
         max_attempts,
     }
-}
-
-/// The drain is a GLOBAL consumer: it claims whatever is due, including a row left behind by
-/// an aborted fleet run against this shared database. Foreign pending rows are pushed out of
-/// the pass's reach — DELAYED, never deleted — so a call count of 1 means this test's row.
-async fn quarantine_foreign_pending(pool: &PgPool, key: &str) {
-    sqlx::query(
-        "UPDATE mail.outbox SET next_attempt_at = now() + interval '1 hour' \
-          WHERE state = 'pending' AND idempotency_key <> $1",
-    )
-    .bind(key)
-    .execute(pool)
-    .await
-    .unwrap();
 }
 
 /// One pass with the stop signal clear and a budget wide enough that exhaustion is never

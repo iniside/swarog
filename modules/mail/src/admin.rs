@@ -1,16 +1,16 @@
-//! The `mail` control-plane provider: the Mail outbox page, its dashboard tile, attention
-//! item and nav counter, over the outbox.
+//! The `mail` control-plane provider: the Mail outbox page, its dashboard tile and nav
+//! counter, over the outbox.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use controlplane::{
-    ActionDecl, ActionPoint, Align, AttentionItem, Banner, Cell, CellKind, Column, ConfirmSpec, ConfirmTone,
-    ContributionDecl, Delta, Emphasis, Field, FieldKind, FilterDef, FilterKind, FormSpec, InvokeCall,
+    ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ConfirmSpec, ConfirmTone,
+    ContributionDecl, Emphasis, Field, FieldKind, FilterDef, FilterKind, FormSpec, InvokeCall,
     InvokeOutcome, KpiTile, Layout, Link, Manifest, NavEntry, Noun, PageDecl, PageInfo, Palette, PanelBody, PanelQuery,
     Point, PrepareCall, Primitive, Provider, QueueItem, QueueState, ReasonReq, Role, SearchHit, SearchQuery,
-    Severity, Then, Tone, WorkQueue, DEFAULT_PANEL_DEADLINE_MS, PAGE_PARAM_QUEUE_STATE, PAGE_PARAM_SEARCH,
+    Then, Tone, WorkQueue, DEFAULT_PANEL_DEADLINE_MS, PAGE_PARAM_QUEUE_STATE, PAGE_PARAM_SEARCH,
 };
 use controlplane::order;
 use opsapi::Error;
@@ -28,7 +28,6 @@ const PAGE: &str = "outbox";
 
 const NAV_QUEUE: &str = "nav.queue";
 const TILE_QUEUE: &str = "tile.queue";
-const ATTENTION_QUEUE: &str = "attention.queue";
 const OUTBOX: &str = "outbox";
 
 const TEST_SEND: &str = "test-send";
@@ -144,10 +143,10 @@ fn next_attempt(secs: i64) -> String {
     }
 }
 
-/// The row's tab key: pending rows with an attempt behind them are `retrying`.
+/// The row's tab key: pending rows with a failed attempt behind them are `retrying`.
 fn shown_state(row: &OutboxListRow) -> &'static str {
     match row.state.as_str() {
-        STATE_PENDING if row.attempts > 0 => "retrying",
+        STATE_PENDING if row.last_error.is_some() => "retrying",
         STATE_PENDING => "pending",
         STATE_PARKED => "parked",
         STATE_SENT => "sent",
@@ -302,13 +301,6 @@ fn manifest() -> Manifest {
         contributions: vec![
             contribution(NAV_QUEUE, Point::NavCounter, 0, "Mail queue", "mail"),
             contribution(TILE_QUEUE, Point::DashboardTile, order::dashboard_tile::MAIL, "Mail queue", ""),
-            contribution(
-                ATTENTION_QUEUE,
-                Point::DashboardAttention,
-                order::dashboard_attention::MAIL,
-                "Mail relay throttling",
-                "mail",
-            ),
             contribution(OUTBOX, Point::Page(PAGE.to_string()), 10, "Outbox", ""),
         ],
         actions: vec![
@@ -359,51 +351,16 @@ impl MailAdmin {
 
     async fn tile(&self) -> Result<Primitive, Error> {
         let stats = self.svc.outbox_stats().await?;
-        let parked = if stats.parked > 0 { format!("{} parked", thousands(stats.parked)) } else { String::new() };
-        let delta = if stats.retrying > 0 {
-            Some(Delta {
-                // FAKE: no throttle signal exists; the wording shows while any row is retrying.
-                value: "▲ relay throttled".to_string(),
-                period: if parked.is_empty() { parked } else { format!("· {parked}") },
-                tone: Some(Tone::Warn),
-            })
-        } else if !parked.is_empty() {
-            Some(Delta { value: String::new(), period: parked, tone: None })
-        } else {
-            None
-        };
         Ok(Primitive::KpiTile(KpiTile {
             label: "Mail queue".to_string(),
             value: thousands(stats.pending + stats.retrying),
             unit: None,
-            delta,
-            // FAKE: the outbox keeps no queue-length history.
-            series: vec![4.0, 6.0, 3.0, 8.0, 20.0, 140.0, 310.0, 312.0],
+            delta: None,
+            series: Vec::new(),
             spark: Palette::Warn,
             capacity: None,
             link: Some(outbox_page(BTreeMap::new())),
         }))
-    }
-
-    async fn attention(&self) -> Result<Primitive, Error> {
-        let stats = self.svc.outbox_stats().await?;
-        if stats.retrying == 0 {
-            return Ok(Primitive::AttentionItems(Vec::new()));
-        }
-        Ok(Primitive::AttentionItems(vec![AttentionItem {
-            severity: Severity::Warn,
-            // FAKE: no throttle signal exists; a retrying row stands for one.
-            title: "Mail relay throttling".to_string(),
-            text: format!(
-                "{} queued, {} retrying, {} parked.",
-                thousands(stats.pending + stats.retrying),
-                thousands(stats.retrying),
-                thousands(stats.parked)
-            ),
-            link: outbox_page(BTreeMap::new()),
-            action_label: "Outbox".to_string(),
-            since: String::new(),
-        }]))
     }
 
     async fn outbox(&self, req: &PanelQuery) -> Result<PanelBody, Error> {
@@ -467,17 +424,12 @@ impl MailAdmin {
             search_placeholder: Some("Recipient, template or message id".to_string()),
             selectable: true,
         };
-        let banner = (stats.retrying > 0).then(|| Banner {
-            tone: Tone::Warn,
-            // FAKE: no throttle signal exists; a retrying row stands for one.
-            text: "SMTP relay is throttling (421). Retries back off exponentially; nothing is lost.".to_string(),
-        });
         Ok(PanelBody {
             primitive: Primitive::WorkQueue(queue),
             meta: Some(self.relay.clone()),
             heading: None,
             note: None,
-            banner,
+            banner: None,
             foot: None,
             tag: None,
         })
@@ -496,7 +448,7 @@ impl MailAdmin {
             attempts: u32::try_from(row.attempts).unwrap_or(0),
             max_attempts: self.max_attempts,
             next_attempt_at: row.next_attempt_in_secs.map(next_attempt),
-            last_error: (!row.last_error.is_empty()).then(|| row.last_error.clone()),
+            last_error: row.last_error.clone().filter(|e| !e.is_empty()),
             payload_preview: None,
             actions: row_actions(shown),
             cells: vec![
@@ -571,7 +523,6 @@ impl Provider for MailAdmin {
         match req.contribution.as_str() {
             NAV_QUEUE => self.nav_counter().await.map(PanelBody::new),
             TILE_QUEUE => self.tile().await.map(PanelBody::new),
-            ATTENTION_QUEUE => self.attention().await.map(PanelBody::new),
             OUTBOX => self.outbox(&req).await,
             other => Err(Error::not_found(format!("{MODULE} has no contribution {other:?}"))),
         }

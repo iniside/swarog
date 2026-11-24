@@ -123,6 +123,20 @@ pub(crate) async fn expire_lease(pool: &PgPool, key: &str) {
     .unwrap();
 }
 
+/// The drain is a GLOBAL consumer: it claims whatever is due, including a row left behind by
+/// an aborted fleet run against this shared database. Foreign pending rows are pushed out of
+/// the pass's reach — DELAYED, never deleted — so a call count of 1 means this test's row.
+pub(crate) async fn quarantine_foreign_pending(pool: &PgPool, key: &str) {
+    sqlx::query(
+        "UPDATE mail.outbox SET next_attempt_at = now() + interval '1 hour' \
+          WHERE state = 'pending' AND idempotency_key <> $1",
+    )
+    .bind(key)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 /// Runs `f` when the guard drops — including through a panicking assertion, which a trailing
 /// call never reaches. Every fixture that mutates the SHARED database undoes itself through
 /// this one mechanism: a stranded `pending` row is claimable by any live drain, a stranded

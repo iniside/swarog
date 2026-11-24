@@ -9,7 +9,6 @@ nav platform | audit | audit | 50
 nav platform | core.events | events | 60
 dashboard_attention | portal | attention.services | 10
 dashboard_attention | core.events | attention.paused | 20
-dashboard_attention | mail | attention.queue | 40
 dashboard_attention | characters | attention.purges | 61
 dashboard_attention | wallet | attention.purges | 62
 dashboard_attention | inventory | attention.purges | 63

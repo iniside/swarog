@@ -108,7 +108,7 @@ window.DATA = (() => {
     { name: "groups-svc", module: "groups", state: "running", version: "0.42.1", uptime: "6 d 4 h", p99: "15 ms", restarts: 0 },
     { name: "party-svc", module: "party", state: "running", version: "0.42.1", uptime: "6 d 4 h", p99: "9 ms", restarts: 0 },
     { name: "notifications-svc", module: "notifications", state: "running", version: "0.42.1", uptime: "6 d 4 h", p99: "14 ms", restarts: 0 },
-    { name: "mail-svc", module: "mail", state: "degraded", version: "0.42.1", uptime: "6 d 4 h", p99: "880 ms", restarts: 0, note: "SMTP relay throttling · 312 queued" },
+    { name: "mail-svc", module: "mail", state: "degraded", version: "0.42.1", uptime: "6 d 4 h", p99: "880 ms", restarts: 0 },
     { name: "storage-svc", module: "storage", state: "running", version: "0.42.1", uptime: "2 d 1 h", p99: "61 ms", restarts: 1 },
     { name: "match-svc", module: "match", state: "running", version: "0.42.1", uptime: "6 d 4 h", p99: "19 ms", restarts: 0 },
     { name: "rating-svc", module: "rating", state: "running", version: "0.42.1", uptime: "6 d 4 h", p99: "8 ms", restarts: 0 },
@@ -138,8 +138,8 @@ window.DATA = (() => {
 
   const mail = [
     { id: "m-88213", to: "MiraVoss", template: "season_reward", subject: "Season 4 rewards", state: "pending", attempts: 0, next: "in 12 s", err: "" },
-    { id: "m-88207", to: "kestrel", template: "season_reward", subject: "Season 4 rewards", state: "retrying", attempts: 3, next: "in 2 min", err: "421 4.7.0 Try again later (relay throttled)" },
-    { id: "m-88199", to: "NightOwl_77", template: "purchase_receipt", subject: "Your receipt #A-55102", state: "retrying", attempts: 2, next: "in 40 s", err: "421 4.7.0 Try again later (relay throttled)" },
+    { id: "m-88207", to: "kestrel", template: "season_reward", subject: "Season 4 rewards", state: "retrying", attempts: 3, next: "in 2 min", err: "mail provider unavailable: transient error (421): 4.7.0 Try again later" },
+    { id: "m-88199", to: "NightOwl_77", template: "purchase_receipt", subject: "Your receipt #A-55102", state: "retrying", attempts: 2, next: "in 40 s", err: "mail provider unavailable: transient error (421): 4.7.0 Try again later" },
     { id: "m-88180", to: "Volkhv", template: "season_reward", subject: "Season 4 rewards", state: "failed", attempts: 5, next: "—", err: "550 5.1.1 Mailbox unavailable" },
     { id: "m-88172", to: "ash_and_ember", template: "ban_notice", subject: "Account action", state: "parked", attempts: 5, next: "—", err: "recipient banned · parked by policy" },
     { id: "m-88166", to: "guest-28be71f5", template: "welcome", subject: "Welcome to Ashfall", state: "sent", attempts: 1, next: "—", err: "" },

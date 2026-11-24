@@ -2,6 +2,22 @@
 
 Last updated: 2026-11-24
 
+- [x] **Define mail "retrying" so a healthy first send is not one** (2026-11-24, admin-second-pass step 6)
+  ADMIN2-19. Plan D6: retrying is `state = 'pending' AND last_error IS NOT NULL` and pending is
+  `state = 'pending' AND last_error IS NULL`, in the tab predicates, the stats count and
+  `shown_state` together; a row claimed for its first send stays pending.
+
+- [x] **Queue-length history** (2026-11-24, admin-second-pass step 6)
+  ADMIN2-12. Mockup: the Mail queue tile's sparkline. Removed: the tile has no series and the
+  mockup tile no spark. The outbox still keeps no queue-length history.
+
+- [x] **Relay throttle signal** (2026-11-24, admin-second-pass step 6)
+  ADMIN2-11. Mockup: the "▲ relay throttled" tile delta, the "Mail relay throttling"
+  attention item and the SMTP 421 banner. Removed: the tile has no delta, the attention
+  contribution, `order::dashboard_attention::MAIL` and its `drawn_orders.txt` line went, the
+  outbox has no banner, and the mockup and design-system copies with them, including the
+  mail-svc health note. The drain still records no throttle state.
+
 - [x] **API key requests in the last 24 hours** (2026-11-24, admin-second-pass step 5b)
   ADMIN2-62. Mockup: the revoke confirm's "Requests (24 h)" impact row. Removed by owner
   ruling: `fake_requests` and `FAKE_REQUESTS_CAP` went, the confirm lists only the Key row,

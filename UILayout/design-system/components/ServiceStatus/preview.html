@@ -16,7 +16,7 @@
 <script>
   var S = window.Swarog;
   document.getElementById("root").innerHTML = S.Panel({ c: { module: "portal", point: "dashboard.health", prim: "ServiceStatus" }, noForce: true, flush: true, title: "Service health", meta: "18/20 healthy",
-    body: S.ServiceStatus([{ name: "lore-svc", state: "running", p99: "33 ms" }, { name: "mail-svc", state: "degraded", p99: "880 ms", note: "SMTP relay throttling · 312 queued" }, { name: "wallet-svc", state: "down", p99: "—", note: "connection refused · last ok 3 min ago" }]) });
+    body: S.ServiceStatus([{ name: "lore-svc", state: "running", p99: "33 ms" }, { name: "mail-svc", state: "degraded", p99: "880 ms" }, { name: "wallet-svc", state: "down", p99: "—", note: "connection refused · last ok 3 min ago" }]) });
 </script>
 </body>
 </html>

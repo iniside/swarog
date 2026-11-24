@@ -42,7 +42,7 @@ pub(crate) fn services() -> Vec<ServiceItem> {
         ("groups-svc", Running, "0.42.1", Some(RUNNING), "15 ms", None),
         ("party-svc", Running, "0.42.1", Some(RUNNING), "9 ms", None),
         ("notifications-svc", Running, "0.42.1", Some(RUNNING), "14 ms", None),
-        ("mail-svc", Degraded, "0.42.1", Some(RUNNING), "880 ms", Some("SMTP relay throttling · 312 queued")),
+        ("mail-svc", Degraded, "0.42.1", Some(RUNNING), "880 ms", None),
         ("storage-svc", Running, "0.42.1", Some("2 d 1 h"), "61 ms", None),
         ("match-svc", Running, "0.42.1", Some(RUNNING), "19 ms", None),
         ("rating-svc", Running, "0.42.1", Some(RUNNING), "8 ms", None),

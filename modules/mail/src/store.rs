@@ -401,13 +401,14 @@ impl Store {
 }
 
 /// The four counts the operator page shows, in ONE round-trip. Parked and sent ride their
-/// partial indexes; the pending split by `attempts` is one `count(*) FILTER` pass over the
+/// partial indexes; the pending split by `last_error` is one `count(*) FILTER` pass over the
 /// pending rows `mail_outbox_due_idx` selects, a heap read per pending row because no index
-/// covers `attempts`.
+/// covers `last_error`.
 pub(crate) struct OutboxStats {
-    /// Pending and never attempted.
+    /// Pending with no failed attempt behind it: `last_error IS NULL`. A row claimed for its
+    /// first send is still here.
     pub(crate) pending: i64,
-    /// Pending with at least one attempt behind it.
+    /// Pending after a failed attempt: `last_error IS NOT NULL`.
     pub(crate) retrying: i64,
     pub(crate) parked: i64,
     pub(crate) sent_24h: i64,
@@ -428,9 +429,9 @@ pub(crate) enum OutboxTab {
 impl OutboxTab {
     fn predicate(self) -> &'static str {
         match self {
-            OutboxTab::Attention => "((state = 'pending' AND attempts > 0) OR state = 'parked')",
-            OutboxTab::Pending => "(state = 'pending' AND attempts = 0)",
-            OutboxTab::Retrying => "(state = 'pending' AND attempts > 0)",
+            OutboxTab::Attention => "((state = 'pending' AND last_error IS NOT NULL) OR state = 'parked')",
+            OutboxTab::Pending => "(state = 'pending' AND last_error IS NULL)",
+            OutboxTab::Retrying => "(state = 'pending' AND last_error IS NOT NULL)",
             OutboxTab::Parked => "state = 'parked'",
             OutboxTab::Sent => "(state = 'sent' AND sent_at >= now() - interval '24 hours')",
         }
@@ -458,14 +459,14 @@ pub(crate) struct OutboxListRow {
     pub(crate) kind: String,
     pub(crate) state: String,
     pub(crate) attempts: i32,
-    pub(crate) last_error: String,
+    pub(crate) last_error: Option<String>,
     /// Seconds until a pending row is due, read off the database clock; `None` otherwise.
     pub(crate) next_attempt_in_secs: Option<i64>,
     pub(crate) created_at_micros: i64,
 }
 
 /// [`Store::list_tx`]'s columns, in [`OutboxListRow`] field order.
-type ListRow = (String, String, String, String, i32, String, Option<i64>, i64);
+type ListRow = (String, String, String, String, i32, Option<String>, Option<i64>, i64);
 
 impl Store {
     pub(crate) async fn stats_tx(
@@ -477,8 +478,8 @@ impl Store {
                (SELECT count(*) FROM mail.outbox WHERE state = 'parked'), \
                (SELECT count(*) FROM mail.outbox \
                  WHERE state = 'sent' AND sent_at >= now() - interval '24 hours') \
-             FROM (SELECT count(*) FILTER (WHERE attempts = 0) AS fresh, \
-                          count(*) FILTER (WHERE attempts > 0) AS retrying \
+             FROM (SELECT count(*) FILTER (WHERE last_error IS NULL) AS fresh, \
+                          count(*) FILTER (WHERE last_error IS NOT NULL) AS retrying \
                      FROM mail.outbox WHERE state = 'pending') p",
         )
         .fetch_one(&mut *conn)
@@ -500,7 +501,7 @@ impl Store {
         listing: &OutboxListing<'_>,
     ) -> Result<Vec<OutboxListRow>, sqlx::Error> {
         let sql = format!(
-            "SELECT id::text, recipient, kind, state, attempts, COALESCE(last_error, ''), \
+            "SELECT id::text, recipient, kind, state, attempts, last_error, \
                     CASE WHEN state = 'pending' \
                          THEN GREATEST(0, ceil(EXTRACT(EPOCH FROM (next_attempt_at - now()))))::int8 \
                     END, \

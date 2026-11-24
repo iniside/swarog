@@ -57,7 +57,6 @@
       const counts = [["attention", "Needs attention", 4], ["pending", "Pending", 309], ["retrying", "Retrying", 2], ["failed", "Failed", 1], ["parked", "Parked", 1], ["sent", "Sent (24 h)", "182,051"]];
       const list = D.mail.filter(m => tab === "attention" ? ["retrying", "failed", "parked"].includes(m.state) : m.state === tab);
       const q = panel({ c: pg("mail", "WorkQueue"), flush: true, title: "Outbox", meta: "relay smtp.emberline.gg",
-        banner: `<div class="banner warn">${icon("alert")} SMTP relay is throttling (421). Retries back off exponentially; nothing is lost.</div>`,
         tools: `<button class="btn sm">${icon("pause")} Pause sending</button>`,
         body: `<div class="q-counts">${counts.map(([k, l, n]) => `<div class="q-count ${tab === k ? "on" : ""}" onclick="PAGES.mailTab='${k}';REG.render()"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("")}</div>` +
           (list.length ? table({ selectable: true, searchPlaceholder: "Recipient, template or message id", filters: [{ k: "Template", v: "any" }],

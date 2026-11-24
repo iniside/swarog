@@ -24,7 +24,6 @@ pub mod dashboard_tile {
 pub mod dashboard_attention {
     pub const PORTAL_SERVICES: i32 = 10;
     pub const EVENTS: i32 = 20;
-    pub const MAIL: i32 = 40;
     pub const CHARACTERS_PURGES: i32 = 61;
     pub const WALLET_PURGES: i32 = 62;
     pub const INVENTORY_PURGES: i32 = 63;
