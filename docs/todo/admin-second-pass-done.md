@@ -2,6 +2,31 @@
 
 Last updated: 2026-11-24
 
+- [x] **Export CSV** (2026-11-24, admin-second-pass step 7b)
+  ADMIN2-25. Mockup: the Users & players "Export CSV" head action. Removed: `EXPORT_CSV`, its
+  forbidden arm and the mockup button. No download carrier exists in the control plane (D1).
+
+- [x] **Create account** (2026-11-24, admin-second-pass step 7b)
+  ADMIN2-26. Mockup: the "Create account" head action. Removed: `CREATE_ACCOUNT`, its
+  forbidden arm and the mockup button. An account is created only by the player's registration.
+
+- [x] **Edit profile** (2026-11-24, admin-second-pass step 7b)
+  ADMIN2-29. Mockup: the Profile panel's "Edit". Removed: `EDIT_PROFILE`, its forbidden arm
+  and the mockup tool. The display name is immutable.
+
+- [x] **Link and unlink identity** (2026-11-24, admin-second-pass step 7b)
+  ADMIN2-30. Mockup: the Linked identities "Link" tool and each row's "Unlink". Removed:
+  `LINK_IDENTITY`, `UNLINK_IDENTITY`, their forbidden arms, the identity row's action and item,
+  and the mockup tool, button and empty action column.
+
+- [x] **Players list column chooser** (2026-11-24, admin-second-pass step 7b)
+  ADMIN2-33. Mockup: the "Columns: 9 of 12" toolbar control. Removed from the mockup; no
+  column chooser exists and `DataTable` has no toolbar-right carrier.
+
+- [x] **Personal data panel** (2026-11-24, admin-second-pass step 7b)
+  ADMIN2-34. Mockup: the denied "Personal data" panel (`accounts.pii.read`). Removed from the
+  mockup; no PII store exists and accounts contributes no such panel.
+
 - [x] **Player country** (2026-11-24, admin-second-pass step 7a)
   ADMIN2-21. Mockup: the Profile panel's Country. Removed: `fake_country`, the profile row,
   its test and the mockup row and sample `country` values. No country is stored for an account.

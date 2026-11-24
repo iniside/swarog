@@ -37,14 +37,9 @@ const IDENTITIES: &str = "identities";
 const SESSIONS: &str = "sessions";
 const LABEL: &str = "label";
 
-const EXPORT_CSV: &str = "export-csv";
-const CREATE_ACCOUNT: &str = "create-account";
 const SUSPEND: &str = "suspend";
 const DELETE_ACCOUNT: &str = "delete-account";
 const SUSPEND_HEADER: &str = "suspend-header";
-const EDIT_PROFILE: &str = "edit-profile";
-const LINK_IDENTITY: &str = "link-identity";
-const UNLINK_IDENTITY: &str = "unlink-identity";
 const REVOKE_ALL: &str = "revoke-all";
 const REVOKE_SESSION: &str = "revoke-session";
 
@@ -327,11 +322,10 @@ fn not_implemented(
 }
 
 fn manifest() -> Manifest {
-    let page = || ActionPoint::PageHead(PAGE.to_string());
     let row = || ActionPoint::RowAction(KIND.to_string());
     let tool = |c: &str| ActionPoint::PanelTool(c.to_string());
     let table_row = |c: &str| ActionPoint::TableRow(c.to_string());
-    let (plain, primary, ghost) = (Emphasis::Default, Emphasis::Primary, Emphasis::Ghost);
+    let (plain, ghost) = (Emphasis::Default, Emphasis::Ghost);
     Manifest {
         module: MODULE.to_string(),
         sections: Vec::new(),
@@ -350,7 +344,7 @@ fn manifest() -> Manifest {
             subtitle: "Staff and players share one account space; Lore access is a role on the \
                        account."
                 .to_string(),
-            head_actions: vec![EXPORT_CSV.to_string(), CREATE_ACCOUNT.to_string()],
+            head_actions: Vec::new(),
             tiles: Vec::new(),
             layout: Layout::Stack(vec![PLAYERS.to_string()]),
             params: [FILTER_KIND, FILTER_STATUS, FILTER_PROVIDER].map(str::to_string).to_vec(),
@@ -395,10 +389,6 @@ fn manifest() -> Manifest {
             contribution(LABEL, Point::EntityLabel { kind: KIND.to_string() }, 0, "Player", "", None),
         ],
         actions: vec![
-            // NEW: no export exists.
-            not_implemented(EXPORT_CSV, page(), "Export CSV", "download", 10, false, plain),
-            // NEW: accounts are created only by a player's own registration.
-            not_implemented(CREATE_ACCOUNT, page(), "Create account", "plus", 20, false, primary),
             // NEW: no suspension exists.
             not_implemented(
                 SUSPEND,
@@ -428,12 +418,6 @@ fn manifest() -> Manifest {
                 true,
                 plain,
             ),
-            // NEW: the display name is immutable.
-            not_implemented(EDIT_PROFILE, tool(PROFILE), "Edit", "edit", 10, false, plain),
-            // NEW: linking is the player's own flow, with no operator path.
-            not_implemented(LINK_IDENTITY, tool(IDENTITIES), "Link", "plus", 10, false, plain),
-            // NEW: no unlink exists.
-            not_implemented(UNLINK_IDENTITY, table_row(IDENTITIES), "Unlink", "", 10, true, ghost),
             // NEW: no operator revocation exists.
             not_implemented(REVOKE_ALL, tool(SESSIONS), "Revoke all", "", 10, true, plain),
             not_implemented(REVOKE_SESSION, table_row(SESSIONS), "Revoke", "", 10, false, ghost),
@@ -669,8 +653,8 @@ fn identity_row(player_id: &str, identity: &IdentityRow) -> Row {
             text(CellKind::Text, fake_last_used(player_id, &identity.provider)),
         ],
         highlight: false,
-        item: Some(identity.provider.clone()),
-        actions: vec![UNLINK_IDENTITY.to_string()],
+        item: None,
+        actions: Vec::new(),
     }
 }
 
@@ -745,8 +729,7 @@ impl Provider for AccountsAdmin {
 
     async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, Error> {
         match req.action.as_str() {
-            EXPORT_CSV | CREATE_ACCOUNT | SUSPEND | DELETE_ACCOUNT | SUSPEND_HEADER
-            | EDIT_PROFILE | LINK_IDENTITY | UNLINK_IDENTITY | REVOKE_ALL | REVOKE_SESSION => {
+            SUSPEND | DELETE_ACCOUNT | SUSPEND_HEADER | REVOKE_ALL | REVOKE_SESSION => {
                 Err(Error::forbidden("not implemented yet"))
             }
             other => Err(Error::not_found(format!("{MODULE} has no action {other:?}"))),

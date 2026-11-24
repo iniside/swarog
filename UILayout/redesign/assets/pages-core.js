@@ -97,11 +97,10 @@ window.PAGES = window.PAGES || {};
       const tbl = table({
         cols, rows, selectable: true, searchPlaceholder: "Handle, name, email or user id", searchWidth: 280,
         filters: [{ k: "Kind", v: "any" }, { k: "Status", v: "any" }, { k: "Provider", v: "any" }],
-        toolbarRight: `<span class="muted" style="font-size:12px">Columns:</span><button class="btn sm">${icon("sliders")} 9 of 12</button>`,
         rowMenu: r => rowMenuBtn("user", r.href.split("=")[1]),
         total: "214,903 accounts · showing 1–14", page: "1 / 15,351",
       });
-      return head("Users & players", "Staff and players share one account space; Lore access is a role on the account.", `<button class="btn">${icon("download")} Export CSV</button><button class="btn primary">${icon("plus")} Create account</button>`) +
+      return head("Users & players", "Staff and players share one account space; Lore access is a role on the account.") +
         panel({ c: { module: "accounts", point: "page", prim: "DataTable" }, flush: true, body: tbl, cls: "players-table",
           banner: `<div class="banner warn" data-module="wallet">${icon("alert")} Embers column unavailable — wallet module did not answer. Other columns are live.<button class="btn sm" onclick="UI.retry(this)">${icon("refresh")} Retry</button></div>` });
     },
@@ -116,10 +115,9 @@ window.PAGES = window.PAGES || {};
   const sessions = [["Windows · Ashfall client 0.9.214", "83.4.112.9", "today 08:12", "in 6 h"], ["Admin portal · Chrome", "83.4.112.9", "today 08:12", "in 11 h"]];
 
   tabRender.profile = u => `<div class="grid g-2">
-    ${panel({ c: { module: "accounts", point: "entity.user.tab", prim: "PropertyList" }, title: "Profile", tools: `<button class="btn sm">${icon("edit")} Edit</button>`, body: props([["User id", `<span class="mono">${u.id}</span> ${UI.ref("user", u.id)}`], ["Handle", esc(u.handle)], ["Display name", esc(u.name)], ["Kind", badge(u.kind, u.kind === "staff" ? "accent" : "", true)], ["Status", status(u.status)], ["Created", u.created], ["Last seen", u.lastSeen]]) })}
-    ${panel({ c: { module: "accounts", point: "entity.user.tab", prim: "PropertyList" }, title: "Personal data", state: "denied", perm: "accounts.pii.read" })}
-    ${panel({ c: { module: "accounts", point: "entity.user.tab", prim: "DataTable" }, title: "Linked identities", meta: `${u.providers.length}`, flush: true, tools: `<button class="btn sm">${icon("plus")} Link</button>`,
-      body: table({ pager: false, cols: [{ label: "Provider" }, { label: "Subject" }, { label: "Linked" }, { label: "Last used" }, { label: "" }], rows: u.providers.map((p, i) => [`<span class="tag">${p}</span>`, `<span class="mono">${p === "google" ? "1094…" + u.id.slice(0, 4) : p === "epic" ? "epic|" + u.id.slice(2, 8) : u.id}</span>`, u.created, i ? "3 d ago" : u.lastSeen, `<button class="btn sm ghost danger-ghost" ${u.providers.length < 2 ? "disabled title='Last identity cannot be unlinked'" : ""}>Unlink</button>`]) }) })}
+    ${panel({ c: { module: "accounts", point: "entity.user.tab", prim: "PropertyList" }, title: "Profile", body: props([["User id", `<span class="mono">${u.id}</span> ${UI.ref("user", u.id)}`], ["Handle", esc(u.handle)], ["Display name", esc(u.name)], ["Kind", badge(u.kind, u.kind === "staff" ? "accent" : "", true)], ["Status", status(u.status)], ["Created", u.created], ["Last seen", u.lastSeen]]) })}
+    ${panel({ c: { module: "accounts", point: "entity.user.tab", prim: "DataTable" }, title: "Linked identities", meta: `${u.providers.length}`, flush: true,
+      body: table({ pager: false, cols: [{ label: "Provider" }, { label: "Subject" }, { label: "Linked" }, { label: "Last used" }], rows: u.providers.map((p, i) => [`<span class="tag">${p}</span>`, `<span class="mono">${p === "google" ? "1094…" + u.id.slice(0, 4) : p === "epic" ? "epic|" + u.id.slice(2, 8) : u.id}</span>`, u.created, i ? "3 d ago" : u.lastSeen]) }) })}
     ${panel({ c: { module: "accounts", point: "entity.user.tab", prim: "DataTable" }, title: "Active sessions", meta: "2", flush: true, tools: `<button class="btn sm danger-ghost">Revoke all</button>`,
       body: table({ pager: false, cols: [{ label: "Client" }, { label: "IP" }, { label: "Started" }, { label: "Expires" }, { label: "" }], rows: sessions.map(s => [...s.map(x => esc(x)), `<button class="btn sm ghost">Revoke</button>`]) }) })}
   </div>`;

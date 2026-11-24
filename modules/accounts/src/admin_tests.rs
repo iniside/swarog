@@ -309,7 +309,39 @@ async fn identities_panel_masks_the_subject_and_counts_the_links() {
     assert_eq!(row.cells[0].value, "dev");
     assert_eq!(row.cells[1].value, mask(&email), "the email subject is masked");
     assert!(!row.cells[1].value.contains(&email[4..email.len() - 4]), "the masked middle never leaks");
-    assert_eq!(row.item.as_deref(), Some("dev"), "unlink acts on the provider");
+    assert!(row.actions.is_empty(), "no operator action exists on a linked identity");
+    assert!(row.item.is_none(), "nothing acts on an identity row");
+}
+
+#[test]
+fn manifest_declares_only_the_actions_the_portal_can_refuse() {
+    let m = super::manifest();
+    let mut ids: Vec<&str> = m.actions.iter().map(|a| a.id.as_str()).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, ["delete-account", "revoke-all", "revoke-session", "suspend", "suspend-header"]);
+    assert!(m.pages.iter().all(|p| p.head_actions.is_empty()), "no page-head action remains");
+}
+
+#[tokio::test]
+async fn a_removed_action_is_not_found_and_a_declared_one_is_forbidden() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let admin = AccountsAdmin::new(svc);
+    let call = |action: &str| controlplane::InvokeCall {
+        module: "accounts".to_string(),
+        action: action.to_string(),
+        entity: None,
+        input: BTreeMap::new(),
+        expected_revision: None,
+        reason: None,
+        operator: "op".to_string(),
+        item: None,
+        request_id: None,
+    };
+    for gone in ["export-csv", "create-account", "edit-profile", "link-identity", "unlink-identity"] {
+        assert_eq!(admin.invoke(call(gone)).await.unwrap_err().status, Status::NotFound, "{gone}");
+    }
+    assert_eq!(admin.invoke(call("suspend")).await.unwrap_err().status, Status::Forbidden);
 }
 
 #[tokio::test]
