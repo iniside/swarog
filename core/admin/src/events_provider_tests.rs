@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use controlplane::ControlPlane;
 
+use crate::engine::roles::Operator;
+
 use super::*;
 
 async fn test_pool() -> Option<PgPool> {
@@ -188,6 +190,18 @@ async fn copy_payload_copies_the_poison_panel_and_has_no_invoke() {
     assert!(err.msg.contains("has no invoke"), "{}", err.msg);
 }
 
+/// Copy payload has no backend effect, so a Viewer, who can see the poison panel, copies; the
+/// verbs that change a subscription stay Operator's.
+#[test]
+fn a_viewer_copies_the_payload_but_cannot_resume_or_skip() {
+    let viewer = Operator { login: "viewer".to_string(), role: Role::Viewer };
+    let tools = crate::routes::panel_tools(&viewer, "", MODULE, &manifest(), POISON);
+    let enabled = |id: &str| tools.iter().find(|t| t.id == id).unwrap_or_else(|| panic!("no {id} tool")).enabled;
+    assert!(enabled(POISON_COPY), "a Viewer's Copy payload is drawn enabled");
+    assert!(!enabled(POISON_RESUME), "Resume stays Operator's");
+    assert!(!enabled(POISON_SKIP), "Skip stays Operator's");
+}
+
 #[tokio::test]
 async fn subscription_row_shows_the_stored_cursor_and_the_id_prefix() {
     let Some(pool) = test_pool().await else { return };
@@ -243,4 +257,37 @@ async fn poison_consumer_is_the_id_prefix() {
     let Primitive::PropertyList(list) = body.primitive else { panic!("the poison panel is a property list") };
     let prefix = heading.split('.').next().unwrap();
     assert_eq!(property(&list.items, "Consumer"), prefix);
+}
+
+/// A paused subscription with an eligible event behind its cursor previews that event's payload
+/// as the panel's code block, the `data-copy-source` Copy payload copies; without it the copy is
+/// drawn disabled. The id starts with `0` so it sorts first among the paused subscriptions, and
+/// a shared database's other paused row is never the one shown.
+#[tokio::test]
+async fn poison_previews_the_eligible_events_payload_as_the_code_block() {
+    let Some(pool) = test_pool().await else { return };
+    let id = format!("0.{}", unique("core-events.poison-code"));
+    insert_sub(&pool, &id, "paused").await;
+    let marker = unique("payload-marker");
+    // Generation 0 is below the seeded plane generation, so the event is frontier-eligible now.
+    sqlx::query(
+        "INSERT INTO asyncevents.events \
+           (generation, producer_xid, tie_breaker, topic, contract_version, payload) \
+         OVERRIDING SYSTEM VALUE \
+         VALUES (0, '5'::xid8, 1, $1, 1, $2::jsonb)",
+    )
+    .bind(&id)
+    .bind(format!(r#"{{"marker":"{marker}"}}"#))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let provider = EventsProvider::new(pool.clone());
+    let body = provider.panel(panel_query(POISON, &id)).await;
+    let _ = sqlx::query("DELETE FROM asyncevents.events WHERE topic = $1").bind(&id).execute(&pool).await;
+    delete_sub(&pool, &id).await;
+    let body = body.unwrap();
+    assert_eq!(body.heading.as_deref(), Some(id.as_str()), "the panel shows the subscription under test");
+    let Primitive::PropertyList(list) = body.primitive else { panic!("the poison panel is a property list") };
+    let code = list.code.expect("an eligible event is previewed as the code block");
+    assert!(code.contains(&marker), "the code block is the event's payload: {code}");
 }

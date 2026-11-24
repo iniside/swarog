@@ -543,6 +543,16 @@ fn a_copy_off_a_panel_tool_is_refused() {
 }
 
 #[test]
+fn a_copy_shown_on_an_empty_panel_is_refused() {
+    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+    m.actions.push(ActionDecl { then: Then::Copy, ..action("copy", ActionPoint::PanelTool("queue".into())) });
+    assert_eq!(findings(&[m.clone()]), Vec::<String>::new());
+    m.actions[1].when_empty = true;
+    let refused = r#"mail: action "copy" is Then::Copy but sets when_empty, and an empty panel has no code block"#;
+    assert_eq!(findings(&[m]), vec![refused.to_string()]);
+}
+
+#[test]
 fn when_empty_off_a_panel_tool_is_refused() {
     let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
     m.actions.push(ActionDecl { when_empty: true, ..action("compose", ActionPoint::PanelTool("queue".into())) });

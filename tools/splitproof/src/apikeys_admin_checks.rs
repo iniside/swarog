@@ -220,12 +220,12 @@ async fn checks(
             && secret.starts_with("ak_")
             && text(&first).contains(&format!("Key created — {key_name}"))
             && second_code == 200
-            && !second.contains("data-secret")
+            && !second.contains(SECRET_MARK)
             && !second.contains(&secret),
         format!(
             "status={ck_code} loc={location:?} first={first_code} secret_len={} second={second_code} second_secret={} body={}",
             secret.len(),
-            second.contains("data-secret"),
+            second.contains(SECRET_MARK),
             cut(&ck_body)
         ),
     );
@@ -466,9 +466,13 @@ fn toast(html: &str) -> String {
     text(&rest[..end])
 }
 
-/// The show-once secret in the reveal modal (`<span data-secret>`), none when not drawn.
+/// The reveal modal's secret span: the `data-copy-source` its Copy button names.
+const SECRET_MARK: &str = "data-copy-source=\"secret\"";
+
+/// The show-once secret in the reveal modal (`<span data-copy-source="secret">`), none when not drawn.
 fn secret_of(html: &str) -> Option<String> {
-    let open = "<span data-secret>";
+    let open = format!("<span {SECRET_MARK}>");
+    let open = open.as_str();
     let start = html.find(open)? + open.len();
     let len = html[start..].find("</span>")?;
     Some(text(&html[start..start + len]))

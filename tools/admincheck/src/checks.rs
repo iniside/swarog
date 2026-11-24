@@ -291,11 +291,15 @@ fn trailing_icons(m: &Manifest, out: &mut Vec<String>) {
 }
 
 /// A `Then::Copy` copies the code block of the panel its point names, so only a `PanelTool`
-/// has one to copy.
+/// has one to copy, and an empty panel (what `when_empty` draws it on) has none.
 fn copy_actions(m: &Manifest, out: &mut Vec<String>) {
     for a in m.actions.iter().filter(|a| matches!(a.then, Then::Copy)) {
         if !matches!(a.point, ActionPoint::PanelTool(_)) {
             out.push(format!("{}: action {:?} is Then::Copy but not a PanelTool", m.module, a.id));
+        }
+        if a.when_empty {
+            let why = "sets when_empty, and an empty panel has no code block";
+            out.push(format!("{}: action {:?} is Then::Copy but {why}", m.module, a.id));
         }
     }
 }

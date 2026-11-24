@@ -15,6 +15,13 @@ Rule source: docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:45-
 
 _None._
 
+## Owner checks
+
+- [ ] **Copy buttons in a browser**
+  Admin portal, in a browser with clipboard access: the secret-reveal modal's Copy flips to
+  Copied and pastes the key; the poison panel's Copy payload pastes the previewed payload; a
+  poison panel with no event shows Copy payload disabled with "No payload to copy".
+
 ## Open
 
 ### Fake data

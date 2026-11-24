@@ -327,8 +327,13 @@ fn manifest() -> Manifest {
                 ..act(POISON_SKIP, tool(), "Skip event…", "skip", 20, Then::Confirm(skip))
                     .decl(false, Emphasis::Default, true)
             },
-            // Copies the poison panel's code block: the previewed event's payload, as previewed.
-            act(POISON_COPY, tool(), "Copy payload", "download", 30, Then::Copy).decl(false, Emphasis::Ghost, true),
+            // Copies the poison panel's code block: the previewed event's payload, as previewed. It
+            // has no backend effect, so whoever can see the panel (Viewer) can copy.
+            ActionDecl {
+                min_role: Role::Viewer,
+                ..act(POISON_COPY, tool(), "Copy payload", "download", 30, Then::Copy)
+                    .decl(false, Emphasis::Ghost, true)
+            },
             act(SUB_PAUSE, row(), "Pause…", "pause", 10, Then::Confirm(pause)).decl(false, Emphasis::Default, true),
             act(SUB_RESUME, row(), "Resume", "play", 20, Then::Invoke).decl(false, Emphasis::Default, true),
             act(SUB_RETRY, row(), "Retry now", "refresh", 30, Then::Invoke).decl(false, Emphasis::Default, true),

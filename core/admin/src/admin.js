@@ -345,20 +345,20 @@
       return;
     }
     if ((el = t.closest("[data-copy]"))) {
-      // A bare data-copy is the secret-reveal modal's Copy; a named one (a panel action drawn
-      // from Then::Copy) copies that [data-copy-source] block of its own panel body, no request.
+      // One rail: data-copy names a [data-copy-source] block inside the closest scope, the
+      // secret-reveal's .secret-value or a panel action's (Then::Copy) .panel-body; no request.
+      // Only a button that draws data-copy-idle/data-copy-done flips to Copied.
       var name = el.getAttribute("data-copy");
-      if (name) {
-        var body = el.closest(".panel-body");
-        var source = body && body.querySelector('[data-copy-source="' + name + '"]');
-        if (navigator.clipboard && source) navigator.clipboard.writeText(source.textContent);
-        return;
-      }
-      var secret = el.closest(".secret-value").querySelector("[data-secret]");
-      if (navigator.clipboard && secret) {
-        navigator.clipboard.writeText(secret.textContent).then(function () {
-          el.querySelector("[data-copy-idle]").hidden = true;
-          el.querySelector("[data-copy-done]").hidden = false;
+      var scope = el.closest(".secret-value, .panel-body");
+      var source = scope && scope.querySelector('[data-copy-source="' + name + '"]');
+      if (navigator.clipboard && source) {
+        navigator.clipboard.writeText(source.textContent).then(function () {
+          var idle = el.querySelector("[data-copy-idle]");
+          var done = el.querySelector("[data-copy-done]");
+          if (idle && done) {
+            idle.hidden = true;
+            done.hidden = false;
+          }
         });
       }
       return;
