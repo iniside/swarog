@@ -557,7 +557,7 @@ async fn over_cap_name_rejected_on_every_writer_without_writing() {
     assert_invalid(store.create_role(&huge, "full").await, "role name");
     assert_invalid(store.create_key(&huge, &role, "tester").await, "key name");
     assert_invalid(store.create_key(&format!("{base}-k2"), &huge, "tester").await, "role name");
-    let huge_creator = "a".repeat(crate::store::MAX_NAME_BYTES + 1);
+    let huge_creator = "a".repeat(crate::store::KEY_CREATOR.max_bytes + 1);
     assert_invalid(store.create_key(&format!("{base}-k3"), &role, &huge_creator).await, "key creator");
     assert_invalid(store.create_key(&format!("{base}-k4"), &role, " ").await, "key creator");
     assert!(key_summary(&store, &format!("{base}-k3")).await.is_none(), "no key written under an over-cap creator");

@@ -124,14 +124,15 @@ fn backoff_is_exponential_and_capped() {
 /// disagree about which usernames are usable (the zombie-account defect).
 #[test]
 fn normalize_username_agrees_with_login_validity_check() {
-    let padded_128 = format!("  {}  ", "a".repeat(128));
+    let cap = MAX_USERNAME_BYTES;
+    let padded_at_cap = format!("  {}  ", "a".repeat(cap));
     let cases: &[(&str, &str)] = &[
         ("empty", ""),
         ("whitespace-only", "   "),
-        ("exactly-128-bytes", &"a".repeat(128)),
-        ("129-bytes", &"a".repeat(129)),
+        ("exactly-at-cap", &"a".repeat(cap)),
+        ("one-over-cap", &"a".repeat(cap + 1)),
         ("padded-under-cap", "  alice  "),
-        ("padded-exactly-128-after-trim", &padded_128),
+        ("padded-exactly-at-cap-after-trim", &padded_at_cap),
     ];
     for (label, input) in cases {
         let normalize_ok = normalize_username(input).is_ok();
@@ -152,8 +153,8 @@ fn normalize_username_trims_and_rejects_empty_or_over_cap() {
     assert_eq!(normalize_username("bob").unwrap(), "bob");
     assert!(normalize_username("").is_err());
     assert!(normalize_username("   ").is_err());
-    assert!(normalize_username(&"a".repeat(129)).is_err());
-    assert!(normalize_username(&"a".repeat(128)).is_ok(), "exactly at the cap is accepted");
+    assert!(normalize_username(&"a".repeat(MAX_USERNAME_BYTES + 1)).is_err());
+    assert!(normalize_username(&"a".repeat(MAX_USERNAME_BYTES)).is_ok(), "exactly at the cap is accepted");
 }
 
 #[test]
