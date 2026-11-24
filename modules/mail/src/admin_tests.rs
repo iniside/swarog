@@ -56,9 +56,11 @@ use controlplane::{
     PAGE_PARAM_QUEUE_STATE, PAGE_PARAM_SEARCH,
 };
 
-use super::{next_attempt, row_actions, shown_state, tab_counts, MailAdmin, TEST_KEY_PREFIX};
+use super::{
+    next_attempt, row_actions, shown_state, tab_counts, MailAdmin, FILTER_TEMPLATE, PAGE_SIZE, TEST_KEY_PREFIX,
+};
 use crate::config::{MailConfig, DEFAULT_MAX_ATTEMPTS, DEFAULT_RETENTION_DAYS, DEFAULT_SEND_TIMEOUT_MS};
-use crate::service::Service;
+use crate::service::{NewMail, Service};
 use crate::store::{OutboxListRow, OutboxStats, STATE_CANCELLED, STATE_PARKED, STATE_PENDING, STATE_SENT};
 use crate::tests::{cleanup, enqueue, id_of, mail_of, row_of, test_pool, unique_key, wired, DB_LOCK};
 
@@ -204,11 +206,18 @@ async fn a_test_send_queues_once_per_request_and_refuses_a_second_recipient() {
     let _cleanup = cleanup(&pool, &[&key]);
     let send = |to: &'static str| p.invoke(call("test-send", &[("to", to)], None, Some(&request_id)));
 
-    match send("ops@example.com").await.unwrap() {
+    match send(" ops@example.com ").await.unwrap() {
         InvokeOutcome::Ok { message, .. } => assert_eq!(message, "Test message queued for ops@example.com"),
         other => panic!("first submit queues, got {other:?}"),
     }
     assert_eq!(row_of(&pool, &key).await.0, STATE_PENDING);
+    let (recipient, kind): (String, String) =
+        sqlx::query_as("SELECT recipient, kind FROM mail.outbox WHERE idempotency_key = $1")
+            .bind(&key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!((recipient.as_str(), kind.as_str()), ("ops@example.com", "admin.test"), "stored trimmed");
     assert!(matches!(send("ops@example.com").await.unwrap(), InvokeOutcome::NoOp { .. }), "a repeat is a no-op");
     let conflict = send("other@example.com").await.expect_err("another recipient under one request");
     assert_eq!(conflict.status, Status::Conflict);
@@ -299,4 +308,56 @@ async fn the_outbox_maps_a_row_and_drops_the_total_when_narrowed() {
     assert_eq!(whole.selected, "attention", "no state selects the first tab");
     let counts: Vec<u64> = whole.states.iter().map(|s| s.count).collect();
     assert_eq!(whole.page.total, Some(counts[0]), "an unnarrowed page totals its tab");
+
+    let pending = queue(p.panel(query("outbox", Some("pending"), None)).await.unwrap());
+    assert_eq!(pending.selected, "pending");
+    assert!(pending.states[1].count >= 1, "this test's row is pending");
+    assert_eq!(pending.page.total, Some(pending.states[1].count), "the total is the SELECTED tab's count");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_template_filter_pages_past_a_full_page_by_cursor() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let svc = wired(&pool).await;
+    let p = admin(svc.clone());
+    // A kind no other row holds, so the filter alone selects exactly this test's rows.
+    let kind = unique_key(&pool, "page").await;
+    let mut keys = Vec::new();
+    for _ in 0..=PAGE_SIZE {
+        keys.push(unique_key(&pool, "admin-page").await);
+    }
+    let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+    let _cleanup = cleanup(&pool, &refs);
+    let mut ids = Vec::new();
+    for key in &keys {
+        enqueue(&svc, &pool, &NewMail { kind: &kind, ..mail_of(key, "hello") }).await;
+        ids.push(id_of(&pool, key).await);
+    }
+
+    let page = |cursor: Option<String>| {
+        let mut q = query("outbox", Some("pending"), None);
+        q.params.insert(FILTER_TEMPLATE.to_string(), kind.clone());
+        q.cursor = cursor;
+        let p = &p;
+        async move {
+            match p.panel(q).await.unwrap().primitive {
+                Primitive::WorkQueue(q) => q,
+                other => panic!("the outbox is a work queue, got {other:?}"),
+            }
+        }
+    };
+    let first = page(None).await;
+    assert_eq!(first.items.len(), PAGE_SIZE, "one row past the page is held back");
+    assert_eq!(first.page.total, None, "a template filter has no total");
+    assert!(first.items.iter().all(|i| i.cells[1].value == kind), "only the filtered template");
+    let cursor = first.page.next_cursor.clone().expect("a row past the page leaves a cursor");
+
+    let second = page(Some(cursor)).await;
+    let [last] = second.items.as_slice() else { panic!("the cursor resumes at the one row left") };
+    assert_eq!(second.page.next_cursor, None, "the last page has no cursor");
+    let mut seen: Vec<String> = first.items.iter().chain([last]).map(|i| i.id.clone()).collect();
+    seen.sort();
+    ids.sort();
+    assert_eq!(seen, ids, "the two pages cover every row once");
 }
