@@ -479,4 +479,18 @@
     focusModal();
     countAttention();
   });
+
+  // An HX-Redirect keeps htmx's indicators for the navigation, so its hx-disabled-elt
+  // elements stay disabled, and a page restored from the back/forward cache keeps them
+  // disabled until reload. htmx's per-element request count is cleared too: left at 1, the
+  // next request would decrement it to 1, not 0, and leave the element disabled.
+  window.addEventListener("pageshow", function (ev) {
+    if (!ev.persisted) return;
+    document.querySelectorAll("[data-disabled-by-htmx]").forEach(function (el) {
+      el.removeAttribute("disabled");
+      el.removeAttribute("data-disabled-by-htmx");
+      var data = el["htmx-internal-data"];
+      if (data) data.requestCount = 0;
+    });
+  });
 })();
