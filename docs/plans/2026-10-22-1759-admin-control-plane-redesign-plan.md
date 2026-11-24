@@ -1,6 +1,6 @@
 # Admin control plane — the admin portal moves into core (plan)
 
-Status: waiting for approval
+Status: done
 
 Revision 2 (2026-11-10). Revision 1 (bb8c721f) kept the portal as the `modules/admin`
 fortress and moved only the contract into core. The owner corrected that on 2026-11-10:
@@ -3306,7 +3306,8 @@ duplicates one.
     lists of Steps 9a, 9b and 10a (prepare, `range`, KPI tile stale/error, `when_empty`,
     `writes: false`, `ServiceStatus`, `Delta.tone`).
   - **25e2:** the auth suite's role (`core/admin/src/tests.rs`, so after 25d4);
-    `tools/adminctl`; `weles/master/src/fleet_toml_tests.rs`.
+    `tools/adminctl`; `weles/master/src/fleet_toml_tests.rs`. Dropped by the owner
+    (2026-11-24): not run in this plan.
 - **25f — mail and accounts provider tests.** `[opus]` core-implementer. These ports landed
   before the revision; every later port writes its own in part `a`. 25f1 and 25f2 are
   file-disjoint.
@@ -3595,6 +3596,9 @@ purge-race-locks plan.
 
 
 ### Step 27 — Verification and live render comparison
+
+Dropped by the owner (2026-11-24): neither the `verifyctl` run nor the browser check runs
+in this plan; admindiff was already out of the plan.
 
 (a) No files. (b) Terminal gate.
 
