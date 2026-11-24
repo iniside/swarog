@@ -6,8 +6,9 @@ use std::collections::BTreeMap;
 use controlplane::{FieldKind, InvokeCall, InvokeOutcome, PrepareCall, Then};
 use crate::admin::{
     InventoryAdmin, FIELD_CHARACTER, FIELD_ITEM, FIELD_QUANTITY, HOLDING_KIND, HOLDING_REVOKE, ITEM_GRANT,
-    ITEM_GRANT_TOOL,
+    ITEM_GRANT_TOOL, MAX_REQUEST_ID_BYTES,
 };
+use crate::store::player_lock_key;
 
 const DEAD_DSN: &str = "postgres://gamebackend:gamebackend@127.0.0.1:1/gamebackend?sslmode=disable";
 
@@ -225,6 +226,18 @@ async fn admin_grant_checks_its_input_before_the_store() {
             "no request id",
         );
     }
+    let at_cap = "a".repeat(MAX_REQUEST_ID_BYTES);
+    assert_status(
+        admin.invoke(grant_call(player, ch, "coin", "1", &at_cap)).await,
+        Status::Internal,
+        "a request id at the cap reaches the store",
+    );
+    let over_cap = "a".repeat(MAX_REQUEST_ID_BYTES + 1);
+    assert_status(
+        admin.invoke(grant_call(player, ch, "coin", "1", &over_cap)).await,
+        Status::Invalid,
+        "a request id over the cap",
+    );
     assert_status(admin.invoke(grant_call("nope", ch, "coin", "1", "r")).await, Status::Invalid, "malformed player");
     assert_status(
         admin.invoke(call(ITEM_GRANT, None, input.clone(), Some("r"))).await,
@@ -262,6 +275,84 @@ async fn admin_grant_to_a_deleted_player_is_a_conflict() {
         "a deleted player",
     );
     assert_eq!(character_qty(&pool, &ch, "coin").await, None);
+    cleanup_purge_row(&pool, &player).await;
+    assert_ok(
+        admin.invoke(grant_call(&player, &ch, "coin", "1", &rid)).await,
+        "the Conflict gave its request id back",
+    );
+    assert_eq!(character_qty(&pool, &ch, "coin").await, Some(1));
+
+    cleanup_owner(&pool, &ch).await;
+    forget_requests(&pool, &[&rid]).await;
+}
+
+/// A grant that would push the character's stack past the holdings CHECK is a Conflict and
+/// gives its request id back, so the same form instance applies once the stack has room.
+#[tokio::test]
+async fn admin_grant_over_the_stack_cap_is_a_conflict_and_gives_back_its_request_id() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let admin = admin_over(pool.clone());
+    let player = unique_uuid(&pool).await;
+    let ch = unique_uuid(&pool).await;
+    let rid = unique_uuid(&pool).await;
+    own(&pool, &ch, &player).await;
+    sqlx::query(
+        "INSERT INTO inventory.holdings (owner_type, owner_id, item_id, quantity) \
+         VALUES ('character', $1::uuid, 'coin', 2000000)",
+    )
+    .bind(&ch)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    assert_status(
+        admin.invoke(grant_call(&player, &ch, "coin", "1", &rid)).await,
+        Status::Conflict,
+        "a stack at its cap",
+    );
+    assert_eq!(character_qty(&pool, &ch, "coin").await, Some(2_000_000), "a refused grant adds nothing");
+    cleanup_owner(&pool, &ch).await;
+    own(&pool, &ch, &player).await;
+    assert_ok(
+        admin.invoke(grant_call(&player, &ch, "coin", "1", &rid)).await,
+        "the Conflict gave its request id back",
+    );
+    assert_eq!(character_qty(&pool, &ch, "coin").await, Some(1));
+
+    cleanup_owner(&pool, &ch).await;
+    forget_requests(&pool, &[&rid]).await;
+}
+
+/// The grant reads the tombstone under the player lock, the one the purge sweep holds while
+/// it clears the player, so a grant racing a transaction that holds that lock and plants the
+/// tombstone parks, then sees the tombstone and adds nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn admin_grant_parks_behind_an_open_player_deletion_then_conflicts() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    ensure_schema(&pool).await;
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+    let player = unique_uuid(&pool).await;
+    let ch = unique_uuid(&pool).await;
+    let rid = unique_uuid(&pool).await;
+    own(&pool, &ch, &player).await;
+    let grant_app = racer_app(&pool, "grant-purge").await;
+
+    let mut deletion = pool.begin().await.unwrap();
+    inner.store.lock_player_tx(&mut deletion, &player).await.unwrap();
+    let racer = admin_over(racer_pool(&grant_app));
+    let grant_call = grant_call(&player, &ch, "coin", "1", &rid);
+    let grant = tokio::spawn(async move { racer.invoke(grant_call).await });
+    let parked = wait_advisory_parked(&pool, &grant_app, player_lock_key(&player), &grant).await;
+    inner.plant_purged_player(&mut deletion, &player, "Gone#0001").await.unwrap();
+    deletion.commit().await.unwrap();
+    stamp_purge_swept(&pool, &player).await;
+    let outcome = finish("admin grant", grant).await;
+
+    assert!(parked, "the grant must park on the player lock the open deletion holds");
+    assert_status(outcome, Status::Conflict, "a grant that waited out the deletion");
+    assert_eq!(character_qty(&pool, &ch, "coin").await, None, "the deleted player's character must gain nothing");
 
     cleanup_owner(&pool, &ch).await;
     cleanup_purge_row(&pool, &player).await;

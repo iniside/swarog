@@ -53,6 +53,9 @@ pub(crate) const FIELD_CHARACTER: &str = "character";
 pub(crate) const FIELD_ITEM: &str = "item";
 pub(crate) const FIELD_QUANTITY: &str = "quantity";
 const FIELD_REQUEST_ID: &str = "request_id";
+/// The longest request id a grant accepts. The id is the `inventory.operator_grants` primary
+/// key, so it is bounded before any statement: an unbounded one fails the btree insert.
+pub(crate) const MAX_REQUEST_ID_BYTES: usize = 128;
 
 /// The length of the canonical uuid spelling, hyphens included.
 pub(crate) const UUID_BYTES: usize = 36;
@@ -126,6 +129,11 @@ impl InventoryAdmin {
             .as_deref()
             .filter(|r| !r.is_empty())
             .ok_or_else(|| Error::invalid(format!("{MODULE}: a grant needs a request id")))?;
+        if request_id.len() > MAX_REQUEST_ID_BYTES {
+            return Err(Error::invalid(format!(
+                "{MODULE}: a request id is longer than {MAX_REQUEST_ID_BYTES} bytes"
+            )));
+        }
         let fields = match grant_fields(&req.input) {
             Ok(fields) => fields,
             Err(errors) => return Ok(InvokeOutcome::FieldErrors(errors)),

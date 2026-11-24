@@ -75,7 +75,7 @@ const CONTROL_PLANE_INVOKE_ITEM_RATIONALE: &str =
     concat!(control_plane_invoke_rationale!(), control_plane_item_bound!());
 const CONTROL_PLANE_INVOKE_REQUEST_ID_RATIONALE: &str = concat!(
     control_plane_invoke_rationale!(),
-    "; mail persists it as the suffix of a test-send idempotency key, which service::is_test_key bounds at the key column's cap before any statement (the \"mail admin send-test key\" CapCase); wallet persists it as the suffix of its admin:<request id> ledger key, which validate_movement bounds at walletapi::MAX_IDEMPOTENCY_KEY_BYTES before any statement (the \"wallet admin grant key\" CapCase)"
+    "; mail persists it as the suffix of a test-send idempotency key, which service::is_test_key bounds at the key column's cap before any statement (the \"mail admin send-test key\" CapCase); wallet persists it as the suffix of its admin:<request id> ledger key, which validate_movement bounds at walletapi::MAX_IDEMPOTENCY_KEY_BYTES before any statement (the \"wallet admin grant key\" CapCase); inventory persists it as the inventory.operator_grants primary key, which the grant bounds at inventory::conformance::GRANT_REQUEST_ID_BYTES before any statement (the \"inventory admin grant key\" CapCase)"
 );
 const CONTROL_PLANE_READ_RATIONALE: &str = control_plane_read_rationale!();
 const CONTROL_PLANE_PANEL_REFS_RATIONALE: &str = concat!(
@@ -853,12 +853,20 @@ fn inventory() -> Entry {
             ),
             (
                 Convention::InputByteCaps,
-                Stance::Applies(Fixture::InputByteCaps(vec![CapCase {
-                    name: "cp.invoke inventory input value",
-                    cap: inventory::conformance::CP_INVOKE_INPUT_VALUE_BYTES,
-                    exact: false,
-                    probe: Arc::new(inventory::conformance::conformance_cp_invoke_input_rejected),
-                }])),
+                Stance::Applies(Fixture::InputByteCaps(vec![
+                    CapCase {
+                        name: "cp.invoke inventory input value",
+                        cap: inventory::conformance::CP_INVOKE_INPUT_VALUE_BYTES,
+                        exact: false,
+                        probe: Arc::new(inventory::conformance::conformance_cp_invoke_input_rejected),
+                    },
+                    CapCase {
+                        name: "inventory admin grant key",
+                        cap: inventory::conformance::GRANT_REQUEST_ID_BYTES,
+                        exact: false,
+                        probe: Arc::new(inventory::conformance::conformance_grant_request_id_rejected),
+                    },
+                ])),
             ),
             (Convention::InfraOutage503, na("inventory has no bespoke credential verifier")),
             (

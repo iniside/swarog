@@ -148,6 +148,8 @@ modules/audit/src/admin.rs, as committed in admin-control-plane-redesign step 24
   with a label only, and inventory draws a character owner as a label. The player page no
   longer links to them (admin-second-pass steps 8a and 6). Owner 2026-11-24: port these pages
   after the admin-second-pass leftovers are fixed.
+  The mockup character page's Items tab carries the inventory grant and revoke
+  (`pages-core.js:313`, admin-second-pass step 14), so the port brings them too.
 
 ### Guard gaps
 

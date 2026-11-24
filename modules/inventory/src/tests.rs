@@ -1423,7 +1423,11 @@ fn racer_pool(app: &str) -> PgPool {
 }
 
 async fn racer_app(pool: &PgPool, what: &str) -> String {
-    format!("inventory-{what}-{}", unique_uuid(pool).await)
+    let app = format!("inventory-{what}-{}", unique_uuid(pool).await);
+    // Postgres truncates application_name to 63 bytes, so a longer one never matches the
+    // pg_stat_activity filter wait_advisory_parked runs.
+    assert!(app.len() <= 63, "racer app name {app} is longer than Postgres keeps");
+    app
 }
 
 async fn finish<T>(what: &str, handle: tokio::task::JoinHandle<T>) -> T {

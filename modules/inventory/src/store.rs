@@ -10,7 +10,7 @@ use crate::Owner;
 /// from list views. Acceptable because the item catalogue is small; revisit if item variety grows.
 pub(crate) const HOLDINGS_HARD_LIMIT: i64 = 1000;
 
-fn player_lock_key(player_id: &str) -> i64 {
+pub(crate) fn player_lock_key(player_id: &str) -> i64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     let hex: Vec<u8> = player_id

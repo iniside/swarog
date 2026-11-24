@@ -38,7 +38,7 @@ window.PAGES = window.PAGES || {};
   P.grantItem = (h = P.currentUser?.handle) => {
     const u = D.byHandle[h];
     const chars = D.characters.filter(c => c.player_id === u.id).map(c => c.id);
-    UI.modal(`${frag({ module: "inventory", point: "entity.user.header_action", prim: "Form" }, `<div class="modal-head"><div class="modal-icon ok">${icon("gift")}</div><div><h2>Grant item — ${esc(h)}</h2><div class="muted" style="font-size:12px">Adds to a character's stack; the grant is recorded under the request id.</div></div></div><div class="modal-body">${UI.form({ actions: false, fields: [
+    UI.modal(`${frag({ module: "inventory", point: "entity.user.header_action", prim: "Form" }, `<div class="modal-head"><div class="modal-icon ok">${icon("gift")}</div><div><h2>Grant item</h2></div></div><div class="modal-body">${UI.form({ actions: false, fields: [
       { label: "Character", type: "select", typeName: "ref Character", options: chars, value: chars[0] },
       { label: "Item", type: "select", typeName: "ref Item", options: D.items.map(it => it.id), value: D.items[0].id },
       { label: "Quantity", required: true, value: "1", help: "1 to 1000000, added to the character's stack" },
