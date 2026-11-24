@@ -1,6 +1,6 @@
 # Conformance
 
-Last updated: 2026-11-23
+Last updated: 2026-11-24
 
 ## In progress
 
@@ -17,6 +17,13 @@ _None._
   CONFORMANCE-02. The check compares `opaque.name == written` (tools/conformance/src/input_inventory.rs:354-356),
   so a foreign type imported under the bare name `Identity` bypasses the inventory.
   Source: docs/plans/2026-09-10-1917-account-deletion-purge-plan.md:635 (2026-09-10).
+
+### Known limits (admin-control-plane-redesign step 25)
+
+- [ ] **The writer check passes with zero writers**
+  The conformance check over admin writers (`tools/conformance/src/main.rs` ~296) is green
+  when it finds no writer at all; a floor that fails the phase on zero would catch a scan that
+  silently stopped matching (proof audit of 38a51fdf).
 
 ### Known limits (admin-control-plane-redesign step 20)
 

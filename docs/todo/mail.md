@@ -1,6 +1,6 @@
 # Mail
 
-Last updated: 2026-11-22
+Last updated: 2026-11-24
 
 ## In progress
 
@@ -28,3 +28,13 @@ _None._
   MAIL-03. Only mail consumes `SEND_REQUESTED` (Grep of modules/, lower bound). The
   intended producer is accounts. Source: docs/roadmap/feature-tracker.md:246 @ fd797b3a
   (2026-09-05).
+
+### Known limits (admin-control-plane-redesign step 25)
+
+- [ ] **The mail nav counter, tile and attention panel are untested**
+  `nav_counter` (`modules/mail/src/admin.rs:349`), the dashboard tile and `attention`
+  (`:388`) build their output inline from `OutboxStats`; testing them needs pure functions
+  over `OutboxStats` split out of `admin.rs` (review of b4eee17e).
+- [ ] **The selected-tab total assertion is weak**
+  The Step 25f1 test of the selected outbox tab's total cannot tell the pending count from the
+  attention count when the fixture makes them equal (review of b4eee17e).

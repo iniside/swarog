@@ -34,6 +34,10 @@ _None._
   `inbox_form`); 25h4 FR8, GR5, the config CAS edit and one real invoke per writing provider.
   Scope and per-group notes: the Step 25 **Splitproof** list in
   `docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md`.
+- [ ] **Splitproof comments name the retired admin faces**
+  `tools/splitproof/src/main.rs` (1470, 1486, 2083, 2198, 2525, 5035, 5195, 5417, 5758, 5800)
+  still describes hops as `admin.adminData`/`admin.adminSubmit`; the portal now goes through
+  the `cp.*` face.
 
 ### Known limits (admin-control-plane-redesign step 20)
 

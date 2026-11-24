@@ -24,6 +24,37 @@ _None._
   (`primitives.html.tmpl:416`, `hx-swap-oob`), so the first-render colour can differ from the
   swapped one, and a mixed-case id gives another colour (review of 2fdcfd93).
 
+### Known limits (admin-control-plane-redesign step 25)
+
+- [ ] **Panel cache serves only on a failed provider call**
+  `panels::resolve` (`core/admin/src/engine/panels.rs:290-323`) always calls the provider and
+  reads the cached copy only when the call fails; the Step 25d4 plan text implies a fresh cached
+  copy is served without a call. Decide which is intended: fix the plan text, or make a fresh
+  hit skip the provider call.
+- [ ] **An undecodable form spec answers 503 until FORM_TTL**
+  Since c2383d34 a claimed form row whose spec no longer decodes releases its claim, but every
+  submit of it answers 503 until the row expires (`core/admin/src/engine/forms.rs`); a 400
+  telling the operator to reopen the form would end it at once.
+- [ ] **The back/forward restore depends on htmx internals**
+  `core/admin/src/admin.js:498-499` resets `el["htmx-internal-data"].requestCount`, a private
+  htmx 2.0.4 field; an htmx upgrade can silently break the re-enable on a bfcache restore.
+- [ ] **The flash check misses a repeated answer that saves another flash**
+  The Step 25d2 claim-window tests check that a repeated (htmx) answer saves no flash, but not
+  that it saves no other flash than the expected one (review of 7bbcda4f).
+- [ ] **panels_tests copies the scripted provider from tests.rs**
+  `core/admin/src/engine/panels_tests.rs` defines its own scripted provider instead of sharing
+  the one in `core/admin/src/tests.rs` (review of 55a81cb2).
+- [ ] **admincheck findings are untyped strings**
+  `tools/admincheck` reports findings as plain `String`s, so nothing forces a new finding kind
+  to get a fixture. Fix: a typed `Finding` enum and a test table that is exhaustive over it
+  (proof audit of 13a3201a/295a41dd).
+
+### Known limits (admin-control-plane-redesign step 26)
+
+- [ ] **Dead step prose in topiccheck and cmd/*-svc**
+  `tools/topiccheck/src/main.rs:96` still describes the old admin wiring in prose, and
+  `cmd/*-svc` headers keep "Step N" changelog prose; rewrite them as invariants.
+
 ### Known limits (admin-control-plane-redesign step 24)
 
 - [ ] **admincheck passes a self-dial**
