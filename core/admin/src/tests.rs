@@ -3247,13 +3247,16 @@ async fn only_an_entity_tabs_declared_params_reach_its_panel_query() {
 // No test races a real clock: a window is crossed by setting `claimed_at` or `consumed_at`
 // in the row, and an overlap is held open by a provider waiting on a `Notify`.
 
-/// A provider whose invokes all answer `outcome`, recorded in order. Setting `hold` holds
+/// A provider whose invokes all answer `outcome`, recorded in order; a set `failure` is the
+/// answer of the next invoke only, and a set `form` answers every panel. Setting `hold` holds
 /// the next invoke only: it signals `entered` and waits on `release`, so competing requests
 /// overlap structurally, while any later invoke answers at once and fails its assertion
 /// instead of hanging.
 struct Held {
     manifest: Manifest,
     outcome: Mutex<InvokeOutcome>,
+    failure: Mutex<Option<opsapi::Error>>,
+    form: Mutex<Option<Primitive>>,
     hold: std::sync::atomic::AtomicBool,
     entered: tokio::sync::Notify,
     release: tokio::sync::Notify,
@@ -3266,6 +3269,8 @@ impl Held {
         Arc::new(Held {
             manifest,
             outcome: Mutex::new(done(mark)),
+            failure: Mutex::new(None),
+            form: Mutex::new(None),
             hold: std::sync::atomic::AtomicBool::new(false),
             entered: tokio::sync::Notify::new(),
             release: tokio::sync::Notify::new(),
@@ -3302,7 +3307,10 @@ impl controlplane::Provider for Held {
     }
 
     async fn panel(&self, req: PanelQuery) -> Result<PanelBody, opsapi::Error> {
-        Err(opsapi::Error::internal(format!("no panel {}", req.contribution)))
+        match self.form.lock().unwrap().clone() {
+            Some(form) => Ok(PanelBody::new(form)),
+            None => Err(opsapi::Error::internal(format!("no panel {}", req.contribution))),
+        }
     }
 
     async fn search(&self, _req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error> {
@@ -3314,6 +3322,9 @@ impl controlplane::Provider for Held {
         if self.hold.swap(false, Ordering::SeqCst) {
             self.entered.notify_one();
             self.release.notified().await;
+        }
+        if let Some(error) = self.failure.lock().unwrap().take() {
+            return Err(error);
         }
         Ok(self.outcome.lock().unwrap().clone())
     }
@@ -3591,22 +3602,24 @@ async fn stall_claims(pool: &PgPool, name: &str, id: &str, counter: &str) -> Sta
          EXECUTE FUNCTION admin.\"{name}\"('{counter}')"
     );
     sqlx::query(&function).execute(pool).await.unwrap();
-    let stall = Stall { pool: pool.clone(), name: name.to_string() };
+    let stall = Stall { pool: pool.clone(), name: name.to_string(), table: "admin.forms" };
     sqlx::query(&trigger).execute(pool).await.unwrap();
     stall
 }
 
-/// A trigger and function installed by [`stall_claims`], dropped with the guard. The drop
-/// blocks in place, so it needs the multi-thread runtime every claim test runs on.
+/// A trigger on `table` and its function `admin."<name>"`, installed by [`stall_claims`] or
+/// [`refuse_audit`], dropped with the guard. The drop blocks in place, so it needs the
+/// multi-thread runtime every claim test runs on.
 struct Stall {
     pool: PgPool,
     name: String,
+    table: &'static str,
 }
 
 impl Drop for Stall {
     fn drop(&mut self) {
-        let name = &self.name;
-        let trigger = format!("DROP TRIGGER IF EXISTS \"{name}\" ON admin.forms");
+        let (name, table) = (&self.name, self.table);
+        let trigger = format!("DROP TRIGGER IF EXISTS \"{name}\" ON {table}");
         let function = format!("DROP FUNCTION IF EXISTS admin.\"{name}\"()");
         let pool = self.pool.clone();
         let dropped = tokio::task::block_in_place(|| {
@@ -3772,6 +3785,454 @@ async fn a_form_s_invoke_call_is_built_from_its_row() {
     assert_eq!(calls[0].entity, Some(player_ref("p-1")), "the entity is the row's");
     let want = BTreeMap::from([("note".to_string(), "hi".to_string()), ("lock".to_string(), "kept".to_string())]);
     assert_eq!(calls[0].input, want, "a readonly field takes its stored default");
+
+    cleanup_user(&pool, &user).await;
+}
+
+// ---- settle, re-renders, toasts and pre-invoke releases -------------------------------
+
+/// Whether form row `id` is claimed and whether it is consumed.
+async fn claim_state(pool: &PgPool, id: &str) -> (bool, bool) {
+    sqlx::query_as("SELECT claimed_at IS NOT NULL, consumed_at IS NOT NULL FROM admin.forms WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Makes every `admin.action` append naming `actor` fail until the returned guard drops: the
+/// trigger `name` on `asyncevents.events` raises for a payload naming `actor` and only then.
+async fn refuse_audit(pool: &PgPool, name: &str, actor: &str) -> Stall {
+    assert!(!actor.contains('\'') && !actor.contains('%'), "the actor is quoted into the trigger");
+    let function = format!(
+        "CREATE FUNCTION admin.\"{name}\"() RETURNS trigger LANGUAGE plpgsql AS $f$ \
+         BEGIN RAISE EXCEPTION 'audit refused'; END $f$"
+    );
+    let trigger = format!(
+        "CREATE TRIGGER \"{name}\" BEFORE INSERT ON asyncevents.events FOR EACH ROW \
+         WHEN (NEW.payload::text LIKE '%{actor}%') EXECUTE FUNCTION admin.\"{name}\"()"
+    );
+    sqlx::query(&function).execute(pool).await.unwrap();
+    let refusal = Stall { pool: pool.clone(), name: name.to_string(), table: "asyncevents.events" };
+    sqlx::query(&trigger).execute(pool).await.unwrap();
+    refusal
+}
+
+/// `raw` with the HTML escapes the portal's templates write undone.
+fn unescape(raw: &str) -> String {
+    raw.replace("&quot;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&#39;", "'")
+        .replace("&#x2f;", "/")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+/// The value of attribute `name` in the attribute text `attrs` of one tag.
+fn attr(attrs: &str, name: &str) -> Option<String> {
+    let marker = format!(" {name}=\"");
+    let at = attrs.find(&marker)? + marker.len();
+    Some(unescape(attrs[at..].split('"').next().unwrap_or_default()))
+}
+
+/// Whether the attribute text `attrs` of one tag carries the bare attribute `name`; quoted
+/// values are not read, so a class word is never taken for one.
+fn flag(attrs: &str, name: &str) -> bool {
+    let mut quoted = false;
+    let bare: String = attrs
+        .chars()
+        .map(|c| {
+            if c == '"' {
+                quoted = !quoted;
+            }
+            if quoted || c == '"' { ' ' } else { c }
+        })
+        .collect();
+    bare.split_whitespace().any(|w| w == name)
+}
+
+/// What a browser posts for the first form in `raw` drawing a `_form`: every named, enabled
+/// `input` (a checkbox only when ticked) and `textarea`, in document order.
+fn own_inputs(raw: &str) -> Vec<(String, String)> {
+    let at = raw.find(r#"name="_form""#).unwrap_or_else(|| panic!("no form instance: {raw}"));
+    let start = raw[..at].rfind("<form").expect("the form tag");
+    let end = at + raw[at..].find("</form>").expect("the form's end");
+    let mut pairs = Vec::new();
+    let mut rest = &raw[start..end];
+    while let Some(open) = rest.find('<') {
+        rest = &rest[open + 1..];
+        let close = rest.find('>').expect("a closed tag");
+        let (kind, attrs) = rest[..close].split_once(' ').unwrap_or((&rest[..close], ""));
+        let attrs = format!(" {attrs}");
+        let Some(name) = attr(&attrs, "name") else { continue };
+        if flag(&attrs, "disabled") {
+            continue;
+        }
+        match kind {
+            "input" if attr(&attrs, "type").as_deref() == Some("checkbox") && !flag(&attrs, "checked") => {}
+            "input" => pairs.push((name, attr(&attrs, "value").unwrap_or_default())),
+            "textarea" => {
+                let text = &rest[close + 1..];
+                pairs.push((name, unescape(&text[..text.find("</textarea>").expect("a closed textarea")])));
+            }
+            "select" => panic!("own_inputs reads no select: {raw}"),
+            _ => {}
+        }
+    }
+    pairs
+}
+
+/// The posted values of `key` among `pairs`.
+fn values_of(pairs: &[(String, String)], key: &str) -> Vec<String> {
+    pairs.iter().filter(|(k, _)| k == key).map(|(_, v)| v.clone()).collect()
+}
+
+/// `pairs` as an `application/x-www-form-urlencoded` body.
+fn urlencode(pairs: &[(String, String)]) -> String {
+    let enc = |s: &str| -> String {
+        s.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'*' => (b as char).to_string(),
+                b' ' => "+".to_string(),
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
+    };
+    pairs.iter().map(|(k, v)| format!("{}={}", enc(k), enc(v))).collect::<Vec<_>>().join("&")
+}
+
+/// An answer's status, its `HX-Retarget` and its body.
+async fn answered(resp: Response) -> (StatusCode, Option<String>, String) {
+    let status = resp.status();
+    let retarget = resp.headers().get("hx-retarget").map(|v| v.to_str().unwrap().to_string());
+    (status, retarget, body_string(resp).await)
+}
+
+/// An optional field `key` of `kind` with `default`.
+fn plain_field(key: &str, kind: controlplane::FieldKind, default: Option<&str>) -> controlplane::Field {
+    controlplane::Field {
+        key: key.to_string(),
+        label: key.to_string(),
+        kind,
+        required: false,
+        help: None,
+        default: default.map(str::to_string),
+        readonly: false,
+        mono: false,
+        placeholder: None,
+    }
+}
+
+/// A modal `Then::Form` row action of `fields`.
+fn modal_form_of(id: &str, fields: Vec<controlplane::Field>) -> ActionDecl {
+    let spec = controlplane::FormSpec { fields, ..moded_spec(Vec::new()) };
+    let point = ActionPoint::RowAction("player".to_string());
+    ActionDecl { then: Then::Form(spec), ..action_decl(id, point, true) }
+}
+
+/// Settle: an `Ok`, a `NoOp`, a `Conflict` and a conflict error consume the form instance,
+/// so its resubmit is a repeat that never invokes; `FieldErrors` and a failed invoke release
+/// it, so its resubmit invokes. A timed-out invoke releases too (the provider cannot time out
+/// without a real clock, so its row of `consumes` is read directly).
+#[tokio::test(flavor = "multi_thread")]
+async fn settle_consumes_applied_and_conflicting_invokes_and_releases_the_rest() {
+    use crate::engine::actions::{consumes, Invoked};
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-settle");
+    let cookie = operator_cookie(&pool, &user).await;
+    let ledger = Held::new(player_owner(module("ledger", Vec::new(), vec![modal_form("adjust")], true)), &user);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+    let (modal, post) = ("/admin/_action/ledger/adjust?entity=player:p-1", "/admin/_action/ledger/adjust");
+    let refused = BTreeMap::from([("why".to_string(), "refused".to_string())]);
+    let cases: Vec<(Result<InvokeOutcome, opsapi::Error>, bool, &str)> = vec![
+        (Ok(done(&user)), true, "Ok"),
+        (Ok(InvokeOutcome::NoOp { message: "unchanged".to_string() }), true, "NoOp"),
+        (Ok(InvokeOutcome::Conflict { current_revision: 4 }), true, "Conflict"),
+        (Err(opsapi::Error::conflict("stale")), true, "a conflict error"),
+        (Ok(InvokeOutcome::FieldErrors(refused)), false, "FieldErrors"),
+        (Err(opsapi::Error::internal("ledger down")), false, "a failed invoke"),
+    ];
+    for (outcome, consumed, why) in cases {
+        let (_, raw) = portal_get(&engine, &st, &cookie, modal).await;
+        let form_id = form_id_of(&raw);
+        match outcome {
+            Ok(outcome) => *ledger.outcome.lock().unwrap() = outcome,
+            Err(error) => *ledger.failure.lock().unwrap() = Some(error),
+        }
+        let body = format!("_csrf=csrf&_form={form_id}");
+        let before = ledger.calls().len();
+        let _ = portal_send(&engine, &st, &cookie, post, &body, false).await;
+        assert_eq!(ledger.calls().len(), before + 1, "{why}: invokes");
+        let want = if consumed { (true, true) } else { (false, false) };
+        assert_eq!(claim_state(&pool, &form_id).await, want, "{why}: (claimed, consumed)");
+
+        *ledger.outcome.lock().unwrap() = done(&user);
+        let resend = portal_send(&engine, &st, &cookie, post, &body, false);
+        if consumed {
+            assert_repeated(&pool, &user, resend, false, why).await;
+            assert_eq!(ledger.calls().len(), before + 1, "{why}: a consumed instance never invokes again");
+        } else {
+            assert_completed(&resend.await, why);
+            assert_eq!(ledger.calls().len(), before + 2, "{why}: a released instance invokes again");
+        }
+    }
+    assert!(!consumes(&Invoked::TimedOut), "a timed-out invoke releases its claim");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// An `Ok` whose `admin.action` append fails answers the 500 toast and is still consumed:
+/// the action applied, so a resubmit of the instance is a repeat and never invokes twice.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ok_whose_audit_append_fails_is_still_consumed() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-audit-fails");
+    let cookie = operator_cookie(&pool, &user).await;
+    let ledger = Held::new(player_owner(module("ledger", Vec::new(), vec![modal_form("adjust")], true)), &user);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+    let post = "/admin/_action/ledger/adjust";
+
+    let (_, raw) = portal_get(&engine, &st, &cookie, "/admin/_action/ledger/adjust?entity=player:p-1").await;
+    let form_id = form_id_of(&raw);
+    let body = format!("_csrf=csrf&_form={form_id}");
+    let refusal = refuse_audit(&pool, &uniq("t-refuse-audit"), &user).await;
+    let (status, retarget, raw) = answered(portal_send(&engine, &st, &cookie, post, &body, true).await).await;
+    drop(refusal);
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{raw}");
+    assert!(raw.contains("action applied but audit append failed"), "{raw}");
+    assert_eq!(retarget.as_deref(), Some("#modal-root"), "the toast lands in the modal root");
+    assert_eq!(claim_state(&pool, &form_id).await, (true, true), "the applied instance is consumed");
+    let resend = portal_send(&engine, &st, &cookie, post, &body, false);
+    assert_repeated(&pool, &user, resend, false, "a resubmit after the failed append").await;
+    assert_eq!(ledger.calls().len(), 1, "an applied instance invokes once");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A token-less click answered `FieldErrors` is a 422 toast and released, so the next click
+/// invokes; one answered `Conflict` is a 409 toast and consumed, so the next click within the
+/// repeat window is a repeat. Neither draws a modal, and both toasts land in `#modal-root`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_token_less_field_errors_or_conflict_is_a_toast_settled_by_the_table() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-click-toasts");
+    let cookie = operator_cookie(&pool, &user).await;
+    let kick = vec![action_decl("kick", ActionPoint::RowAction("player".to_string()), true)];
+    let ledger = Held::new(player_owner(module("ledger", Vec::new(), kick, true)), &user);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+    let (post, body) = ("/admin/_action/ledger/kick", "_csrf=csrf&_entity=player:p-1");
+    let who = crate::engine::actions::Claimant {
+        login: user.clone(),
+        module: "ledger".to_string(),
+        action: "kick".to_string(),
+    };
+    let id = crate::engine::actions::click_row_id(&who, Some(&player_ref("p-1")), None);
+
+    let refused = BTreeMap::from([("why".to_string(), "refused".to_string())]);
+    *ledger.outcome.lock().unwrap() = InvokeOutcome::FieldErrors(refused);
+    let (status, retarget, raw) = answered(portal_send(&engine, &st, &cookie, post, body, true).await).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{raw}");
+    assert!(raw.contains("why: refused"), "the field errors are the toast: {raw}");
+    assert!(!raw.contains(r#"class="modal""#), "a click's field errors draw no modal: {raw}");
+    assert_eq!(retarget.as_deref(), Some("#modal-root"));
+    assert_eq!(claim_state(&pool, &id).await, (false, false), "field errors release the click");
+
+    *ledger.outcome.lock().unwrap() = InvokeOutcome::Conflict { current_revision: 2 };
+    let (status, retarget, raw) = answered(portal_send(&engine, &st, &cookie, post, body, true).await).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{raw}");
+    assert!(raw.contains("This changed since you opened it"), "{raw}");
+    assert!(!raw.contains(r#"class="modal""#), "a click's conflict draws no modal: {raw}");
+    assert_eq!(retarget.as_deref(), Some("#modal-root"));
+    assert_eq!(ledger.calls().len(), 2, "the released click invoked again");
+    assert_eq!(claim_state(&pool, &id).await, (true, true), "a conflict consumes the click");
+    let resend = portal_send(&engine, &st, &cookie, post, body, true);
+    assert_repeated(&pool, &user, resend, true, "a click after the conflict").await;
+    assert_eq!(ledger.calls().len(), 2, "a consumed click within the window never invokes");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A panel form drawn by the portal carries `_csrf` and `_form`, and a Multi default
+/// `["a,b"]` ticks exactly one box. Posting back exactly what it draws takes the form path
+/// and invokes. A failed invoke is a toast retargeted to `#modal-root`; a 422 re-render
+/// replaces the panel with the same `_csrf` and `_form`, every ticked Multi box still
+/// ticked and Save enabled; posting that back answered `Conflict` is a 409 re-render with
+/// Save disabled, and the consumed instance's repeat is a retargeted toast.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_panel_form_posts_its_own_inputs_and_re_renders_its_422_and_409() {
+    use controlplane::FieldKind;
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-panel-rerender");
+    let cookie = operator_cookie(&pool, &user).await;
+    let save = vec![action_decl("save", ActionPoint::PanelForm("funds".to_string()), true)];
+    let ledger = Held::new(player_owner(module("ledger", vec![player_tab("funds", "funds")], save, true)), &user);
+    let options = |o: &[&str]| o.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let fields = vec![
+        plain_field("note", FieldKind::String, Some("hi")),
+        plain_field("regions", FieldKind::Multi(options(&["a", "b", "c"])), Some(r#"["a"]"#)),
+        plain_field("tags", FieldKind::Multi(options(&["a", "b", "a,b"])), Some(r#"["a,b"]"#)),
+    ];
+    let spec = controlplane::FormSpec { fields, ..moded_spec(Vec::new()) };
+    *ledger.form.lock().unwrap() = Some(Primitive::Form(spec));
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+    let post = "/admin/_action/ledger/save";
+    let save_enabled = r#"<button type="submit" class="btn primary">"#;
+    let save_disabled = r#"<button type="submit" class="btn primary" disabled>"#;
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/ledger/funds?entity=player:p-1").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let drawn = own_inputs(&raw);
+    let form_id = form_id_of(&raw);
+    assert_eq!(values_of(&drawn, "_csrf"), vec!["csrf".to_string()], "the form carries _csrf: {raw}");
+    assert_eq!(values_of(&drawn, "_form"), vec![form_id.clone()], "the form carries _form: {raw}");
+    assert_eq!(values_of(&drawn, "tags"), vec!["a,b".to_string()], "a default [\"a,b\"] ticks one box: {raw}");
+    let mut posted: Vec<(String, String)> = drawn.into_iter().filter(|(k, _)| k != "regions").collect();
+    posted.extend(["a", "c"].map(|v| ("regions".to_string(), v.to_string())));
+
+    *ledger.failure.lock().unwrap() = Some(opsapi::Error::internal("ledger down"));
+    let resp = portal_send(&engine, &st, &cookie, post, &urlencode(&posted), true).await;
+    let (status, retarget, raw) = answered(resp).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{raw}");
+    assert!(raw.contains("ledger down"), "{raw}");
+    assert_eq!(retarget.as_deref(), Some("#modal-root"), "a panel form's toast lands in the modal root");
+    let calls = ledger.calls();
+    assert_eq!(calls.len(), 1, "posting its own inputs back invokes");
+    assert_eq!(calls[0].request_id.as_deref(), Some(form_id.as_str()), "on the form path");
+    let want = BTreeMap::from([
+        ("note".to_string(), "hi".to_string()),
+        ("regions".to_string(), r#"["a","c"]"#.to_string()),
+        ("tags".to_string(), r#"["a,b"]"#.to_string()),
+    ]);
+    assert_eq!(calls[0].input, want, "the drawn inputs reach the module");
+
+    let errors = BTreeMap::from([("regions".to_string(), "pick fewer".to_string())]);
+    *ledger.outcome.lock().unwrap() = InvokeOutcome::FieldErrors(errors);
+    let resp = portal_send(&engine, &st, &cookie, post, &urlencode(&posted), true).await;
+    let (status, retarget, raw) = answered(resp).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{raw}");
+    assert_eq!(retarget, None, "a re-render replaces the panel");
+    assert!(raw.contains("pick fewer"), "{raw}");
+    let shown = own_inputs(&raw);
+    assert_eq!(values_of(&shown, "_csrf"), vec!["csrf".to_string()], "the 422 keeps _csrf: {raw}");
+    assert_eq!(values_of(&shown, "_form"), vec![form_id.clone()], "the 422 keeps _form: {raw}");
+    assert_eq!(values_of(&shown, "regions"), vec!["a".to_string(), "c".to_string()], "every ticked box: {raw}");
+    assert_eq!(values_of(&shown, "tags"), vec!["a,b".to_string()], "{raw}");
+    assert!(raw.contains(save_enabled), "a 422 leaves Save enabled: {raw}");
+
+    *ledger.outcome.lock().unwrap() = InvokeOutcome::Conflict { current_revision: 9 };
+    let resp = portal_send(&engine, &st, &cookie, post, &urlencode(&shown), true).await;
+    let (status, retarget, raw) = answered(resp).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{raw}");
+    assert_eq!(retarget, None, "a re-render replaces the panel");
+    assert_eq!(ledger.calls().len(), 3, "the re-rendered inputs posted back invoke");
+    assert!(raw.contains("now revision 9"), "the conflict banner: {raw}");
+    assert_eq!(form_id_of(&raw), form_id, "the 409 keeps _form");
+    assert!(raw.contains(save_disabled) && !raw.contains(save_enabled), "a 409 disables Save: {raw}");
+    assert_eq!(claim_state(&pool, &form_id).await, (true, true), "a conflict consumes the instance");
+
+    let resp = portal_send(&engine, &st, &cookie, post, &urlencode(&shown), true).await;
+    let (status, retarget, raw) = answered(resp).await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert!(raw.contains("Already submitted"), "{raw}");
+    assert_eq!(retarget.as_deref(), Some("#modal-root"), "the repeat toast lands in the modal root");
+    assert_eq!(ledger.calls().len(), 3, "a consumed instance never invokes again");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A modal drawn by the portal carries `_csrf` and `_form`; posting back exactly what it
+/// draws takes the form path and invokes with its fields' values.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_modal_form_posts_its_own_inputs_back_and_invokes() {
+    use controlplane::FieldKind;
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-modal-own");
+    let cookie = operator_cookie(&pool, &user).await;
+    let fields = vec![plain_field("note", FieldKind::String, Some("hi")), plain_field("qty", FieldKind::Int, Some("3"))];
+    let ledger = Held::new(player_owner(module("ledger", Vec::new(), vec![modal_form_of("adjust", fields)], true)), &user);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_action/ledger/adjust?entity=player:p-1").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let drawn = own_inputs(&raw);
+    let form_id = form_id_of(&raw);
+    assert_eq!(values_of(&drawn, "_csrf"), vec!["csrf".to_string()], "the modal carries _csrf: {raw}");
+    assert_eq!(values_of(&drawn, "_form"), vec![form_id.clone()], "the modal carries _form: {raw}");
+    let resp = portal_send(&engine, &st, &cookie, "/admin/_action/ledger/adjust", &urlencode(&drawn), false).await;
+    assert_completed(&resp, "the modal's own inputs");
+    let calls = ledger.calls();
+    assert_eq!(calls.len(), 1, "one invoke");
+    assert_eq!(calls[0].request_id.as_deref(), Some(form_id.as_str()), "on the form path");
+    let want = BTreeMap::from([("note".to_string(), "hi".to_string()), ("qty".to_string(), "3".to_string())]);
+    assert_eq!(calls[0].input, want, "the drawn inputs reach the module");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A pre-invoke refusal releases the claim, so the corrected resubmit of the same instance
+/// invokes: a field that does not decode (422), a wrong type-to-confirm (422) and an action
+/// `admit` refuses (403; the action's role raised between the GET and the POST).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pre_invoke_refusal_releases_and_the_corrected_resubmit_invokes() {
+    use controlplane::FieldKind;
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-pre-invoke");
+    let cookie = operator_cookie(&pool, &user).await;
+    let confirm = controlplane::ConfirmSpec {
+        title: "Wipe".to_string(),
+        body: "Wipe the player.".to_string(),
+        tone: controlplane::ConfirmTone::Danger,
+        impact: Vec::new(),
+        reason: controlplane::ReasonReq::None,
+        reason_hint: None,
+        type_to_confirm: Some("p-1".to_string()),
+        confirm_label: "Wipe".to_string(),
+    };
+    let row = ActionPoint::RowAction("player".to_string());
+    let wipe = ActionDecl { then: Then::Confirm(confirm), ..action_decl("wipe", row, true) };
+    let actions = |min_role: Role| {
+        let count = modal_form_of("count", vec![plain_field("qty", FieldKind::Int, None)]);
+        vec![count, wipe.clone(), ActionDecl { min_role, ..modal_form("adjust") }]
+    };
+    let ledger = Held::new(player_owner(module("ledger", Vec::new(), actions(Role::Viewer), true)), &user);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+    let raised = Held::new(player_owner(module("ledger", Vec::new(), actions(Role::Admin), true)), &user);
+    let raised_engine = Arc::new(sourced(vec![raised.clone() as Arc<dyn controlplane::Provider>]).await);
+
+    let cases = [
+        ("count", "&qty=x", "&qty=2", StatusCode::UNPROCESSABLE_ENTITY, "a field that does not decode"),
+        ("wipe", "&_confirm=p-2", "&_confirm=p-1", StatusCode::UNPROCESSABLE_ENTITY, "a wrong type-to-confirm"),
+    ];
+    for (action, wrong, right, refusal, why) in cases {
+        let (_, raw) = portal_get(&engine, &st, &cookie, &format!("/admin/_action/ledger/{action}?entity=player:p-1")).await;
+        let form_id = form_id_of(&raw);
+        let (post, before) = (format!("/admin/_action/ledger/{action}"), ledger.calls().len());
+        let (status, raw) = portal_post(&engine, &st, &cookie, &post, &format!("_csrf=csrf&_form={form_id}{wrong}")).await;
+        assert_eq!(status, refusal, "{why}: {raw}");
+        assert_eq!(ledger.calls().len(), before, "{why}: never invokes");
+        assert_eq!(claim_state(&pool, &form_id).await, (false, false), "{why}: releases the claim");
+        let resp = portal_send(&engine, &st, &cookie, &post, &format!("_csrf=csrf&_form={form_id}{right}"), false).await;
+        assert_completed(&resp, why);
+        assert_eq!(ledger.calls().len(), before + 1, "{why}: the corrected resubmit invokes");
+    }
+
+    let (_, raw) = portal_get(&engine, &st, &cookie, "/admin/_action/ledger/adjust?entity=player:p-1").await;
+    let form_id = form_id_of(&raw);
+    let body = format!("_csrf=csrf&_form={form_id}");
+    let (status, raw) = portal_post(&raised_engine, &st, &cookie, "/admin/_action/ledger/adjust", &body).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "an action admit refuses: {raw}");
+    assert!(raised.calls().is_empty(), "a refused admit never invokes");
+    assert_eq!(claim_state(&pool, &form_id).await, (false, false), "a refused admit releases the claim");
+    let resp = portal_send(&engine, &st, &cookie, "/admin/_action/ledger/adjust", &body, false).await;
+    assert_completed(&resp, "the resubmit once admitted");
+    assert_eq!(ledger.calls().len(), 3, "the admitted resubmit invokes");
 
     cleanup_user(&pool, &user).await;
 }
