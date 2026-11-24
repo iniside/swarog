@@ -8,7 +8,7 @@ use friendsapi::{
     Friend, FriendPage, Player, DEFAULT_PAGE_LIMIT, DIRECTION_INCOMING, DIRECTION_OUTGOING,
     MAX_CURSOR_BYTES, MAX_PAGE_LIMIT, MAX_PENDING_OUTSTANDING, STATE_ACCEPTED, STATE_PENDING,
 };
-use friendsevents::{REASON_DECLINED, REASON_UNFRIENDED, REASON_WITHDRAWN};
+use friendsevents::{REASON_DECLINED, REASON_OPERATOR_REMOVED, REASON_UNFRIENDED, REASON_WITHDRAWN};
 use opsapi::{Error, Identity};
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -172,9 +172,25 @@ fn summary_of<'a>(summaries: &'a [PlayerSummary], id: &str) -> Option<&'a Player
 
 /// One party of a relation as an event payload needs it: the id plus the handle SNAPSHOT
 /// taken at emit time. A player the directory does not return keeps an empty handle.
-struct Party {
-    id: String,
-    handle: String,
+pub(crate) struct Party {
+    pub(crate) id: String,
+    pub(crate) handle: String,
+}
+
+/// An edge as an operator sees it: its state and both parties, resolved before any
+/// transaction opens.
+pub(crate) struct OperatorEdge {
+    pub(crate) state: &'static str,
+    pub(crate) requester: Party,
+    pub(crate) addressee: Party,
+}
+
+/// What [`Service::operator_remove`] found in the row it deleted.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum OperatorRemoval {
+    Removed,
+    Gone,
+    Pending,
 }
 
 fn party(summaries: &[PlayerSummary], id: &str) -> Party {
@@ -255,6 +271,43 @@ impl Service {
             .await
             .map_err(directory_unavailable)?;
         Ok((party(&summaries, me), party(&summaries, other_id)))
+    }
+
+    /// `None` when the edge is gone.
+    pub(crate) async fn operator_view(&self, edge_id: &str) -> Result<Option<OperatorEdge>, Error> {
+        let Some(view) = self.store.view_edge(edge_id, None).await.map_err(internal)? else {
+            return Ok(None);
+        };
+        let (requester, addressee) = self.parties(&view.requester_id, &view.other_id).await?;
+        Ok(Some(OperatorEdge { state: wire_state(&view.state)?, requester, addressee }))
+    }
+
+    /// Deletes an accepted edge and emits `friend.removed` (`REASON_OPERATOR_REMOVED`) in one
+    /// transaction. The DELETED row's state decides: a pending row is put back by the rollback.
+    pub(crate) async fn operator_remove(&self, edge_id: &str, edge: &OperatorEdge) -> Result<OperatorRemoval, Error> {
+        let mut tx = self.store.pool.begin().await.map_err(internal)?;
+        let Some(row) = self.store.delete_tx(&mut tx, edge_id, None).await.map_err(internal)? else {
+            tx.rollback().await.map_err(internal)?;
+            return Ok(OperatorRemoval::Gone);
+        };
+        if wire_state(&row.state)? != STATE_ACCEPTED {
+            tx.rollback().await.map_err(internal)?;
+            return Ok(OperatorRemoval::Pending);
+        }
+        let evt = friendsevents::Removed {
+            edge_id: row.edge_id,
+            actor_id: row.requester_id,
+            actor_handle: edge.requester.handle.clone(),
+            other_id: row.other_id,
+            other_handle: edge.addressee.handle.clone(),
+            reason: REASON_OPERATOR_REMOVED.to_string(),
+        };
+        self.bus
+            .emit_tx(AnyTx::new(&mut *tx), &friendsevents::REMOVED, &evt)
+            .await
+            .map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(OperatorRemoval::Removed)
     }
 
     /// The cap is counted AFTER the insert, inside its transaction, so a caller already
@@ -512,7 +565,7 @@ impl Player for Service {
         let me = Service::caller(&identity)?;
         let view = self
             .store
-            .view_edge(&edge_id, &me)
+            .view_edge(&edge_id, Some(&me))
             .await
             .map_err(internal)?
             .ok_or_else(|| Error::not_found(NOT_FOUND))?;
@@ -552,7 +605,7 @@ impl Player for Service {
         let me = Service::caller(&identity)?;
         let view = self
             .store
-            .view_edge(&edge_id, &me)
+            .view_edge(&edge_id, Some(&me))
             .await
             .map_err(internal)?
             .ok_or_else(|| Error::not_found(NOT_FOUND))?;
@@ -591,7 +644,7 @@ impl Player for Service {
         let me = Service::caller(&identity)?;
         let view = self
             .store
-            .view_edge(&edge_id, &me)
+            .view_edge(&edge_id, Some(&me))
             .await
             .map_err(internal)?
             .ok_or_else(|| Error::not_found(NOT_FOUND))?;
@@ -600,10 +653,10 @@ impl Player for Service {
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
         let removed = self
             .store
-            .delete_tx(&mut tx, &edge_id, &me)
+            .delete_tx(&mut tx, &edge_id, Some(&me))
             .await
             .map_err(internal)?;
-        let (edge_id, other_id, state, requester_is_caller) = match removed {
+        let EdgeRow { edge_id, other_id, state, requester_is_caller, .. } = match removed {
             Some(row) => row,
             None => {
                 tx.rollback().await.map_err(internal)?;

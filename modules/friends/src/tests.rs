@@ -704,8 +704,8 @@ async fn remove_by_third_party_is_not_found() {
         // Same double-defence pin as accept/decline: delete_tx's OWN party clause,
         // independent of view_edge's pre-read.
         let mut probe = p.begin().await.unwrap();
-        let direct = svc.store.delete_tx(&mut probe, &f.edge_id, &tp).await.unwrap();
-        assert_eq!(direct, None, "delete_tx's own party clause must independently refuse a third party");
+        let direct = svc.store.delete_tx(&mut probe, &f.edge_id, Some(&tp)).await.unwrap();
+        assert!(direct.is_none(), "delete_tx's own party clause must independently refuse a third party");
         probe.rollback().await.unwrap();
     })
     .await;
@@ -2094,7 +2094,10 @@ async fn unstamped_tombstones(pool: &PgPool, ids: &[String]) -> Vec<String> {
 
 // ---- Admin: the player's Friends tab ------------------------------------
 
-use controlplane::{ActionPoint, DataTable, EntityRef, Link, PanelBody, PanelQuery, Point, Primitive, Provider, Tone};
+use controlplane::{
+    ActionPoint, ConfirmTone, DataTable, EntityRef, InvokeCall, InvokeOutcome, Link, PanelBody, PanelQuery, Point,
+    PrepareCall, Primitive, Provider, Then, Tone,
+};
 
 fn admin_query(contribution: &str, pid: &str, cursor: Option<&str>) -> PanelQuery {
     PanelQuery {
@@ -2118,8 +2121,9 @@ fn admin_table(body: &PanelBody) -> &DataTable {
     }
 }
 
-fn admin_row_ids(t: &DataTable) -> Vec<String> {
-    t.rows.iter().map(|r| r.entity.as_ref().expect("a friendship row").id.clone()).collect()
+/// The rows' other players, in drawn order; a pending row carries no friendship entity.
+fn admin_row_users(t: &DataTable) -> Vec<String> {
+    t.rows.iter().map(|r| r.cells[0].value.clone()).collect()
 }
 
 /// Pins an edge's `created_at` (and `accepted_at`) to exact instants.
@@ -2137,11 +2141,11 @@ async fn set_edge_times(pool: &PgPool, edge_id: &str, created: &str, accepted: O
 }
 
 /// The manifest: the tab at 50 with no params, its count, Purges pending at 64, the
-/// `friendship` row kind and its one disabled, danger "Remove friend…".
+/// `friendship` row kind and its one write, a prepared danger Confirm "Remove friend…".
 #[test]
-fn admin_manifest_declares_the_tab_count_purges_and_a_disabled_remove() {
+fn admin_manifest_declares_the_tab_count_purges_and_the_remove() {
     let m = admin::manifest();
-    assert!(!m.writes);
+    assert!(m.writes);
     let tab = m.contributions.iter().find(|c| c.id == admin::FRIENDS).expect("the tab");
     assert_eq!(tab.order, 50);
     match &tab.point {
@@ -2160,7 +2164,15 @@ fn admin_manifest_declares_the_tab_count_purges_and_a_disabled_remove() {
     let remove = &m.actions[0];
     assert_eq!(remove.point, ActionPoint::RowAction(admin::FRIENDSHIP_KIND.into()));
     assert_eq!((remove.label.as_str(), remove.icon.as_str()), ("Remove friend…", "trash"));
-    assert!(remove.danger && !remove.implemented);
+    assert!(remove.danger && remove.implemented && remove.prepare);
+    assert_eq!(remove.min_role, controlplane::Role::Operator);
+    match &remove.then {
+        Then::Confirm(spec) => {
+            assert_eq!(spec.tone, ConfirmTone::Danger);
+            assert_eq!(spec.confirm_label, "Remove");
+        }
+        other => panic!("the remove is a Confirm, got {other:?}"),
+    }
 }
 
 /// No toolbar: no filters and no search.
@@ -2248,7 +2260,8 @@ async fn admin_friends_tab_orders_both_states_and_sides_with_direction_since_and
         let admin = admin::FriendsAdmin::new(svc.clone());
         let body = admin.panel(admin_query(admin::FRIENDS, &me, None)).await.unwrap();
         let t = admin_table(&body);
-        assert_eq!(admin_row_ids(t), [acc_old.clone(), acc_new.clone(), inc.clone(), out.clone()]);
+        let entities: Vec<Option<String>> = t.rows.iter().map(|r| r.entity.as_ref().map(|e| e.id.clone())).collect();
+        assert_eq!(entities, [Some(acc_old.clone()), Some(acc_new.clone()), None, None], "only an accepted row has a row menu");
         let drawn: Vec<(&str, &str, &str)> = t
             .rows
             .iter()
@@ -2267,7 +2280,9 @@ async fn admin_friends_tab_orders_both_states_and_sides_with_direction_since_and
             let user = &r.cells[0];
             assert_eq!(user.link, Some(Link::Entity(EntityRef { kind: "player".into(), id: user.value.clone() })));
             assert_eq!(user.label, None, "a cell holds a link or a label, never both");
-            assert_eq!(r.entity.as_ref().unwrap().kind, admin::FRIENDSHIP_KIND);
+            if let Some(e) = &r.entity {
+                assert_eq!(e.kind, admin::FRIENDSHIP_KIND);
+            }
         }
         assert_eq!(body.meta.as_deref(), Some("4 · 2 pending"));
         assert_eq!(t.page.total, Some(4));
@@ -2298,13 +2313,15 @@ async fn admin_friends_tab_pages_past_the_page_size_across_the_state_boundary() 
     let p = pool.clone();
     with_cleanup(&pool, ids, async move {
         let (mut accepted, mut pending) = (Vec::new(), Vec::new());
+        let mut edge_of = HashMap::new();
         for (i, other) in others.iter().enumerate() {
             let state = if i < 20 { STATE_ACCEPTED } else { STATE_PENDING };
             let edge = insert_edge_raw(&p, &me, other, &me, state).await;
             let created = format!("2026-01-01T00:{:02}:00Z", i);
             let accepted_at = (state == STATE_ACCEPTED).then_some("2026-06-01T00:00:00Z");
             set_edge_times(&p, &edge, &created, accepted_at).await;
-            if state == STATE_ACCEPTED { accepted.push(edge) } else { pending.push(edge) }
+            edge_of.insert(other.clone(), edge);
+            if state == STATE_ACCEPTED { accepted.push(other.clone()) } else { pending.push(other.clone()) }
         }
         accepted.reverse();
         pending.reverse();
@@ -2313,15 +2330,15 @@ async fn admin_friends_tab_pages_past_the_page_size_across_the_state_boundary() 
         let admin = admin::FriendsAdmin::new(svc.clone());
         let first = admin.panel(admin_query(admin::FRIENDS, &me, None)).await.unwrap();
         let t = admin_table(&first);
-        let page1 = admin_row_ids(t);
+        let page1 = admin_row_users(t);
         assert_eq!(page1.len(), crate::store::ADMIN_PAGE_SIZE);
         assert_eq!(t.page.total, Some(27));
         let cursor = t.page.next_cursor.clone().expect("a full page has a cursor");
-        assert!(cursor.ends_with(&page1[crate::store::ADMIN_PAGE_SIZE - 1]), "the cursor is the last drawn row");
+        assert!(cursor.ends_with(&edge_of[&page1[crate::store::ADMIN_PAGE_SIZE - 1]]), "the cursor is the last drawn row");
 
         let second = admin.panel(admin_query(admin::FRIENDS, &me, Some(&cursor))).await.unwrap();
         let t = admin_table(&second);
-        let page2 = admin_row_ids(t);
+        let page2 = admin_row_users(t);
         assert_eq!(page2.len(), 2);
         assert!(t.page.next_cursor.is_none(), "the last page has no cursor");
         assert_eq!([page1, page2].concat(), want, "the pages concatenate to every row once, in order");
@@ -2368,6 +2385,154 @@ async fn admin_page_keyset_breaks_ties_on_id_and_crosses_the_state_boundary() {
             after = rows.last().map(|r| r.key.clone());
         }
         assert_eq!(observed, want);
+    })
+    .await;
+}
+
+fn friendship(edge_id: &str) -> Option<EntityRef> {
+    Some(EntityRef { kind: admin::FRIENDSHIP_KIND.into(), id: edge_id.into() })
+}
+
+fn remove_call(edge_id: &str) -> InvokeCall {
+    InvokeCall {
+        module: "friends".into(),
+        action: admin::FRIENDSHIP_REMOVE.into(),
+        entity: friendship(edge_id),
+        input: Default::default(),
+        expected_revision: None,
+        reason: None,
+        operator: "op".into(),
+        item: None,
+        request_id: None,
+    }
+}
+
+fn remove_prepare(edge_id: &str) -> PrepareCall {
+    PrepareCall {
+        module: "friends".into(),
+        action: admin::FRIENDSHIP_REMOVE.into(),
+        entity: friendship(edge_id),
+        item: None,
+        operator: "op".into(),
+    }
+}
+
+/// Every `friend.removed` row of one edge as (reason, actor_id, actor_handle, other_id,
+/// other_handle).
+async fn removed_events(pool: &PgPool, edge_id: &str) -> Vec<(String, String, String, String, String)> {
+    sqlx::query_as(
+        "SELECT payload->>'reason', payload->>'actor_id', payload->>'actor_handle', \
+                payload->>'other_id', payload->>'other_handle' \
+           FROM asyncevents.events \
+          WHERE topic = 'friend.removed' AND payload->>'edge_id' = $1",
+    )
+    .bind(edge_id)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+/// An operator removal deletes the accepted edge and emits one `friend.removed` with
+/// `REASON_OPERATOR_REMOVED`, the requester as the actor and the addressee as the other. The
+/// requester is the HIGH id, so a slot filled from `low_id` would name the wrong player. A
+/// repeat finds the edge gone and answers NoOp without a second event.
+#[tokio::test]
+async fn admin_remove_ends_an_accepted_friendship_once_naming_requester_and_addressee() {
+    let Some(pool) = test_pool().await else { return };
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+    let (low, high) = (low_uuid(), high_uuid());
+    dir.insert(&low, "Lo#0001");
+    dir.insert(&high, "Hi#0002");
+    let ids = vec![low.clone(), high.clone()];
+    let (p, lo, hi) = (pool.clone(), low, high);
+    with_cleanup(&pool, ids, async move {
+        let f = svc.request(Identity::player(&hi), "Lo#0001".into()).await.unwrap();
+        svc.accept(Identity::player(&lo), f.edge_id.clone()).await.unwrap();
+        let admin = admin::FriendsAdmin::new(svc.clone());
+
+        match admin.invoke(remove_call(&f.edge_id)).await.unwrap() {
+            InvokeOutcome::Ok { message, .. } => assert_eq!(message, "Hi#0002 and Lo#0001 are no longer friends"),
+            other => panic!("the first remove is Ok, got {other:?}"),
+        }
+        assert!(!edge_exists(&p, &f.edge_id).await, "the edge is deleted");
+        let want = (
+            friendsevents::REASON_OPERATOR_REMOVED.to_string(),
+            hi.clone(),
+            "Hi#0002".to_string(),
+            lo.clone(),
+            "Lo#0001".to_string(),
+        );
+        assert_eq!(removed_events(&p, &f.edge_id).await, std::slice::from_ref(&want));
+
+        match admin.invoke(remove_call(&f.edge_id)).await.unwrap() {
+            InvokeOutcome::NoOp { message } => assert_eq!(message, "The friendship was already removed"),
+            other => panic!("a repeat is NoOp, got {other:?}"),
+        }
+        assert_eq!(removed_events(&p, &f.edge_id).await, [want], "a repeat emits nothing");
+    })
+    .await;
+}
+
+/// A pending edge is refused by the invoke: the deleted row's state decides, the rollback
+/// puts the row back and nothing is emitted. Its prepare is refused too.
+#[tokio::test]
+async fn admin_remove_refuses_a_pending_edge_and_keeps_it() {
+    let Some(pool) = test_pool().await else { return };
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+    let (low, high) = (low_uuid(), high_uuid());
+    dir.insert(&low, "Lo#0001");
+    dir.insert(&high, "Hi#0002");
+    let ids = vec![low.clone(), high.clone()];
+    let (p, lo) = (pool.clone(), low);
+    with_cleanup(&pool, ids, async move {
+        let f = svc.request(Identity::player(&lo), "Hi#0002".into()).await.unwrap();
+        let admin = admin::FriendsAdmin::new(svc.clone());
+
+        let err = admin.invoke(remove_call(&f.edge_id)).await.unwrap_err();
+        assert_eq!(err.status, Status::Invalid);
+        assert_eq!(state_of(&p, &f.edge_id).await, STATE_PENDING, "the pending edge stays");
+        assert!(removed_events(&p, &f.edge_id).await.is_empty(), "nothing is emitted");
+
+        let err = admin.prepare(remove_prepare(&f.edge_id)).await.unwrap_err();
+        assert_eq!(err.status, Status::Invalid);
+    })
+    .await;
+}
+
+/// The prepared modal names the requester and then the addressee by handle; a gone edge is
+/// not found and a bound element that is not a friendship uuid is invalid.
+#[tokio::test]
+async fn admin_remove_prepare_names_both_handles() {
+    let Some(pool) = test_pool().await else { return };
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+    let (low, high) = (low_uuid(), high_uuid());
+    dir.insert(&low, "Lo#0001");
+    dir.insert(&high, "Hi#0002");
+    let ids = vec![low.clone(), high.clone()];
+    let (lo, hi) = (low, high);
+    with_cleanup(&pool, ids, async move {
+        let f = svc.request(Identity::player(&hi), "Lo#0001".into()).await.unwrap();
+        svc.accept(Identity::player(&lo), f.edge_id.clone()).await.unwrap();
+        let admin = admin::FriendsAdmin::new(svc.clone());
+
+        match admin.prepare(remove_prepare(&f.edge_id)).await.unwrap() {
+            Then::Confirm(spec) => {
+                assert_eq!(spec.body, "End the friendship between Hi#0002 and Lo#0001?");
+                assert_eq!((spec.title.as_str(), spec.tone), ("Remove friend", ConfirmTone::Danger));
+            }
+            other => panic!("the prepared remove is a Confirm, got {other:?}"),
+        }
+
+        admin.invoke(remove_call(&f.edge_id)).await.unwrap();
+        let err = admin.prepare(remove_prepare(&f.edge_id)).await.unwrap_err();
+        assert_eq!(err.status, Status::NotFound);
+
+        let mut call = remove_prepare(&f.edge_id);
+        call.entity = Some(EntityRef { kind: "player".into(), id: lo.clone() });
+        assert_eq!(admin.prepare(call).await.unwrap_err().status, Status::Invalid);
     })
     .await;
 }

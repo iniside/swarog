@@ -1,27 +1,30 @@
 //! The `friends` control-plane provider: the player entity's Friends tab (every relation the
 //! player is party to, both states), the tab's count, the dashboard's "Friends purges pending"
-//! attention item, and the `friendship` row kind. Friends has no admin write yet: the row-menu
-//! "Remove friend…" is declared `implemented: false` and `writes` is false.
+//! attention item, the `friendship` row kind and its one write, the row-menu "Remove friend…"
+//! on an accepted friendship.
 
 use async_trait::async_trait;
 use controlplane::{
-    ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ContributionDecl, DataTable, Emphasis, EntityKindDecl,
-    EntityRef, InvokeCall, InvokeOutcome, Link, Manifest, Noun, PageInfo, PanelBody, PanelQuery, Point, Primitive,
-    Provider, Role, Row, SearchHit, SearchQuery, Then, Tone, DEFAULT_PANEL_DEADLINE_MS,
+    ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ConfirmSpec, ConfirmTone, ContributionDecl, DataTable,
+    Emphasis, EntityKindDecl, EntityRef, InvokeCall, InvokeOutcome, Link, Manifest, Noun, PageInfo, PanelBody,
+    PanelQuery, Point, PrepareCall, Primitive, Provider, ReasonReq, Role, Row, SearchHit, SearchQuery, Then, Tone,
+    DEFAULT_PANEL_DEADLINE_MS,
 };
+use std::collections::BTreeMap;
 use controlplane::order;
 use friendsapi::{DIRECTION_INCOMING, DIRECTION_OUTGOING, STATE_ACCEPTED, STATE_PENDING};
 use opsapi::Error;
 use std::sync::Arc;
 
 use crate::internal;
-use crate::service::{is_cursor_time, is_uuid_text, Service};
+use crate::service::{is_cursor_time, is_uuid_text, OperatorEdge, OperatorRemoval, Party, Service};
 use crate::store::{AdminCursor, AdminEdge, ADMIN_PAGE_SIZE};
 
 const MODULE: &str = "friends";
 /// The entity kind the tab and its count attach to, and a user cell links; accounts declares it.
 const KIND: &str = "player";
-/// The row kind of the tab's table, declared here; it has a row menu and no entity page.
+/// The row kind of the tab's table, declared here; an accepted row carries it and so its row
+/// menu, a pending row does not. It has no entity page.
 pub(crate) const FRIENDSHIP_KIND: &str = "friendship";
 const TAB: &str = "friends";
 
@@ -29,7 +32,7 @@ pub(crate) const FRIENDS: &str = "friends";
 pub(crate) const TAB_COUNT: &str = "tab.count";
 pub(crate) const ATTENTION_PURGES: &str = "attention.purges";
 
-const FRIENDSHIP_REMOVE: &str = "friendship.remove";
+pub(crate) const FRIENDSHIP_REMOVE: &str = "friendship.remove";
 
 pub(crate) struct FriendsAdmin {
     svc: Arc<Service>,
@@ -71,6 +74,92 @@ impl FriendsAdmin {
         let (pending, oldest) = self.svc.store.pending_purges().await.map_err(internal)?;
         Ok(purges_body(pending, &oldest))
     }
+
+    /// The remove modal's spec, naming both players of the bound friendship.
+    async fn prepare_remove(&self, req: &PrepareCall) -> Result<Then, Error> {
+        let edge_id = bound_edge(req.entity.as_ref())?;
+        let edge = self.accepted(edge_id).await?;
+        Ok(Then::Confirm(remove_spec(format!(
+            "End the friendship between {} and {}?",
+            label(&edge.requester),
+            label(&edge.addressee)
+        ))))
+    }
+
+    /// Ends the bound friendship (`Service::operator_remove`). An edge already gone is NoOp, so
+    /// no request id is kept; a pending edge is refused.
+    async fn remove(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let edge_id = bound_edge(req.entity.as_ref())?;
+        let Some(edge) = self.svc.operator_view(edge_id).await? else {
+            return Ok(gone());
+        };
+        match self.svc.operator_remove(edge_id, &edge).await? {
+            OperatorRemoval::Removed => Ok(InvokeOutcome::Ok {
+                message: format!("{} and {} are no longer friends", label(&edge.requester), label(&edge.addressee)),
+                reveal: None,
+                redirect: None,
+            }),
+            OperatorRemoval::Gone => Ok(gone()),
+            OperatorRemoval::Pending => Err(pending_refused()),
+        }
+    }
+
+    /// The bound edge for the modal: missing is not found, pending is refused.
+    async fn accepted(&self, edge_id: &str) -> Result<OperatorEdge, Error> {
+        let edge = self
+            .svc
+            .operator_view(edge_id)
+            .await?
+            .ok_or_else(|| Error::not_found(format!("{MODULE}: no friendship {edge_id}")))?;
+        if edge.state != STATE_ACCEPTED {
+            return Err(pending_refused());
+        }
+        Ok(edge)
+    }
+}
+
+/// The bound row's `friendship:<edge uuid>`, or the call is invalid before any statement.
+fn bound_edge(entity: Option<&EntityRef>) -> Result<&str, Error> {
+    match entity {
+        Some(e) if e.kind == FRIENDSHIP_KIND && is_uuid_text(&e.id) => Ok(&e.id),
+        _ => Err(Error::invalid(format!("{MODULE}: the action needs a friendship"))),
+    }
+}
+
+/// A party's handle, or its id when the directory returned none.
+fn label(p: &Party) -> &str {
+    if p.handle.is_empty() {
+        &p.id
+    } else {
+        &p.handle
+    }
+}
+
+fn gone() -> InvokeOutcome {
+    InvokeOutcome::NoOp { message: "The friendship was already removed".to_string() }
+}
+
+fn pending_refused() -> Error {
+    Error::invalid(format!("{MODULE}: a pending request is not a friendship; only an accepted one can be removed"))
+}
+
+/// The remove modal: a Danger confirm with an optional reason, no impact lines.
+fn remove_spec(body: String) -> ConfirmSpec {
+    ConfirmSpec {
+        title: "Remove friend".to_string(),
+        body,
+        tone: ConfirmTone::Danger,
+        impact: Vec::new(),
+        reason: ReasonReq::Optional,
+        reason_hint: None,
+        type_to_confirm: None,
+        confirm_label: "Remove".to_string(),
+    }
+}
+
+/// Every input value is at most [`controlplane::MAX_INPUT_VALUE_BYTES`].
+fn input_within_cap(input: &BTreeMap<String, String>) -> bool {
+    input.values().all(|v| v.len() <= controlplane::MAX_INPUT_VALUE_BYTES)
 }
 
 /// The entity id of a player panel's request.
@@ -153,7 +242,8 @@ pub(crate) fn user_cell(other_id: &str) -> Cell {
 
 fn friendship_row(e: &AdminEdge) -> Row {
     Row {
-        entity: Some(EntityRef { kind: FRIENDSHIP_KIND.to_string(), id: e.key.edge_id.clone() }),
+        entity: (e.key.state == STATE_ACCEPTED)
+            .then(|| EntityRef { kind: FRIENDSHIP_KIND.to_string(), id: e.key.edge_id.clone() }),
         cells: vec![
             user_cell(&e.other_id),
             state_cell(&e.key.state, e.requester_is_player),
@@ -245,7 +335,6 @@ pub(crate) fn manifest() -> Manifest {
                 "Friends purges pending",
             ),
         ],
-        // No admin removal exists yet: drawn disabled, never invoked.
         actions: vec![ActionDecl {
             id: FRIENDSHIP_REMOVE.to_string(),
             point: ActionPoint::RowAction(FRIENDSHIP_KIND.to_string()),
@@ -255,16 +344,16 @@ pub(crate) fn manifest() -> Manifest {
             danger: true,
             multi: false,
             min_role: Role::Operator,
-            then: Then::Invoke,
-            implemented: false,
+            then: Then::Confirm(remove_spec("End this friendship?".to_string())),
+            implemented: true,
             emphasis: Emphasis::Default,
             trailing_icon: false,
             icon_only: false,
             when_empty: false,
-            prepare: false,
+            prepare: true,
         }],
         search: Vec::new(),
-        writes: false,
+        writes: true,
     }
 }
 
@@ -291,6 +380,22 @@ impl Provider for FriendsAdmin {
     }
 
     async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, Error> {
-        Err(Error::not_found(format!("{MODULE} has no action {:?}", req.action)))
+        if !input_within_cap(&req.input) {
+            return Err(Error::invalid(format!(
+                "an input value is longer than {} bytes",
+                controlplane::MAX_INPUT_VALUE_BYTES
+            )));
+        }
+        match req.action.as_str() {
+            FRIENDSHIP_REMOVE => self.remove(&req).await,
+            other => Err(Error::not_found(format!("{MODULE} has no action {other:?}"))),
+        }
+    }
+
+    async fn prepare(&self, req: PrepareCall) -> Result<Then, Error> {
+        match req.action.as_str() {
+            FRIENDSHIP_REMOVE => self.prepare_remove(&req).await,
+            other => Err(Error::not_found(format!("{MODULE} prepares no action {other:?}"))),
+        }
     }
 }

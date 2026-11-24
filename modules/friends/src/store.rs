@@ -13,6 +13,10 @@ pub(crate) fn is_invalid_uuid(e: &sqlx::Error) -> bool {
 const CREATED_TEXT: &str =
     r#"to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')"#;
 
+/// The party an edge statement is read against: the bound `$2`, or the edge's requester
+/// when `$2` is NULL (the operator).
+const VIEWER: &str = "COALESCE($2::uuid, requester_id)";
+
 /// One relation as the CALLER sees it. `other_id` and `requester_is_caller` are decided in
 /// SQL against `$1::uuid`, so neither depends on how the caller spelled its own id.
 pub(crate) struct EdgeRow {
@@ -21,6 +25,7 @@ pub(crate) struct EdgeRow {
     pub(crate) state: String,
     pub(crate) created_at: String,
     pub(crate) requester_is_caller: bool,
+    pub(crate) requester_id: String,
 }
 
 /// The admin Friends tab's page size, as inventory's.
@@ -210,17 +215,20 @@ impl Store {
     ///
     /// "Not yours", "no such edge" and "not a uuid" are all `None`: a 403 would confirm the
     /// id names a real relation.
+    ///
+    /// `me = None` is the operator: no party bound, and the edge is seen from its requester's
+    /// side, so `other_id` is the addressee.
     pub(crate) async fn view_edge(
         &self,
         edge_id: &str,
-        me: &str,
+        me: Option<&str>,
     ) -> Result<Option<EdgeRow>, sqlx::Error> {
-        let res = sqlx::query_as::<_, (String, String, String, String, bool)>(&format!(
+        let res = sqlx::query_as::<_, EdgeTuple>(&format!(
             "SELECT id::text, \
-                    CASE WHEN low_id = $2::uuid THEN high_id ELSE low_id END::text, \
-                    state, {CREATED_TEXT}, (requester_id = $2::uuid) \
+                    CASE WHEN low_id = {VIEWER} THEN high_id ELSE low_id END::text, \
+                    state, {CREATED_TEXT}, (requester_id = {VIEWER}), requester_id::text \
                FROM friends.edges \
-              WHERE id = $1::uuid AND $2::uuid IN (low_id, high_id)"
+              WHERE id = $1::uuid AND {VIEWER} IN (low_id, high_id)"
         ))
         .bind(edge_id)
         .bind(me)
@@ -364,25 +372,26 @@ impl Store {
     /// EITHER party, in EITHER state, so no `requester_id` clause. The returned
     /// `state`/`requester_is_caller` are the DELETED row's, not a prior read's: a state that
     /// changed underneath the caller must not mislabel the emitted event's reason.
+    /// `me = None` is the operator, as in [`Store::view_edge`].
     pub(crate) async fn delete_tx(
         &self,
         conn: &mut PgConnection,
         edge_id: &str,
-        me: &str,
-    ) -> Result<Option<(String, String, String, bool)>, sqlx::Error> {
-        let res = sqlx::query_as::<_, (String, String, String, bool)>(
+        me: Option<&str>,
+    ) -> Result<Option<EdgeRow>, sqlx::Error> {
+        let res = sqlx::query_as::<_, EdgeTuple>(&format!(
             "DELETE FROM friends.edges \
-              WHERE id = $1::uuid AND $2::uuid IN (low_id, high_id) \
+              WHERE id = $1::uuid AND {VIEWER} IN (low_id, high_id) \
              RETURNING id::text, \
-                       CASE WHEN low_id = $2::uuid THEN high_id ELSE low_id END::text, \
-                       state, (requester_id = $2::uuid)",
-        )
+                       CASE WHEN low_id = {VIEWER} THEN high_id ELSE low_id END::text, \
+                       state, {CREATED_TEXT}, (requester_id = {VIEWER}), requester_id::text"
+        ))
         .bind(edge_id)
         .bind(me)
         .fetch_optional(&mut *conn)
         .await;
         match res {
-            Ok(row) => Ok(row),
+            Ok(row) => Ok(row.map(row_to_edge)),
             Err(e) if is_invalid_uuid(&e) => Ok(None),
             Err(e) => Err(e),
         }
@@ -412,7 +421,7 @@ impl Store {
         let res = match after {
             Some((created_at, id)) => {
                 let cut = "AND (created_at, id) < ($2::timestamptz, $3::uuid)";
-                sqlx::query_as::<_, (String, String, String, String, bool)>(&page_sql(
+                sqlx::query_as::<_, EdgeTuple>(&page_sql(
                     cut, "$4", "$5",
                 ))
                 .bind(me)
@@ -424,7 +433,7 @@ impl Store {
                 .await
             }
             None => {
-                sqlx::query_as::<_, (String, String, String, String, bool)>(&page_sql(
+                sqlx::query_as::<_, EdgeTuple>(&page_sql(
                     "", "$2", "$3",
                 ))
                 .bind(me)
@@ -519,14 +528,17 @@ fn row_to_admin_edge(row: AdminEdgeTuple) -> AdminEdge {
     }
 }
 
-fn row_to_edge(row: (String, String, String, String, bool)) -> EdgeRow {
-    let (edge_id, other_id, state, created_at, requester_is_caller) = row;
+type EdgeTuple = (String, String, String, String, bool, String);
+
+fn row_to_edge(row: EdgeTuple) -> EdgeRow {
+    let (edge_id, other_id, state, created_at, requester_is_caller, requester_id) = row;
     EdgeRow {
         edge_id,
         other_id,
         state,
         created_at,
         requester_is_caller,
+        requester_id,
     }
 }
 
@@ -537,7 +549,7 @@ fn page_sql(cut: &str, state: &str, limit: &str) -> String {
     let low = side_sql("low_id", "high_id", cut, state, limit);
     let high = side_sql("high_id", "low_id", cut, state, limit);
     format!(
-        "SELECT edge_id, other_id, state, created_text, mine FROM ( \
+        "SELECT edge_id, other_id, state, created_text, mine, requester_id FROM ( \
            {low} UNION ALL {high} \
          ) t ORDER BY sort_at DESC, sort_id DESC LIMIT {limit}"
     )
@@ -547,7 +559,7 @@ fn side_sql(me_col: &str, other_col: &str, cut: &str, state: &str, limit: &str) 
     format!(
         "(SELECT id::text AS edge_id, {other_col}::text AS other_id, state, \
                  {CREATED_TEXT} AS created_text, (requester_id = $1::uuid) AS mine, \
-                 created_at AS sort_at, id AS sort_id \
+                 requester_id::text AS requester_id, created_at AS sort_at, id AS sort_id \
             FROM friends.edges \
            WHERE {me_col} = $1::uuid AND state = {state} {cut} \
            ORDER BY created_at DESC, id DESC LIMIT {limit})"

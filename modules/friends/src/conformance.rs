@@ -4,16 +4,22 @@
 //! production code real requests traverse — `Player::request`/`Player::list` themselves,
 //! never a re-stated arithmetic check.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use accountsapi::{Directory, PlayerSummary};
 use async_trait::async_trait;
 use bus::Bus;
+use controlplane::{EntityRef, InvokeCall, Provider as _};
 use friendsapi::Player as _;
 use opsapi::{Error, Identity};
 use sqlx::PgPool;
 
+use crate::admin::{FriendsAdmin, FRIENDSHIP_KIND, FRIENDSHIP_REMOVE};
 use crate::Service;
+
+/// The cap every `cp.invoke` input value meets before `FriendsAdmin::invoke` reads anything.
+pub const CP_INVOKE_INPUT_VALUE_BYTES: usize = controlplane::MAX_INPUT_VALUE_BYTES;
 
 /// A `Directory` that fails every call, standing in for the capability being unreachable
 /// (a down remote peer in split, a dead pool in monolith) — the one shape `directory_unavailable`
@@ -101,4 +107,35 @@ pub async fn conformance_directory_outage() -> Result<(), Error> {
     )
     .await
     .map(|_| ())
+}
+
+/// [`CP_INVOKE_INPUT_VALUE_BYTES`], executed through `FriendsAdmin::invoke` against a store
+/// that cannot connect. The remove reads no input, so with a well-formed friendship an at-cap
+/// value reaches the store and answers `Internal`; one byte over, the cap's `Invalid` is the
+/// only refusal it can meet.
+#[doc(hidden)]
+pub fn conformance_cp_invoke_input_rejected(len: usize) -> bool {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread runtime");
+    let admin = {
+        let _guard = rt.enter();
+        FriendsAdmin::new(Arc::new(service_with_failing_directory()))
+    };
+    let call = InvokeCall {
+        module: "friends".to_string(),
+        action: FRIENDSHIP_REMOVE.to_string(),
+        entity: Some(EntityRef {
+            kind: FRIENDSHIP_KIND.to_string(),
+            id: "00000000-0000-0000-0000-000000000000".to_string(),
+        }),
+        input: BTreeMap::from([("value".to_string(), "a".repeat(len))]),
+        expected_revision: None,
+        reason: None,
+        operator: "conformance".to_string(),
+        item: None,
+        request_id: None,
+    };
+    matches!(rt.block_on(admin.invoke(call)), Err(e) if e.status == opsapi::Status::Invalid)
 }
