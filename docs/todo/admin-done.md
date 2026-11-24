@@ -1,6 +1,10 @@
 # Admin
 
-Last updated: 2026-11-22
+Last updated: 2026-11-24
+
+- [x] **SH3 checks only that the old portal attention id is gone** (2026-11-24, admin-second-pass step 3)
+  Obsolete: the scheduler no longer declares an attention contribution, and SH3 now asserts
+  that the dashboard slots no panel under `/admin/_panel/scheduler/`.
 
 - [x] **Keep `?player=` after a successful wallet grant** (2026-11-22, admin-control-plane-redesign step 17)
   WALLET-06. Obsolete: `modules/admin` is gone; every portal POST carries the current page as

@@ -74,13 +74,13 @@
   P.scheduler = {
     meta: { nav: "scheduler", crumbs: [plat, ["Scheduler"]] },
     render: () => {
-      const s = panel({ c: pg("scheduler", "DataTable"), title: "Schedules", meta: `${D.schedules.length}`, flush: true, tools: `<button class="btn sm">${icon("plus")} Schedule</button>`,
-        body: table({ pager: false, cols: [{ label: "Id" }, { label: "When" }, { label: "Target" }, { label: "Next fire" }, { label: "Last" }, { label: "Enabled" }],
-          rows: D.schedules.map(x => [`<span class="mono" style="font-weight:500">${x.id}</span>`, `<span class="mono">${x.cron}</span>`, `<span class="tag">${x.target}</span>`, `<span class="dim">${x.next}</span>`, `<span class="row">${status(x.last)} <span class="muted">${x.lastAt}</span></span>`, `<span class="toggle ${x.enabled ? "on" : ""}"></span>`]),
-          rowMenu: () => `<button class="btn sm icon ghost" onclick="UI.toast('Fire now · Edit · Delete','info')">${icon("more")}</button>` }) });
+      const s = panel({ c: pg("scheduler", "DataTable"), title: "Schedules", meta: `${D.schedules.length}`, flush: true,
+        body: table({ pager: false, cols: [{ label: "Id" }, { label: "When" }, { label: "Next fire" }, { label: "Last" }],
+          rows: D.schedules.map(x => [`<span class="mono" style="font-weight:500">${x.id}</span>`, `<span class="mono">${x.every}</span>`, `<span class="dim">${x.next}</span>`, `<span class="dim">${x.lastAt}</span>`]),
+          rowMenu: () => `<button class="btn sm icon ghost" onclick="UI.toast('Fire now','info')">${icon("more")}</button>` }) });
       const f = panel({ c: pg("scheduler", "Timeline"), title: "Recent fires", flush: true, tools: `<span class="badge plain">24 h</span>`,
-        body: timeline(D.fires.map(x => ({ t: x.at.slice(0, 5), html: `<span class="mono">${x.id}</span> ${x.result === "ok" ? "" : badge("failed", "err")}`, meta: `${x.dur} · ${esc(x.note)}`, icon: x.result === "ok" ? "check" : "alert", tone: x.result === "ok" ? "ok" : "err" }))) });
-      return P.head("Scheduler", "Cron and one-shot schedules that call module operations.", "") + `<div class="stack">${s}${f}</div>`;
+        body: timeline(D.fires.map(x => ({ t: x.at.slice(0, 5), html: `<span class="mono">${x.id}</span>`, icon: "zap" }))) });
+      return P.head("Scheduler", "Interval schedules; each fire emits scheduler.fired for the modules that react to it.", "") + `<div class="stack">${s}${f}</div>`;
     },
   };
 

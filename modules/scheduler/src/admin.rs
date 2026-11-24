@@ -1,16 +1,15 @@
 //! The `scheduler` control-plane provider: the Scheduler page (the Schedules table with each
 //! schedule's interval, next fire and last fire, and the Recent fires timeline of the last 24
-//! hours) and its disabled actions (create, fire now, edit, delete). Nothing here writes: the
-//! module declares no writes and every action is `implemented: false`. It also draws the
-//! dashboard's "Scheduler runs" attention item.
+//! hours) and its disabled Fire now action. Nothing here writes: the module declares no writes
+//! and the action is `implemented: false`.
 
 use async_trait::async_trait;
 use controlplane::order;
 use controlplane::{
-    ActionDecl, ActionPoint, Align, AttentionItem, Banner, Cell, CellKind, Column, ContributionDecl, DataTable,
-    Emphasis, EntityKindDecl, EntityRef, InvokeCall, InvokeOutcome, Layout, Link, Manifest, NavEntry, Noun,
-    PageDecl, PageInfo, PanelBody, PanelQuery, Point, Primitive, Provider, Role, Row, SearchHit, SearchQuery,
-    Severity, Then, Timeline, TimelineEntry, Tone, DEFAULT_PANEL_DEADLINE_MS,
+    ActionDecl, ActionPoint, Align, Banner, Cell, CellKind, Column, ContributionDecl, DataTable, Emphasis,
+    EntityKindDecl, EntityRef, InvokeCall, InvokeOutcome, Layout, Manifest, NavEntry, Noun, PageDecl, PageInfo,
+    PanelBody, PanelQuery, Point, Primitive, Provider, Role, Row, SearchHit, SearchQuery, Then, Timeline,
+    TimelineEntry, Tone, DEFAULT_PANEL_DEADLINE_MS,
 };
 use opsapi::Error;
 use sqlx::PgPool;
@@ -24,10 +23,7 @@ pub(crate) const SCHEDULE_KIND: &str = "schedule";
 pub(crate) const SCHEDULES: &str = "schedules";
 pub(crate) const FIRES: &str = "fires";
 
-pub(crate) const SCHEDULE_CREATE: &str = "schedule.create";
 pub(crate) const SCHEDULE_FIRE: &str = "schedule.fire";
-pub(crate) const SCHEDULE_EDIT: &str = "schedule.edit";
-pub(crate) const SCHEDULE_DELETE: &str = "schedule.delete";
 
 pub(crate) const SUBTITLE: &str =
     "Interval schedules; each fire emits scheduler.fired for the modules that react to it.";
@@ -41,20 +37,6 @@ pub(crate) const FIRES_WINDOW: &str = "24 h";
 /// What a never-fired or out-of-range value shows.
 pub(crate) const NEVER: &str = "—";
 pub(crate) const DISABLED_BANNER: &str = "Scheduler disabled on this process: no schedule fires";
-
-pub(crate) const OK: &str = "ok";
-pub(crate) const FAIL: &str = "fail";
-
-/// The operation names the FAKE target cell draws from.
-pub(crate) const FAKE_TARGETS: [&str; 5] =
-    ["leaderboard.reset", "mail.enqueue_batch", "storage.collect_orphans", "accounts.purge", "config.set_flag"];
-/// One FAKE result in this many is a failure.
-pub(crate) const FAKE_FAIL_ONE_IN: u64 = 8;
-/// One FAKE enabled switch in this many is off.
-pub(crate) const FAKE_OFF_ONE_IN: u64 = 6;
-/// The FAKE duration of a failed fire: the timeout it hit.
-pub(crate) const FAKE_FAIL_DURATION: &str = "30.0 s";
-pub(crate) const FAKE_FAIL_NOTE: &str = "timeout: deadline exceeded";
 
 pub(crate) struct SchedulerAdmin {
     pool: PgPool,
@@ -118,84 +100,6 @@ pub(crate) fn every(interval_seconds: i64) -> String {
     }
 }
 
-/// The FAKE operation a schedule calls.
-pub(crate) fn fake_target(name: &str) -> &'static str {
-    // FAKE: a fire carries only the schedule name; no schedule records a target operation.
-    FAKE_TARGETS[(controlplane::fake_hash("scheduler.target", name) % FAKE_TARGETS.len() as u64) as usize]
-}
-
-/// The FAKE result of a schedule's last fire, shared by the Last cell and the fire entry.
-pub(crate) fn fake_result(name: &str) -> &'static str {
-    // FAKE: the scheduler records no fire outcome; a fire only bumps `last_fired`.
-    if controlplane::fake_hash("scheduler.last", name).is_multiple_of(FAKE_FAIL_ONE_IN) {
-        FAIL
-    } else {
-        OK
-    }
-}
-
-/// The FAKE per-schedule enabled switch.
-pub(crate) fn fake_enabled(name: &str) -> bool {
-    // FAKE: the store has no per-schedule enabled flag; only the process-wide SCHEDULER_ENABLED.
-    !controlplane::fake_hash("scheduler.enabled", name).is_multiple_of(FAKE_OFF_ONE_IN)
-}
-
-/// The FAKE duration of a schedule's last fire.
-pub(crate) fn fake_duration(name: &str) -> String {
-    // FAKE: the scheduler records no fire duration.
-    if fake_result(name) == FAIL {
-        return FAKE_FAIL_DURATION.to_string();
-    }
-    let tenths = controlplane::fake_hash("scheduler.duration", name) % 99 + 1;
-    format!("{}.{} s", tenths / 10, tenths % 10)
-}
-
-/// The FAKE note of a schedule's last fire.
-pub(crate) fn fake_note(name: &str) -> String {
-    // FAKE: a fire reports nothing back; the consumers that react to it record no summary.
-    if fake_result(name) == FAIL {
-        return FAKE_FAIL_NOTE.to_string();
-    }
-    let rows = controlplane::fake_hash("scheduler.note", name) % 500;
-    format!("{rows} rows affected")
-}
-
-/// The dashboard's "Scheduler runs" attention contribution.
-pub(crate) const ATTENTION_RUNS: &str = "attention.runs";
-
-// FAKE: the scheduler stores no run failures.
-pub(crate) fn attention_runs() -> Vec<AttentionItem> {
-    vec![AttentionItem {
-        severity: Severity::Warn,
-        title: "storage.gc failed at 03:30".to_string(),
-        text: "timeout: storage-svc deadline exceeded.".to_string(),
-        link: Link::Page { module: MODULE.to_string(), page: PAGE.to_string(), params: Default::default() },
-        action_label: "Logs".to_string(),
-        since: "03:30".to_string(),
-    }]
-}
-
-fn result_tone(result: &str) -> Tone {
-    if result == OK {
-        Tone::Ok
-    } else {
-        Tone::Err
-    }
-}
-
-fn last_cell(row: &ScheduleRow) -> Cell {
-    let Some(at) = &row.last_at else {
-        return cell(CellKind::Muted, NEVER);
-    };
-    let result = fake_result(&row.name);
-    Cell {
-        tone: Some(result_tone(result)),
-        row: true,
-        more: vec![cell(CellKind::Muted, at.as_str())],
-        ..cell(CellKind::Badge, result)
-    }
-}
-
 fn schedule_row(row: &ScheduleRow) -> Row {
     Row {
         entity: Some(EntityRef {
@@ -205,10 +109,8 @@ fn schedule_row(row: &ScheduleRow) -> Row {
         cells: vec![
             cell(CellKind::Mono, row.name.as_str()),
             cell(CellKind::Mono, every(row.interval_seconds)),
-            cell(CellKind::Ref, fake_target(&row.name)),
             cell(CellKind::Dim, row.next_fire.as_deref().unwrap_or(NEVER)),
-            last_cell(row),
-            cell(CellKind::Toggle, fake_enabled(&row.name).to_string()),
+            cell(CellKind::Dim, row.last_at.as_deref().unwrap_or(NEVER)),
         ],
         highlight: false,
         item: None,
@@ -224,10 +126,8 @@ pub(crate) fn schedules_body(rows: &[ScheduleRow], total: i64, enabled: bool) ->
         columns: vec![
             column("id", "Id", CellKind::Mono),
             column("when", "When", CellKind::Mono),
-            column("target", "Target", CellKind::Ref),
             column("next", "Next fire", CellKind::Dim),
-            column("last", "Last", CellKind::Badge),
-            column("enabled", "Enabled", CellKind::Toggle),
+            column("last", "Last", CellKind::Dim),
         ],
         rows: drawn.iter().map(schedule_row).collect(),
         page: PageInfo {
@@ -256,8 +156,6 @@ pub(crate) fn schedules_body(rows: &[ScheduleRow], total: i64, enabled: bool) ->
 }
 
 fn fire_entry(row: &FireRow) -> TimelineEntry {
-    let result = fake_result(&row.name);
-    let failed = result == FAIL;
     TimelineEntry {
         at: row.at.clone(),
         actor: None,
@@ -265,17 +163,10 @@ fn fire_entry(row: &FireRow) -> TimelineEntry {
         verb: row.name.clone(),
         target: None,
         summary: String::new(),
-        badges: if failed {
-            vec![Cell {
-                tone: Some(Tone::Err),
-                ..cell(CellKind::Badge, "failed")
-            }]
-        } else {
-            Vec::new()
-        },
-        detail: Some(format!("{} · {}", fake_duration(&row.name), fake_note(&row.name))),
-        icon: if failed { "alert" } else { "check" }.to_string(),
-        tone: Some(result_tone(result)),
+        badges: Vec::new(),
+        detail: None,
+        icon: "zap".to_string(),
+        tone: None,
     }
 }
 
@@ -306,7 +197,7 @@ fn contribution(id: &str, order: i32, title: &str) -> ContributionDecl {
     }
 }
 
-/// A disabled schedule action: none opens a form or confirm, so each is `Then::Invoke`.
+/// A disabled schedule action: it opens no form or confirm, so it is `Then::Invoke`.
 fn disabled_action(id: &str, point: ActionPoint, label: &str, icon: &str, order: i32) -> ActionDecl {
     ActionDecl {
         id: id.to_string(),
@@ -329,7 +220,6 @@ fn disabled_action(id: &str, point: ActionPoint, label: &str, icon: &str, order:
 
 pub(crate) fn manifest() -> Manifest {
     let row = || ActionPoint::RowAction(SCHEDULE_KIND.to_string());
-    let tool = ActionPoint::PanelTool(SCHEDULES.to_string());
     Manifest {
         module: MODULE.to_string(),
         sections: Vec::new(),
@@ -359,25 +249,8 @@ pub(crate) fn manifest() -> Manifest {
         contributions: vec![
             contribution(SCHEDULES, 10, "Schedules"),
             contribution(FIRES, 20, "Recent fires"),
-            ContributionDecl {
-                point: Point::DashboardAttention,
-                icon: "clock".to_string(),
-                ..contribution(ATTENTION_RUNS, order::dashboard_attention::SCHEDULER, "Scheduler runs")
-            },
         ],
-        // NEW: the scheduler has no write path; schedules are seeded by DDL or inserted by hand.
-        actions: vec![
-            ActionDecl {
-                when_empty: true,
-                ..disabled_action(SCHEDULE_CREATE, tool, "Schedule", "plus", 10)
-            },
-            disabled_action(SCHEDULE_FIRE, row(), "Fire now", "zap", 10),
-            disabled_action(SCHEDULE_EDIT, row(), "Edit…", "edit", 20),
-            ActionDecl {
-                danger: true,
-                ..disabled_action(SCHEDULE_DELETE, row(), "Delete…", "trash", 30)
-            },
-        ],
+        actions: vec![disabled_action(SCHEDULE_FIRE, row(), "Fire now", "zap", 10)],
         search: Vec::new(),
         writes: false,
     }
@@ -393,7 +266,6 @@ impl Provider for SchedulerAdmin {
         match req.contribution.as_str() {
             SCHEDULES => self.schedules().await,
             FIRES => self.fires().await,
-            ATTENTION_RUNS => Ok(PanelBody::new(Primitive::AttentionItems(attention_runs()))),
             other => Err(Error::not_found(format!("{MODULE} has no contribution {other:?}"))),
         }
     }
@@ -404,9 +276,7 @@ impl Provider for SchedulerAdmin {
 
     async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, Error> {
         match req.action.as_str() {
-            SCHEDULE_CREATE | SCHEDULE_FIRE | SCHEDULE_EDIT | SCHEDULE_DELETE => {
-                Err(Error::forbidden("not implemented yet"))
-            }
+            SCHEDULE_FIRE => Err(Error::forbidden("not implemented yet")),
             other => Err(Error::not_found(format!("{MODULE} has no action {other:?}"))),
         }
     }

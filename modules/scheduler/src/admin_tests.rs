@@ -1,5 +1,5 @@
-//! The scheduler provider: the manifest, the Schedules and Recent fires bodies, the FAKE cells
-//! and the refused actions; and, over a live Postgres, the next-fire and last-fire text the
+//! The scheduler provider: the manifest, the Schedules and Recent fires bodies and the refused
+//! Fire now action; and, over a live Postgres, the next-fire and last-fire text the
 //! SQL computes (overdue, upcoming, never fired, a legacy out-of-range interval) and the
 //! 24-hour fire window, through `Provider::panel`.
 
@@ -67,14 +67,6 @@ fn schedule(name: &str, next_fire: Option<&str>, last_at: Option<&str>) -> Sched
     }
 }
 
-/// Names whose FAKE result is `result`, from a fixed candidate list.
-fn named_with_result(result: &str) -> String {
-    (0..1000)
-        .map(|i| format!("sched-{i}"))
-        .find(|n| fake_result(n) == result)
-        .expect("a name with that FAKE result")
-}
-
 #[test]
 fn manifest_declares_the_read_only_page() {
     let m = manifest();
@@ -97,10 +89,10 @@ fn manifest_declares_the_read_only_page() {
         [
             (SCHEDULES, 10, "Schedules"),
             (FIRES, 20, "Recent fires"),
-            (ATTENTION_RUNS, order::dashboard_attention::SCHEDULER, "Scheduler runs"),
         ]
     );
-    for c in &m.contributions[..2] {
+    assert_eq!(m.contributions.len(), 2);
+    for c in &m.contributions {
         assert_eq!(c.point, Point::Page(PAGE.to_string()));
         assert_eq!((c.min_role, c.readonly.as_deref(), c.cache_ttl_s), (Role::Viewer, None, None));
     }
@@ -109,39 +101,8 @@ fn manifest_declares_the_read_only_page() {
     assert!(m.search.is_empty());
 }
 
-/// The dashboard attention item moved here from the portal provider (step 22, S10): same id
-/// order, title, icon and text; its link opens the Schedules page.
-#[tokio::test]
-async fn attention_runs_draws_the_moved_item() {
-    let m = manifest();
-    let c = m.contributions.iter().find(|c| c.id == ATTENTION_RUNS).expect("the attention contribution");
-    assert_eq!((c.point.clone(), c.order), (Point::DashboardAttention, 50));
-    assert_eq!((c.title.as_str(), c.icon.as_str(), c.min_role), ("Scheduler runs", "clock", Role::Viewer));
-    let provider = SchedulerAdmin::new(PgPool::connect_lazy("postgres://unused").unwrap(), true);
-    let body = provider.panel(query(ATTENTION_RUNS)).await.expect("the attention panel");
-    let items = match body.primitive {
-        Primitive::AttentionItems(items) => items,
-        other => panic!("AttentionItems, got {other:?}"),
-    };
-    assert_eq!(items.len(), 1);
-    let item = &items[0];
-    assert_eq!(item.severity, Severity::Warn);
-    assert_eq!(
-        (item.title.as_str(), item.text.as_str()),
-        ("storage.gc failed at 03:30", "timeout: storage-svc deadline exceeded.")
-    );
-    assert_eq!((item.action_label.as_str(), item.since.as_str()), ("Logs", "03:30"));
-    match &item.link {
-        Link::Page { module, page, params } => {
-            assert_eq!((module.as_str(), page.as_str()), ("scheduler", "schedules"));
-            assert!(params.is_empty());
-        }
-        other => panic!("a page link, got {other:?}"),
-    }
-}
-
 #[test]
-fn every_action_is_a_disabled_invoke() {
+fn fire_now_is_the_one_disabled_invoke() {
     let m = manifest();
     let row = ActionPoint::RowAction(SCHEDULE_KIND.to_string());
     let got: Vec<(&str, &ActionPoint, &str, &str, i32, bool, bool)> = m
@@ -149,16 +110,7 @@ fn every_action_is_a_disabled_invoke() {
         .iter()
         .map(|a| (a.id.as_str(), &a.point, a.label.as_str(), a.icon.as_str(), a.order, a.danger, a.when_empty))
         .collect();
-    let tool = ActionPoint::PanelTool(SCHEDULES.to_string());
-    assert_eq!(
-        got,
-        [
-            (SCHEDULE_CREATE, &tool, "Schedule", "plus", 10, false, true),
-            (SCHEDULE_FIRE, &row, "Fire now", "zap", 10, false, false),
-            (SCHEDULE_EDIT, &row, "Edit…", "edit", 20, false, false),
-            (SCHEDULE_DELETE, &row, "Delete…", "trash", 30, true, false),
-        ]
-    );
+    assert_eq!(got, [(SCHEDULE_FIRE, &row, "Fire now", "zap", 10, false, false)]);
     for a in &m.actions {
         assert!(!a.implemented, "{} must be disabled", a.id);
         assert_eq!(a.then, Then::Invoke, "{} opens nothing", a.id);
@@ -168,16 +120,15 @@ fn every_action_is_a_disabled_invoke() {
 }
 
 #[tokio::test]
-async fn invoke_refuses_every_action() {
+async fn invoke_refuses_fire_now_and_knows_no_other_action() {
     let Some(pool) = test_pool().await else {
         return;
     };
     let p = SchedulerAdmin::new(pool, true);
-    for action in [SCHEDULE_CREATE, SCHEDULE_FIRE, SCHEDULE_EDIT, SCHEDULE_DELETE] {
-        let e = p.invoke(call(action)).await.unwrap_err();
-        assert_eq!(e.status, Status::Forbidden, "{action}");
+    assert_eq!(p.invoke(call(SCHEDULE_FIRE)).await.unwrap_err().status, Status::Forbidden);
+    for action in ["schedule.create", "schedule.edit", "schedule.delete", "schedule.pause"] {
+        assert_eq!(p.invoke(call(action)).await.unwrap_err().status, Status::NotFound, "{action}");
     }
-    assert_eq!(p.invoke(call("schedule.pause")).await.unwrap_err().status, Status::NotFound);
     assert_eq!(p.panel(query("nope")).await.unwrap_err().status, Status::NotFound);
 }
 
@@ -191,31 +142,10 @@ fn every_names_the_largest_whole_unit() {
 }
 
 #[test]
-fn fake_cells_are_stable_and_varied() {
-    let names: Vec<String> = (0..400).map(|i| format!("sched-{i}")).collect();
-    for n in &names {
-        assert_eq!(fake_target(n), fake_target(n));
-        assert!(FAKE_TARGETS.contains(&fake_target(n)));
-        assert_eq!(fake_result(n), fake_result(n));
-        assert_eq!(fake_enabled(n), fake_enabled(n));
-        assert_eq!(fake_duration(n), fake_duration(n));
-        assert_eq!(fake_note(n), fake_note(n));
-    }
-    let fails = names.iter().filter(|n| fake_result(n) == FAIL).count();
-    assert!(fails > 0 && fails < names.len() / 4, "a small share fails: {fails}");
-    let off = names.iter().filter(|n| !fake_enabled(n)).count();
-    assert!(off > 0 && off < names.len() / 3, "mostly on: {off} off");
-    let failed = named_with_result(FAIL);
-    assert_eq!((fake_duration(&failed).as_str(), fake_note(&failed).as_str()), (FAKE_FAIL_DURATION, FAKE_FAIL_NOTE));
-}
-
-#[test]
 fn schedules_body_draws_each_column() {
-    let ok = named_with_result(OK);
-    let failed = named_with_result(FAIL);
     let rows = [
-        schedule(&ok, Some("due"), Some("03:30")),
-        schedule(&failed, Some("2026-11-24 03:30"), Some("03:30")),
+        schedule("ok", Some("due"), Some("03:30")),
+        schedule("later", Some("2026-11-24 03:30"), Some("03:30")),
         schedule("never", Some("due"), None),
         schedule("legacy", None, Some("12:00")),
     ];
@@ -224,33 +154,21 @@ fn schedules_body_draws_each_column() {
     assert_eq!((body.foot.as_deref(), body.banner.as_ref()), (None, None));
     let t = table(&body);
     let labels: Vec<&str> = t.columns.iter().map(|c| c.label.as_str()).collect();
-    assert_eq!(labels, ["Id", "When", "Target", "Next fire", "Last", "Enabled"]);
+    assert_eq!(labels, ["Id", "When", "Next fire", "Last"]);
     assert_eq!((t.page.next_cursor.as_deref(), t.page.total), (None, None));
     assert_eq!(t.item_noun.as_ref().map(|n| (n.of(1), n.of(2))), Some(("schedule", "schedules")));
 
     let r = &t.rows[0];
     let entity = r.entity.as_ref().unwrap();
-    assert_eq!((entity.kind.as_str(), entity.id.as_str()), (SCHEDULE_KIND, ok.as_str()));
+    assert_eq!((entity.kind.as_str(), entity.id.as_str()), (SCHEDULE_KIND, "ok"));
     let kinds: Vec<CellKind> = r.cells.iter().map(|c| c.kind).collect();
-    assert_eq!(
-        kinds,
-        [CellKind::Mono, CellKind::Mono, CellKind::Ref, CellKind::Dim, CellKind::Badge, CellKind::Toggle]
-    );
-    assert_eq!((r.cells[0].value.as_str(), r.cells[1].value.as_str()), (ok.as_str(), "every 24 h"));
-    assert_eq!((r.cells[2].value.as_str(), r.cells[3].value.as_str()), (fake_target(&ok), "due"));
-    assert_eq!((r.cells[4].value.as_str(), r.cells[4].tone, r.cells[4].row), (OK, Some(Tone::Ok), true));
-    assert_eq!(r.cells[4].more.len(), 1);
-    assert_eq!((r.cells[4].more[0].kind, r.cells[4].more[0].value.as_str()), (CellKind::Muted, "03:30"));
-    assert_eq!(r.cells[5].value, fake_enabled(&ok).to_string());
+    assert_eq!(kinds, [CellKind::Mono, CellKind::Mono, CellKind::Dim, CellKind::Dim]);
+    let values: Vec<&str> = r.cells.iter().map(|c| c.value.as_str()).collect();
+    assert_eq!(values, ["ok", "every 24 h", "due", "03:30"]);
 
-    let r = &t.rows[1];
-    assert_eq!((r.cells[3].value.as_str(), r.cells[4].value.as_str()), ("2026-11-24 03:30", FAIL));
-    assert_eq!(r.cells[4].tone, Some(Tone::Err));
-
-    let never = &t.rows[2].cells[4];
-    assert_eq!((never.kind, never.value.as_str(), never.tone), (CellKind::Muted, NEVER, None));
-    assert!(never.more.is_empty());
-    assert_eq!(t.rows[3].cells[3].value, NEVER);
+    assert_eq!(t.rows[1].cells[2].value, "2026-11-24 03:30");
+    assert_eq!(t.rows[2].cells[3].value, NEVER);
+    assert_eq!(t.rows[3].cells[2].value, NEVER);
 }
 
 #[test]
@@ -273,27 +191,21 @@ fn schedules_body_caps_the_rows_and_warns_when_disabled() {
 }
 
 #[test]
-fn fires_body_follows_the_fake_result() {
-    let ok = named_with_result(OK);
-    let failed = named_with_result(FAIL);
+fn fires_body_draws_one_plain_entry_per_fire() {
     let rows = [
-        FireRow { name: failed.clone(), at: "2026-11-23T03:30:00Z".into() },
-        FireRow { name: ok.clone(), at: "2026-11-23T03:00:00Z".into() },
+        FireRow { name: "audit-prune".into(), at: "2026-11-23T03:30:00Z".into() },
+        FireRow { name: "mail-sweep".into(), at: "2026-11-23T03:00:00Z".into() },
     ];
     let body = fires_body(&rows);
     assert_eq!(body.tag.as_deref(), Some(FIRES_WINDOW));
     let t = timeline(&body);
     assert!(!t.live && !t.days && !t.date_only && t.cursor_before.is_none());
-    let e = &t.entries[0];
-    assert_eq!((e.at.as_str(), e.verb.as_str(), e.icon.as_str()), ("2026-11-23T03:30:00Z", failed.as_str(), "alert"));
-    assert_eq!(e.tone, Some(Tone::Err));
-    assert_eq!(e.badges.len(), 1);
-    assert_eq!((e.badges[0].value.as_str(), e.badges[0].tone), ("failed", Some(Tone::Err)));
-    assert_eq!(e.detail.as_deref(), Some(format!("{FAKE_FAIL_DURATION} · {FAKE_FAIL_NOTE}").as_str()));
-    let e = &t.entries[1];
-    assert_eq!((e.verb.as_str(), e.icon.as_str(), e.tone), (ok.as_str(), "check", Some(Tone::Ok)));
-    assert!(e.badges.is_empty());
-    assert_eq!(e.detail, Some(format!("{} · {}", fake_duration(&ok), fake_note(&ok))));
+    assert_eq!(t.entries.len(), 2);
+    for (e, (name, at)) in t.entries.iter().zip([("audit-prune", "2026-11-23T03:30:00Z"), ("mail-sweep", "2026-11-23T03:00:00Z")]) {
+        assert_eq!((e.at.as_str(), e.verb.as_str(), e.icon.as_str()), (at, name, "zap"));
+        assert_eq!((e.tone, e.detail.as_deref(), e.summary.as_str()), (None, None, ""));
+        assert!(e.badges.is_empty());
+    }
 
     assert!(timeline(&fires_body(&[])).entries.is_empty());
 }
@@ -368,15 +280,14 @@ async fn panels_compute_next_and_last_fire_in_sql() {
     assert!(body.banner.is_none());
     let t = table(&body);
     let row = find(t, &overdue);
-    assert_eq!((row.cells[1].value.as_str(), row.cells[3].value.as_str()), ("every 1 min", "due"));
-    assert_eq!((row.cells[4].kind, row.cells[4].more[0].value.as_str()), (CellKind::Badge, "00:00"));
+    assert_eq!((row.cells[1].value.as_str(), row.cells[2].value.as_str()), ("every 1 min", "due"));
+    assert_eq!(row.cells[3].value, "00:00");
     let row = find(t, &upcoming);
-    assert_eq!((row.cells[3].value.as_str(), row.cells[4].more[0].value.as_str()), ("2999-01-01 01:00", "00:00"));
+    assert_eq!((row.cells[2].value.as_str(), row.cells[3].value.as_str()), ("2999-01-01 01:00", "00:00"));
     let row = find(t, &never);
-    assert_eq!((row.cells[3].value.as_str(), row.cells[4].value.as_str()), ("due", NEVER));
-    assert_eq!(row.cells[4].kind, CellKind::Muted);
-    assert_eq!(find(t, &legacy).cells[3].value, NEVER);
-    assert_eq!(find(t, &far).cells[3].value, NEVER, "a next fire past the largest timestamp");
+    assert_eq!((row.cells[2].value.as_str(), row.cells[3].value.as_str()), ("due", NEVER));
+    assert_eq!(find(t, &legacy).cells[2].value, NEVER);
+    assert_eq!(find(t, &far).cells[2].value, NEVER, "a next fire past the largest timestamp");
 
     let fires = p.panel(query(FIRES)).await.unwrap();
     let names: Vec<&str> = timeline(&fires).entries.iter().map(|e| e.verb.as_str()).collect();

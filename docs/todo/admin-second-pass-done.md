@@ -2,6 +2,16 @@
 
 Last updated: 2026-11-24
 
+- [x] **Scheduler run outcomes** (2026-11-24, admin-second-pass step 3)
+  ADMIN2-07. Mockup: the dashboard's "storage.gc failed at 03:30" attention item, and the
+  Scheduler page's Target, Last result and Enabled columns and each Recent fires entry's
+  result, duration and note. The scheduler records no run (a fire carries only the schedule
+  name and bumps `last_fired`). Removed by owner ruling: the `attention.runs` contribution
+  and `dashboard_attention::SCHEDULER`, the `fake_*` helpers, and the Target, Last result,
+  Enabled, duration and note cells, in the portal and the mockup. The table keeps Id, When,
+  Next fire and Last (the last fire time); a fire entry is its schedule name and time.
+  Recorded runs would be a new feature.
+
 - [x] **Notification bell** (2026-11-24, admin-second-pass step 2)
   ADMIN2-04. Mockup: the top-bar bell's five entries. Fake: core/admin/src/fakes.rs:98
   (`notifications()`), used at core/admin/src/routes.rs:140: no operator feed exists.

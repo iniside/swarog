@@ -120,10 +120,6 @@ _None._
   (`modules/scheduler/src/admin.rs:408`); `tools/splitproof/src/storage_admin_checks.rs:135`
   uses the same idiom. Fix: a distinct provider message, or assert that no `admin.action`
   audit row was written.
-- [ ] **SH3 checks only that the old portal attention id is gone**
-  `scheduler_admin_checks.rs:161-174` asserts that `attention.scheduler` is not slotted, not
-  that no other provider draws a Scheduler runs item. The title "Scheduler runs" (the
-  constant at `scheduler_admin_checks.rs:11`) is never drawn on the dashboard.
 - [ ] **Splitproof skips the Scheduler page's disabled banner and its schedules foot, and Recent fires has no cap note**
   The page draws `DISABLED_BANNER` (`modules/scheduler/src/admin.rs:43`) and the foot "first
   100 schedules" when more than `MAX_ROWS` exist (`admin.rs:246-247`); no splitproof check
@@ -133,8 +129,8 @@ _None._
   `TIMESTAMP_MAX_EPOCH_SECONDS` (`modules/scheduler/src/lib.rs:141`, used in
   `store.rs:43` of `SCHEDULES_SQL`) has no test at its edge. Add an anti-drift row at
   `TIMESTAMP_MAX_EPOCH_SECONDS` minus the ceiling interval.
-- [ ] **`invoke_refuses_every_action` needs a DB pool it never uses**
-  `modules/scheduler/src/admin_tests.rs:171-175` skips the test without a pool and builds
+- [ ] **`invoke_refuses_fire_now_and_knows_no_other_action` needs a DB pool it never uses**
+  `modules/scheduler/src/admin_tests.rs` skips the test without a pool and builds
   `SchedulerAdmin::new(pool, true)`, but `invoke` and `panel("nope")` do not read the DB.
 - [ ] **Comment errors**
   `modules/scheduler/src/lib.rs:137-140` (the `TIMESTAMP_MAX_EPOCH_SECONDS` doc);

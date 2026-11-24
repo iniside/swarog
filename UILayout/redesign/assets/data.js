@@ -186,20 +186,20 @@ window.DATA = (() => {
   ];
 
   const schedules = [
-    { id: "daily.leaderboard_reset", cron: "0 7 * * *", target: "leaderboard.reset", next: "tomorrow 07:00", last: "ok", lastAt: "07:00", enabled: true },
-    { id: "season4.rewards", cron: "once 2026-10-22 12:00", target: "mail.enqueue_batch", next: "—", last: "ok", lastAt: "12:00", enabled: true },
-    { id: "lore.billing_snapshot", cron: "0 * * * *", target: "lore.snapshot_usage", next: "15:00", last: "ok", lastAt: "14:00", enabled: true },
-    { id: "storage.gc", cron: "30 3 * * *", target: "storage.collect_orphans", next: "tomorrow 03:30", last: "fail", lastAt: "03:30", enabled: true },
-    { id: "accounts.purge_deleted", cron: "0 4 * * *", target: "accounts.purge", next: "tomorrow 04:00", last: "ok", lastAt: "04:00", enabled: true },
-    { id: "weekend.xp_boost", cron: "0 18 * * FRI", target: "config.set_flag", next: "Fri 18:00", last: "ok", lastAt: "Fri 18:00", enabled: false },
+    { id: "daily.leaderboard_reset", every: "every 24 h", next: "tomorrow 07:00", lastAt: "07:00" },
+    { id: "season4.rewards", every: "every 24 h", next: "—", lastAt: "12:00" },
+    { id: "lore.billing_snapshot", every: "every 1 h", next: "15:00", lastAt: "14:00" },
+    { id: "storage.gc", every: "every 24 h", next: "tomorrow 03:30", lastAt: "03:30" },
+    { id: "accounts.purge_deleted", every: "every 24 h", next: "tomorrow 04:00", lastAt: "04:00" },
+    { id: "weekend.xp_boost", every: "every 168 h", next: "Fri 18:00", lastAt: "Fri 18:00" },
   ];
   const fires = [
-    { at: "14:00:00", id: "lore.billing_snapshot", result: "ok", dur: "0.4 s", note: "6 repos · 13.29 TB · 8 seats" },
-    { at: "13:00:00", id: "lore.billing_snapshot", result: "ok", dur: "0.4 s", note: "6 repos · 13.27 TB · 8 seats" },
-    { at: "12:00:00", id: "season4.rewards", result: "ok", dur: "8.1 s", note: "182 044 mails enqueued" },
-    { at: "07:00:00", id: "daily.leaderboard_reset", result: "ok", dur: "1.2 s", note: "4 boards" },
-    { at: "04:00:00", id: "accounts.purge_deleted", result: "ok", dur: "2.7 s", note: "31 accounts purged" },
-    { at: "03:30:00", id: "storage.gc", result: "fail", dur: "30.0 s", note: "timeout: storage-svc deadline exceeded" },
+    { at: "14:00:00", id: "lore.billing_snapshot" },
+    { at: "13:00:00", id: "lore.billing_snapshot" },
+    { at: "12:00:00", id: "season4.rewards" },
+    { at: "07:00:00", id: "daily.leaderboard_reset" },
+    { at: "04:00:00", id: "accounts.purge_deleted" },
+    { at: "03:30:00", id: "storage.gc" },
   ];
 
   const config = [

@@ -58,7 +58,6 @@ window.REG = (() => {
     { module: "wallet", tone: "err", icon: "alert", title: "wallet-svc unavailable", text: "7 restarts in 15 min; grants and ledger are offline.", href: "economy.html", action: "Open" },
     { module: "core.events", tone: "err", icon: "zap", title: "Subscription paused by poison event", text: "inventory.on_purchase.v1 stopped at seq 12,905 · 118 behind.", href: "events.html", action: "Resolve" },
     { module: "mail", tone: "warn", icon: "mail", title: "Mail relay throttling", text: "312 queued, 2 retrying, 1 failed permanently.", href: "mail.html", action: "Outbox" },
-    { module: "scheduler", tone: "warn", icon: "clock", title: "storage.gc failed at 03:30", text: "timeout: storage-svc deadline exceeded.", href: "scheduler.html", action: "Logs" },
   ];
 
   // entity.user.tab — the entity detail for kind "user" is built from these.

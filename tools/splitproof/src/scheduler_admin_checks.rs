@@ -8,10 +8,6 @@ use crate::{extract_form_fields, pass_nonce, Ctx, Proof};
 /// The page the scheduler provider declares (`modules/scheduler/src/admin.rs` `PAGE`).
 const PAGE_URL: &str = "/admin/p/scheduler/schedules";
 
-/// The FAKE attention item's title, verbatim from `modules/scheduler/src/admin.rs`
-/// `attention_runs`.
-const ATTENTION_TITLE: &str = "storage.gc failed at 03:30";
-
 /// The seeded schedule's interval: 2 h, so the running scheduler never finds it due during the
 /// pass and `last_fired` stays where the fixture put it; it draws as "every 2 h".
 ///
@@ -19,13 +15,12 @@ const ATTENTION_TITLE: &str = "storage.gc failed at 03:30";
 /// 127.0.0.1 bucket of the gateway's always-on rate limit, whose 429 answers before the portal.
 const INTERVAL_SECONDS: i64 = 7200;
 
-/// The scheduler provider's Schedules page, its disabled schedule actions and the dashboard's
-/// "Scheduler runs" attention item, drawn and posted through the portal that `admin` holds a
-/// session on, over one pass-named schedule written straight into `scheduler.schedules` (the
-/// scheduler has no write path; [SC0] seeds the same way). In the split the portal is admin-svc:
-/// the scheduler manifest (nav, page, `implemented: false` actions, the attention
-/// contribution), both page panels, the row menu and the attention item are built in
-/// scheduler-svc and reach admin-svc only through its `scheduler` peer.
+/// The scheduler provider's Schedules page and its disabled Fire now action, drawn and posted
+/// through the portal that `admin` holds a session on, over one pass-named schedule written
+/// straight into `scheduler.schedules` (the scheduler has no write path; [SC0] seeds the same
+/// way). In the split the portal is admin-svc: the scheduler manifest (nav, page, the
+/// `implemented: false` action, no dashboard contribution), both page panels and the row menu
+/// are built in scheduler-svc and reach admin-svc only through its `scheduler` peer.
 ///
 /// Break run (a full splitproof run, then reverted):
 /// - admin-svc without its `scheduler` peer (`cmd/admin-svc/src/lib.rs`): SH1-SH3 red as new in
@@ -120,20 +115,22 @@ async fn checks(
         ),
     );
 
-    // [SH2] every schedule control draws disabled as not implemented: the panel's + Schedule tool
-    // and the row menu's Fire now, Edit and Delete. A direct POST of schedule.fire is refused by
-    // the portal's admission (403 "Not implemented yet", not the provider's 404), and the
-    // seeded row's interval and last_fired are untouched.
+    // [SH2] the only schedule control is the row menu's Fire now, drawn disabled as not
+    // implemented; the panel draws no + Schedule tool and the menu no Edit or Delete. A direct
+    // POST of schedule.fire is refused by the portal's admission (403 "Not implemented yet", not
+    // the provider's 404), and the seeded row's interval and last_fired are untouched.
     let refused = |html: &str| -> Vec<(String, String)> {
         attr_values(html, "data-refused-action").into_iter().zip(attr_values(html, "data-refusal")).collect()
     };
     let want = |id: &str| (format!("scheduler/{id}"), "not-implemented".to_string());
+    let removed = ["schedule.create", "schedule.edit", "schedule.delete"];
     let panel_refused = refused(&s_body);
-    let panel_ok = panel_refused.contains(&want("schedule.create"));
+    let panel_ok = panel_refused.is_empty();
     let (menu_code, menu) = fetch(admin, &format!("{front}/admin/_menu/schedule/{name}")).await?;
     let menu_refused = refused(&menu);
-    let menu_ok = ["schedule.fire", "schedule.edit", "schedule.delete"].iter().all(|id| menu_refused.contains(&want(id)))
-        && text(&menu).contains("Fire now");
+    let menu_ok = menu_refused == [want("schedule.fire")]
+        && text(&menu).contains("Fire now")
+        && removed.iter().all(|id| !menu.contains(id) && !s_body.contains(id));
     let csrf = extract_form_fields(&page).into_iter().find(|(k, _)| k == "_csrf").map(|(_, v)| v).unwrap_or_default();
     if csrf.is_empty() {
         bail!("no _csrf on the Scheduler page: {}", cut(&page));
@@ -145,7 +142,7 @@ async fn checks(
     let post_text = text(&r.text().await.unwrap_or_default());
     let after = stored().await?;
     p.check(
-        &format!("[SH2{tag}] schedule tool and row menu draw not-implemented and a direct Fire now POST is refused by admission"),
+        &format!("[SH2{tag}] the row menu draws only a not-implemented Fire now, no Schedule tool, Edit or Delete, and a direct Fire now POST is refused by admission"),
         s_code == 200
             && panel_ok
             && menu_code == 200
@@ -158,33 +155,15 @@ async fn checks(
         ),
     );
 
-    // [SH3] the dashboard slots the scheduler's attention.runs contribution; fetched as the
-    // browser fetches it, the slot is ok, names module scheduler and draws the item linking to
-    // the Schedules page. The portal no longer slots its old attention.scheduler.
+    // [SH3] the dashboard slots no scheduler contribution: the scheduler declares no attention
+    // item, so no panel under /admin/_panel/scheduler/attention is fetched.
     let (d_code, dash) = fetch(admin, &format!("{front}/admin")).await?;
     let dash_slots = attr_values(&dash, "hx-get");
-    let item_url = dash_slots.iter().find(|u| u.starts_with("/admin/_panel/scheduler/attention.runs")).cloned();
-    let portal_slot = dash_slots.iter().any(|u| u.starts_with("/admin/_panel/portal/attention.scheduler"));
-    let (i_code, item) = match &item_url {
-        Some(u) => fetch(admin, &format!("{front}{u}")).await?,
-        None => (0, String::new()),
-    };
-    let linked = attr_values(&item, "href").iter().any(|h| h == PAGE_URL);
+    let scheduler_slot = dash_slots.iter().any(|u| u.starts_with("/admin/_panel/scheduler/"));
     p.check(
-        &format!("[SH3{tag}] dashboard draws the Scheduler runs attention item from the scheduler provider, linking to its Schedules page"),
-        d_code == 200
-            && !portal_slot
-            && i_code == 200
-            && attr(&item, "data-state") == "ok"
-            && attr(&item, "data-module") == "scheduler"
-            && text(&item).contains(ATTENTION_TITLE)
-            && linked,
-        format!(
-            "dashboard={d_code} item_url={item_url:?} portal_slot={portal_slot} item={i_code} state={:?} module={:?} linked={linked} body={}",
-            attr(&item, "data-state"),
-            attr(&item, "data-module"),
-            cut(&item)
-        ),
+        &format!("[SH3{tag}] dashboard slots nothing from the scheduler provider"),
+        d_code == 200 && !scheduler_slot,
+        format!("dashboard={d_code} scheduler_slot={scheduler_slot} slots={dash_slots:?}"),
     );
     Ok(())
 }
