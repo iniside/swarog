@@ -13,9 +13,7 @@ Rule source: docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:45-
 
 ## In progress
 
-- [ ] **Friends remove friend**
-  The player's Friends tab row-menu "Remove friend…" on a `friendship` row is
-  `implemented: false`; tracked as FRIENDS-08 in `docs/todo/friends.md`.
+_None._
 
 ## Open
 

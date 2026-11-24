@@ -4,11 +4,7 @@ Last updated: 2026-11-24
 
 ## In progress
 
-- [ ] **Admin removal of a friendship**
-  FRIENDS-08. The player's Friends tab draws the friendship row-menu "Remove friend…"
-  disabled (`implemented: false`, `modules/friends/src/admin.rs:243-257`): `api/friends`
-  has no admin write, only the identity-bound `Player::remove`. Needs an operator removal
-  of an edge by its id inside friends that emits `friend.removed` as the player path does.
+_None._
 
 ## Open
 
@@ -39,6 +35,7 @@ Last updated: 2026-11-24
   `insert_pending_tx` and `find_pair_tx`, and production exposes no hook to do
   that (`modules/friends/src/tests.rs:1066-1074`, 2026-09-05; comment read at
   HEAD).
+
 ### Known limits (admin-control-plane-redesign step 17)
 
 - [ ] **The Friends tab pager's cursor filters rows instead of bounding the index range**

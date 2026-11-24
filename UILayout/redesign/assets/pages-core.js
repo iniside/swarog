@@ -58,6 +58,19 @@ window.PAGES = window.PAGES || {};
   UI.defineMenu("holding", key => [{ c: { module: "inventory", point: "entity.user.row_action", prim: "MenuAction" }, label: "inventory", items: [
     { label: "Revoke item…", icon: "trash", run: `PAGES.revokeItem('${key}')` },
   ] }]);
+  P.removeFriend = friend => {
+    const me = P.currentUser?.handle || "this player";
+    UI.confirm({
+      c: { module: "friends", point: "entity.user.row_action", prim: "ConfirmAction" },
+      title: "Remove friend", icon: "trash",
+      body: `End the friendship between ${esc(me)} and ${esc(friend)}?`,
+      reason: "Reason (optional)",
+      confirm: "Remove", done: `${me} and ${friend} are no longer friends`,
+    });
+  };
+  UI.defineMenu("friendship", key => [{ c: { module: "friends", point: "entity.user.row_action", prim: "MenuAction" }, label: "friends", items: [
+    { label: "Remove friend…", icon: "trash", run: `PAGES.removeFriend('${key}')` },
+  ] }]);
   P.releaseAll = h => {
     const mine = D.locks.filter(l => l.owner === h);
     UI.confirm({
@@ -173,8 +186,9 @@ window.PAGES = window.PAGES || {};
         rowMenu: (r, i) => rowMenuBtn("holding", `${list[i].owner_type}|${list[i].owner_id}|${list[i].item_id}`),
         total: P.plural(list.length, "holding", "holdings"), page: "1 / 1" }) });
   };
+  P.friendRows = [["jonas.l", "accepted", "2025-03-14"], ["MiraVoss", "accepted", "2026-02-01"], ["NightOwl_77", "accepted", "2026-05-22"], ["kestrel", "pending (outgoing)", "2026-10-21"], ["diego.r", "accepted", "2025-03-11"]];
   tabRender.friends = () => panel({ c: { module: "friends", point: "entity.user.tab", prim: "DataTable" }, title: "Friends", meta: "12 · 1 pending", flush: true,
-    body: table({ cols: [{ label: "User" }, { label: "State" }, { label: "Since" }], rows: [["jonas.l", "accepted", "2025-03-14"], ["MiraVoss", "accepted", "2026-02-01"], ["NightOwl_77", "accepted", "2026-05-22"], ["kestrel", "pending (outgoing)", "2026-10-21"], ["diego.r", "accepted", "2025-03-11"]].map(r => [userCell(r[0]), r[1].startsWith("pending") ? badge(r[1], "info") : badge(r[1], "ok"), r[2]]), rowMenu: () => `<button class="btn sm icon ghost">${icon("more")}</button>`, total: "12 friends", page: "1 / 1" }) });
+    body: table({ cols: [{ label: "User" }, { label: "State" }, { label: "Since" }], rows: P.friendRows.map(r => [userCell(r[0]), r[1].startsWith("pending") ? badge(r[1], "info") : badge(r[1], "ok"), r[2]]), rowMenu: (r, i) => P.friendRows[i][1].startsWith("pending") ? "" : rowMenuBtn("friendship", P.friendRows[i][0]), total: "12 friends", page: "1 / 1" }) });
   tabRender.groups = u => {
     const list = D.memberships.filter(m => m.player_id === u.id);
     return panel({ c: { module: "groups", point: "entity.user.tab", prim: "DataTable" }, title: "Groups", meta: P.plural(list.length, "group", "groups"), flush: true,

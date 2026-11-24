@@ -2,6 +2,10 @@
 
 Last updated: 2026-11-24
 
+- [x] **Friends remove friend** (2026-11-24, admin-second-pass step 17b)
+  ADMIN2-16. The player's Friends tab row-menu "Remove friend…" on an accepted `friendship` row is
+  implemented (FRIENDS-08, `docs/todo/friends-done.md`); pending rows show no menu.
+
 - [x] **Park and cancel parked** (2026-11-24, admin-second-pass step 16)
   ADMIN2-15. `PARK` (pending to parked, `last_error` kept, `generation` bumped) and
   `CANCEL_PARKED` (a Confirm prepared like `CANCEL`; parked to cancelled, body kept) are
