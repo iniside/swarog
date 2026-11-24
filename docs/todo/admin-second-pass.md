@@ -19,12 +19,6 @@ _None._
 
 ### Fake data
 
-- [ ] **Deployment name, version and process count**
-  ADMIN2-01. Mockup: top-bar deployment and the dashboard subtitle ("emberline-prod ·
-  Swarog 0.42.1 · 20 processes (split topology)"). Fake: core/admin/src/fakes.rs:8,11
-  (`DEPLOYMENT`, `DASHBOARD_SUBTITLE`): the portal has no deployment name and no
-  version or process-count source. Replaced by: a deployment name in config and the
-  fleet's version and process count from Weles.
 - [ ] **Service health, probe interval, down/degraded notes and the wallet-down attention
   item**
   ADMIN2-02. Mockup: Service health panel (state, version, uptime, latency, note), top-bar

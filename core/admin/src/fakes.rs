@@ -4,12 +4,6 @@
 
 use controlplane::{fake_hash, AttentionItem, Link, ServiceItem, ServiceState, Severity};
 
-// FAKE: the portal has no deployment name.
-pub(crate) const DEPLOYMENT: &str = "emberline-prod";
-
-// FAKE: no version or process-count source; the portal cannot see the fleet.
-pub(crate) const DASHBOARD_SUBTITLE: &str = "emberline-prod · Swarog 0.42.1 · 20 processes (split topology)";
-
 // FAKE: no health probe exists until Weles exposes its API.
 const HEALTH_PROBE_S: u32 = 10;
 

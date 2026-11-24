@@ -136,7 +136,7 @@ async fn shell(
             reveal: f.reveal.as_ref().map(render::reveal),
             tone: f.tone.name(),
         }),
-        deployment: Some(fakes::DEPLOYMENT.to_string()),
+        deployment: p.st.deployment.clone(),
         health: Some(health()),
         complete: snapshot.complete(),
     }
@@ -411,7 +411,7 @@ async fn dashboard(
     let crumbs = vec![Crumb { label: "Dashboard".to_string(), href: None }];
     let view = DashboardView {
         shell: shell(&p, &ctx, &snapshot, &query, None, crumbs).await,
-        subtitle: fakes::DASHBOARD_SUBTITLE.to_string(),
+        subtitle: crate::dashboard_subtitle(p.st.deployment.as_deref()),
         tiles: pick(Point::DashboardTile),
         attention: pick(Point::DashboardAttention),
         panels: pick(Point::DashboardPanel),

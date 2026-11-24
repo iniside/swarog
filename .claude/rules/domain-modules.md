@@ -68,7 +68,8 @@ Per-module mechanics live in each `modules/<name>/src/lib.rs` header and the
   by **`cargo run -p adminctl`** (`create-user` upsert = also password reset,
   `--password-stdin`/`ADMINCTL_PASSWORD`, never argv) wrapped by the **`install`**
   script; zero-user boot warns instead of failing; `ADMIN_OPEN=1` bypasses sessions
-  AND CSRF (deliberately open local portal, loud warn). `ADMIN_USER`/`ADMIN_PASS` no
+  AND CSRF (deliberately open local portal, loud warn). `ADMIN_DEPLOYMENT_NAME` (read once at
+  init, unset shows "—") names the deployment in the sidebar and the dashboard subtitle. `ADMIN_USER`/`ADMIN_PASS` no
   longer exist. Emits durable `admin.action` (login events local in BOTH topologies;
   form-submit where the form's module is co-hosted; field names only, never values).
   Remote providers are reached over the QUIC `cp.*` face

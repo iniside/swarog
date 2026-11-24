@@ -61,7 +61,7 @@ window.PAGES = window.PAGES || {};
         tools: `<span class="muted hide-tablet" style="font-size:11.5px">last 4 h</span><span class="muted" style="font-size:11.5px;width:64px;text-align:right">p99</span>`,
         body: `<div class="grid g-2" style="gap:0">${[svcs.slice(0, 10), svcs.slice(10)].map(c => `<div style="border-right:1px solid var(--border)">${UI.services(c)}</div>`).join("")}</div>`,
       });
-      return head("Dashboard", "emberline-prod · Swarog 0.42.1 · 20 processes (split topology)", `<div class="seg"><button>1 h</button><button class="on">24 h</button><button>7 d</button></div><button class="btn">${icon("refresh")} Refresh</button>`) +
+      return head("Dashboard", "emberline-prod · Swarog 0.1.0", `<div class="seg"><button>1 h</button><button class="on">24 h</button><button>7 d</button></div><button class="btn">${icon("refresh")} Refresh</button>`) +
         `<div class="grid g-tiles" style="margin-bottom:12px">${tiles}</div>` +
         `<div class="grid g-21" style="margin-bottom:12px">${attention}${activity}</div>` +
         `<div id="health">${health}</div>`;

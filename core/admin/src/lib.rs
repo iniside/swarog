@@ -394,6 +394,7 @@ impl Module for Admin {
                 "admin portal is UNAUTHENTICATED (ADMIN_OPEN=1) — sessions AND CSRF disabled; intended for local use only"
             );
         }
+        let deployment = deployment_name(std::env::var("ADMIN_DEPLOYMENT_NAME").ok());
         let cookie_secure = cookie_secure_on();
         if !cookie_secure {
             tracing::warn!(
@@ -414,6 +415,7 @@ impl Module for Admin {
             bus: deps.bus.clone(),
             open,
             cookie_secure,
+            deployment,
             trusted,
             login_slots: Arc::new(Semaphore::new(32)),
             argon_permits: Arc::new(Semaphore::new(2)),
@@ -489,6 +491,8 @@ struct AdminState {
     open: bool,
     /// Cookie `Secure` flag (default ON; `ADMIN_COOKIE_SECURE=0` opts out).
     cookie_secure: bool,
+    /// `ADMIN_DEPLOYMENT_NAME`, read once at init; `None` draws "—".
+    deployment: Option<String>,
     /// Trusted-proxy CIDRs for the client-IP walk (lockout `ip:<addr>` subject).
     trusted: Vec<IpNet>,
     login_slots: Arc<Semaphore>,
@@ -1064,6 +1068,16 @@ fn admin_open_explicitly_on() -> bool {
         std::env::var("ADMIN_OPEN"),
         Ok(v) if v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("on")
     )
+}
+
+/// The deployment name from `ADMIN_DEPLOYMENT_NAME`: trimmed, blank or unset is `None`.
+fn deployment_name(raw: Option<String>) -> Option<String> {
+    raw.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+/// The dashboard subtitle: the deployment name and the workspace version.
+fn dashboard_subtitle(deployment: Option<&str>) -> String {
+    format!("{} · Swarog {}", deployment.unwrap_or("—"), env!("CARGO_PKG_VERSION"))
 }
 
 /// The cookie `Secure` flag: ON unless `ADMIN_COOKIE_SECURE` is EXPLICITLY set

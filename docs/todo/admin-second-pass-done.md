@@ -2,6 +2,11 @@
 
 Last updated: 2026-11-24
 
+- [x] **Deployment name and version** (2026-11-24, admin-second-pass step 11)
+  ADMIN2-01. Mockup: top-bar deployment and the dashboard subtitle. Removed: `DEPLOYMENT`,
+  `DASHBOARD_SUBTITLE` and the process count and topology from the subtitle (mockup
+  subtitle now "emberline-prod · Swarog 0.1.0"). Replaced by `ADMIN_DEPLOYMENT_NAME` read
+  once at init (unset or blank shows "—") and the workspace version.
 - [x] **Config revision writers** (2026-11-24, admin-second-pass step 10)
   ADMIN2-65. Mockup: the "by <user>" actor of each Revisions entry and the Keys row's writer.
   Removed: `fake_by` and `FAKE_LOGINS`. Replaced by `config.setting_history.by`: the

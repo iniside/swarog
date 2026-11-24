@@ -71,6 +71,17 @@ fn with_env(key: &str, val: Option<&str>, f: impl FnOnce()) {
     }
 }
 
+/// The deployment name is trimmed; unset and blank draw "—"; the subtitle carries the workspace version.
+#[test]
+fn deployment_name_and_subtitle() {
+    assert_eq!(deployment_name(Some("  emberline-prod \n".to_string())).as_deref(), Some("emberline-prod"));
+    assert_eq!(deployment_name(Some("   ".to_string())), None);
+    assert_eq!(deployment_name(None), None);
+    let v = env!("CARGO_PKG_VERSION");
+    assert_eq!(dashboard_subtitle(Some("emberline-prod")), format!("emberline-prod · Swarog {v}"));
+    assert_eq!(dashboard_subtitle(None), format!("— · Swarog {v}"));
+}
+
 /// `admin_open_explicitly_on` matches the apikeys/gateway truthy set, case-insensitively.
 #[test]
 fn admin_open_truthy_parsing() {
@@ -209,6 +220,7 @@ async fn wired_with_verifier(
         bus: ctx.bus().clone(),
         open,
         cookie_secure,
+        deployment: None,
         trusted: Vec::new(),
         login_slots: Arc::new(tokio::sync::Semaphore::new(32)),
         argon_permits: Arc::new(tokio::sync::Semaphore::new(2)),
@@ -682,6 +694,7 @@ async fn login_ip_limiter_returns_exact_retry_after() {
         bus: ctx.bus().clone(),
         open: false,
         cookie_secure: true,
+        deployment: None,
         trusted: Vec::new(),
         login_slots: Arc::new(tokio::sync::Semaphore::new(32)),
         argon_permits: Arc::new(tokio::sync::Semaphore::new(2)),
@@ -4653,6 +4666,31 @@ async fn an_unknown_range_is_a_400_on_the_dashboard_and_its_panel_route() {
     let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/ops/players?range=7d").await;
     assert_eq!(status, StatusCode::OK, "{raw}");
     assert_eq!(ops.calls().len(), 1);
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// The dashboard subtitle and the sidebar draw the configured deployment name and the workspace
+/// version; with no name they draw "—" and no process count or topology.
+#[tokio::test]
+async fn dashboard_draws_the_deployment_name_and_version() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, mut st) = wired(&pool, false, true).await;
+    let user = uniq("t-deploy");
+    let cookie = operator_cookie(&pool, &user).await;
+    let engine = Arc::new(sourced(Vec::new()).await);
+    let v = env!("CARGO_PKG_VERSION");
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert!(raw.contains(&format!("— · Swarog {v}")), "{raw}");
+    assert!(!raw.contains("processes"), "{raw}");
+
+    Arc::get_mut(&mut st).expect("the state is not shared yet").deployment = Some("test-deploy".to_string());
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert!(raw.contains(&format!("test-deploy · Swarog {v}")), "{raw}");
+    assert!(raw.contains(r#"<div class="brand-sub">test-deploy</div>"#), "{raw}");
 
     cleanup_user(&pool, &user).await;
 }
