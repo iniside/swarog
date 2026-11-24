@@ -732,3 +732,7 @@ pub(crate) fn with_flash(target: &str, token: &str) -> String {
     let sep = if target.contains('?') { '&' } else { '?' };
     format!("{target}{sep}reveal={}", encode(token))
 }
+
+#[cfg(test)]
+#[path = "actions_tests.rs"]
+mod tests;

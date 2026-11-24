@@ -140,9 +140,8 @@ pub(crate) struct PanelCache {
 }
 
 impl PanelCache {
-    fn get(&self, key: &str) -> Option<Cached> {
+    fn get(&self, key: &str, now: Instant) -> Option<Cached> {
         let (body, fetched, expires) = self.entries.get(key)?;
-        let now = Instant::now();
         let age = now.saturating_duration_since(*fetched);
         if now < *expires {
             Some(Cached::Fresh(body.clone(), age))
@@ -323,7 +322,7 @@ pub(crate) async fn resolve(
     };
     let cached = decl
         .cache_ttl_s
-        .and_then(|_| engine.panel_cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key));
+        .and_then(|_| engine.panel_cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key, Instant::now()));
     view.error = Some(failure);
     match cached {
         Some(Cached::Fresh(body, age)) => {
@@ -350,3 +349,7 @@ fn last_value(body: &PanelBody, age: Duration) -> Option<LastValue> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+#[path = "panels_tests.rs"]
+mod tests;

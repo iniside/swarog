@@ -245,3 +245,7 @@ pub(crate) fn spawn_refresh(engine: Arc<Engine>, mut stop_rx: watch::Receiver<bo
         }
     })
 }
+
+#[cfg(test)]
+#[path = "manifests_tests.rs"]
+mod tests;
