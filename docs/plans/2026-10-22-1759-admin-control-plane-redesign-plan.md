@@ -2460,7 +2460,9 @@ The ports:
   until then the blocking clippy stage is red on that dead code by owner decision
   (2026-11-10). Parts (named `24.a1`… so they do not collide with Steps 24a/24b):
   - **24.a1** (Na1): the audit log page, its operator cells per X5 and the actor filter X5
-    links to.
+    links to. Split (owner, 2026-11-24) into **24.a1a** (store readers, the per-topic
+    derivation, their tests) and **24.a1b** (provider, slot, `Cargo.toml`, todo items,
+    AUDIT-02, svc comments). Spec: `docs/plans/2026-11-24-step24-audit-checklist.md`.
   - **24.a2** (Na3): the dashboard "Recent operator activity" `DashboardPanel`.
   - The Export head action is `implemented: false` with a todo item (St1/O-3 pattern). The
     actor filter and its total are an unindexed `count(*)` over `audit.log` (only `at` is
@@ -2471,10 +2473,11 @@ The ports:
     `tools/admincheck/src/checks_tests.rs`; proof-auditor audits.
   - **24.a4**: the dead-code sweep to clippy-clean, and the X9 accept-line sweep; after
     24.t, before 24.b.
+  - **24t** (owner, 2026-11-24; `[opus]` test-author, proof-auditor audits): the audit
+    splitproof of the checklist's §9, after 24.a2.
   - **24.b**: the view part.
-  - **Owner decision before dispatch (24.a4):** the lane. The template's is `[opus]`
-    core-implementer; the audit recommends `[mechanical]` core-implementer `sonnet` after a
-    code-scout inventory of the store/service items no port reused.
+  - **24.a4 lane** (owner, 2026-11-24): a code-scout inventory of the store/service items
+    no port reused, then `[mechanical]` core-implementer `sonnet`.
 
 The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending") are kept;
 "Purges pending" is the X1 attention item of the port template (owner, 2026-11-17).
