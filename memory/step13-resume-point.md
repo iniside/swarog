@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-23T23:39:09.167Z
+  modified: 2026-11-24T10:22:07.570Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -112,3 +112,8 @@ a9094615 ("any" = no filter in core filter_views) review REJECT structural S1: "
 - 23a2 (config edit/create invoke, conformance probe, EXCLUDED_MODALS) dispatched 2026-11-24; owner said stop after it — do NOT start reviews/23b without the owner.
 - Owner open: Confirm still accepts _reason on a None ConfirmSpec (actions.rs:389) — recommend same rule as forms; 8 admindiff PAGE_MAP failures from redesign mockup commits 4fa3b2e0/0390ec07/b4303e23 (todo admin.md).
 - Next: core-reviewer + proof-auditor on 23a2 (conformance touched), then 23b (accept files, nav #ecbb9a re-count) — ask owner.
+
+## State 2026-11-24 (Step 23 complete)
+- 23a2 aaf1ab3b + review-fix f58d4b2d (core-reviewer + proof-auditor ACCEPT); todo bccd2cd6 (replay safety, duplicate-create revision gap, no redirect after create → config.md; Confirm _reason leak → admin.md).
+- fdc97507 declares 5 new mockup screens Pending in admindiff; crawl still blocked (character/group row menus on compared player tabs). Owner: leave admindiff entirely — 23b dropped, admindiff out of the plan (b6219934 errata).
+- Owner: "konczymy ten plan" — finish the plan. Next: Step 24 (audit) checklist; 24.a4 lane is an owner decision.
