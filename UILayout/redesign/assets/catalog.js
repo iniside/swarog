@@ -132,11 +132,11 @@ WorkQueue {
 Item { id, ref?: EntityRef, state, attempts: u32, max_attempts: u32,
        next_attempt_at?: time, last_error?: string, payload_preview? }
 Allowed actions per item state are declared by the module:
-  pending → cancel ; retrying → retry | park | cancel ; failed → retry | cancel ; parked → resume | cancel`,
+  pending → cancel ; retrying → retry | park | cancel ; parked → resume | cancel`,
       actions: ["Retry now", "Cancel (confirm)", "Park / Resume", "Bulk versions of each", "Pause the whole queue"],
       states: ["ok", "loading", "empty", "stale", "error", "readonly", "denied"],
       points: ["page", "dashboard.attention (count)"],
-      demo: () => panel({ c: C("mail", "page", "WorkQueue"), flush: true, noForce: true, title: "Outbox", body: `<div class="q-counts"><div class="q-count on"><div class="n">4</div><div class="l">Needs attention</div></div><div class="q-count"><div class="n">309</div><div class="l">Pending</div></div><div class="q-count"><div class="n">1</div><div class="l">Parked</div></div></div>` + table({ pager: false, cols: [{ label: "Message" }, { label: "State" }, { label: "Attempts" }, { label: "" }], rows: [[`<span class="mono">m-88180</span>`, status("failed"), `<span class="attempts">${"<i class='f'></i>".repeat(5)}</span>`, `<button class="btn sm">${icon("refresh")} Retry</button>`]] }) }),
+      demo: () => panel({ c: C("mail", "page", "WorkQueue"), flush: true, noForce: true, title: "Outbox", body: `<div class="q-counts"><div class="q-count on"><div class="n">4</div><div class="l">Needs attention</div></div><div class="q-count"><div class="n">309</div><div class="l">Pending</div></div><div class="q-count"><div class="n">2</div><div class="l">Parked</div></div></div>` + table({ pager: false, cols: [{ label: "Message" }, { label: "State" }, { label: "Attempts" }, { label: "" }], rows: [[`<span class="mono">m-88180</span>`, status("parked"), `<span class="attempts">${"<i class='f'></i>".repeat(5)}</span>`, `<button class="btn sm">${icon("play")} Resume</button>`]] }) }),
     },
     {
       id: "PermissionMatrix", name: "Permission matrix editor", used: ["lore-permissions.html"],

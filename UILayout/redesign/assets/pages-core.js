@@ -126,8 +126,7 @@ window.PAGES = window.PAGES || {};
     return panel({ c: { module: "characters", point: "entity.user.tab", prim: "DataTable" }, title: "Characters", meta: P.plural(list.length, "character", "characters"), flush: true,
       emptyTitle: "No characters", emptyDetail: "This player has not created a character.",
       body: table({ pager: false, cols: [{ label: "Name" }, { label: "Class" }, { label: "Created" }, { label: "Character id" }],
-        rows: list.map(c => ({ id: c.id, cells: [esc(c.name), P.classTag(c.class), P.when(c.created_at), `<span class="mono muted">${c.id}</span>`] })),
-        rowMenu: r => rowMenuBtn("character", r.id) }) });
+        rows: list.map(c => ({ id: c.id, cells: [esc(c.name), P.classTag(c.class), P.when(c.created_at), `<span class="mono muted">${c.id}</span>`] })) }) });
   };
   tabRender.wallet = () => `<div class="grid g-tiles" style="margin-bottom:12px">${["Embers (EMB)", "Gold (GLD)", "Reroll tokens (TOK)"].map(l => kpi({ c: { module: "wallet", point: "entity.user.tab", prim: "KpiTile" }, label: l, value: "—", state: "error" })).join("")}</div>` +
     panel({ c: { module: "wallet", point: "entity.user.tab", prim: "DataTable" }, title: "Transactions", state: "error" });
@@ -137,7 +136,7 @@ window.PAGES = window.PAGES || {};
     const kinds = [...new Set(all.map(h => P.itemById[h.item_id].kind))].sort();
     const list = all.filter(h => !P.holdKind || P.itemById[h.item_id].kind === P.holdKind);
     const off = "Grant and revoke are not exposed to admins by the inventory module yet";
-    const owner = h => h.owner_type === "player" ? `<span class="tag">player</span>` : `<span class="row" style="gap:6px"><span class="tag">character</span>${P.charLink(P.charById[h.owner_id])}</span>`;
+    const owner = h => h.owner_type === "player" ? `<span class="tag">player</span>` : `<span class="row" style="gap:6px"><span class="tag">character</span>${esc(P.charById[h.owner_id].name)}</span>`;
     return panel({ c: { module: "inventory", point: "entity.user.tab", prim: "DataTable" }, title: "Inventory", meta: `player ${u.id.slice(0, 8)} and ${P.plural(mine.length, "character", "characters")}`, flush: true,
       tools: `<button class="btn sm" disabled title="${off}">${icon("gift")} Grant item</button>`,
       emptyTitle: "No items", emptyDetail: "Neither the player nor their characters hold anything.",

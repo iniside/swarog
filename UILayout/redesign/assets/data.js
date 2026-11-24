@@ -140,7 +140,7 @@ window.DATA = (() => {
     { id: "m-88213", to: "MiraVoss", template: "season_reward", subject: "Season 4 rewards", state: "pending", attempts: 0, next: "in 12 s", err: "" },
     { id: "m-88207", to: "kestrel", template: "season_reward", subject: "Season 4 rewards", state: "retrying", attempts: 3, next: "in 2 min", err: "mail provider unavailable: transient error (421): 4.7.0 Try again later" },
     { id: "m-88199", to: "NightOwl_77", template: "purchase_receipt", subject: "Your receipt #A-55102", state: "retrying", attempts: 2, next: "in 40 s", err: "mail provider unavailable: transient error (421): 4.7.0 Try again later" },
-    { id: "m-88180", to: "Volkhv", template: "season_reward", subject: "Season 4 rewards", state: "failed", attempts: 5, next: "—", err: "550 5.1.1 Mailbox unavailable" },
+    { id: "m-88180", to: "Volkhv", template: "season_reward", subject: "Season 4 rewards", state: "parked", attempts: 5, next: "—", err: "550 5.1.1 Mailbox unavailable" },
     { id: "m-88172", to: "ash_and_ember", template: "ban_notice", subject: "Account action", state: "parked", attempts: 5, next: "—", err: "recipient banned · parked by policy" },
     { id: "m-88166", to: "guest-28be71f5", template: "welcome", subject: "Welcome to Ashfall", state: "sent", attempts: 1, next: "—", err: "" },
     { id: "m-88160", to: "aiko.tanaka", template: "playtest_invite", subject: "Playtest Fri 24 Oct", state: "sent", attempts: 1, next: "—", err: "" },

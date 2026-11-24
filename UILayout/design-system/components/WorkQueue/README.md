@@ -8,7 +8,7 @@ Mail outbox, delivery queues, any retrying job list. The poison-event resolver o
 
 ## What the consumer provides
 
-State counts `[key, label, n]`, rows with `id`, target, state, attempts (`.attempts` pips: `f` failed, `ok` succeeded), next attempt and last error. Allowed actions per state: pending → cancel; retrying → retry, park, cancel; failed → retry, cancel; parked → resume, cancel; sent → none.
+State counts `[key, label, n]`, rows with `id`, target, state, attempts (`.attempts` pips: `f` failed, `ok` succeeded), next attempt and last error. Allowed actions per state: pending → cancel; retrying → retry, park, cancel; parked → resume, cancel; sent → none.
 
 ## Do and don't
 

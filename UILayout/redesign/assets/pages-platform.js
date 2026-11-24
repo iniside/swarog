@@ -45,7 +45,7 @@
 
   // ---------- mail outbox (WorkQueue) ----------
   const att = (n, ok) => `<span class="attempts" title="${n} attempts">${Array.from({ length: 5 }, (_, i) => `<i class="${i < n ? (ok && i === n - 1 ? "ok" : "f") : ""}"></i>`).join("")}</span>`;
-  const MAIL_ACTIONS = { pending: ["cancel"], retrying: ["retry", "park", "cancel"], failed: ["retry", "cancel"], parked: ["resume", "cancel"], sent: [] };
+  const MAIL_ACTIONS = { pending: ["cancel"], retrying: ["retry", "park", "cancel"], parked: ["resume", "cancel"], sent: [] };
   const mailActions = m => MAIL_ACTIONS[m.state].map(a => a === "retry" ? `<button class="btn sm" onclick="UI.toast('Retry scheduled now')">${icon("refresh")} Retry</button>`
     : a === "resume" ? `<button class="btn sm" onclick="UI.toast('Resumed')">${icon("play")} Resume</button>`
     : a === "park" ? `<button class="btn sm ghost" title="Park: keep but stop retrying" onclick="UI.toast('Parked')">${icon("park")}</button>`
@@ -54,14 +54,14 @@
     meta: { nav: "mail", crumbs: [plat, ["Mail outbox"]] },
     render: () => {
       const tab = P.mailTab || "attention";
-      const counts = [["attention", "Needs attention", 4], ["pending", "Pending", 309], ["retrying", "Retrying", 2], ["failed", "Failed", 1], ["parked", "Parked", 1], ["sent", "Sent (24 h)", "182,051"]];
-      const list = D.mail.filter(m => tab === "attention" ? ["retrying", "failed", "parked"].includes(m.state) : m.state === tab);
+      const counts = [["attention", "Needs attention", 4], ["pending", "Pending", 309], ["retrying", "Retrying", 2], ["parked", "Parked", 2], ["sent", "Sent (24 h)", "182,051"]];
+      const list = D.mail.filter(m => tab === "attention" ? ["retrying", "parked"].includes(m.state) : m.state === tab);
       const q = panel({ c: pg("mail", "WorkQueue"), flush: true, title: "Outbox", meta: "relay smtp.emberline.gg",
         tools: `<button class="btn sm">${icon("pause")} Pause sending</button>`,
         body: `<div class="q-counts">${counts.map(([k, l, n]) => `<div class="q-count ${tab === k ? "on" : ""}" onclick="PAGES.mailTab='${k}';REG.render()"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("")}</div>` +
           (list.length ? table({ selectable: true, searchPlaceholder: "Recipient, template or message id", filters: [{ k: "Template", v: "any" }],
             cols: [{ label: "Message" }, { label: "To" }, { label: "Template" }, { label: "State" }, { label: "Attempts" }, { label: "Next attempt" }, { label: "Last error", wrap: true }, { label: "" }],
-            rows: list.map(m => [`<span class="mono">${m.id}</span>`, userCell(m.to), `<span class="tag">${m.template}</span>`, status(m.state), att(m.attempts, m.state === "sent"), `<span class="dim">${m.next}</span>`, m.err ? `<span class="mono" style="font-size:11.5px;color:${m.state === "failed" ? "var(--err)" : "var(--text-2)"}">${esc(m.err)}</span>` : `<span class="muted">—</span>`,
+            rows: list.map(m => [`<span class="mono">${m.id}</span>`, userCell(m.to), `<span class="tag">${m.template}</span>`, status(m.state), att(m.attempts, m.state === "sent"), `<span class="dim">${m.next}</span>`, m.err ? `<span class="mono" style="font-size:11.5px;color:var(--text-2)">${esc(m.err)}</span>` : `<span class="muted">—</span>`,
               `<span class="row" style="justify-content:flex-end;gap:4px">${mailActions(m)}</span>`]),
             total: `${list.length} messages`, page: "1 / 1" }) : UI.stateBlock("empty", { title: "Queue is empty", detail: "Nothing in this state.", icon: "check", actions: "" })) });
       return P.head("Mail outbox", "Durable outbox; each message is retried until sent, cancelled or parked.", `<button class="btn">${icon("send")} Test send</button>`) + q;
