@@ -149,12 +149,6 @@ fn fake_pick(salt: &str, id: &str, options: &[&'static str]) -> &'static str {
     options[(fake_hash(salt, id) % options.len() as u64) as usize]
 }
 
-// FAKE: no identity records when it was last used.
-fn fake_last_used(player_id: &str, provider: &str) -> &'static str {
-    let key = format!("{player_id}/{provider}");
-    fake_pick("last-used", &key, &["4 min ago", "1 h ago", "yesterday", "3 d ago", "12 d ago"])
-}
-
 // FAKE: a refresh family stores neither its client nor its address; both hash the family
 // id, never the token.
 fn fake_client(family_id: &str) -> &'static str {
@@ -580,7 +574,7 @@ impl AccountsAdmin {
     async fn identities(&self, req: &PanelQuery) -> Result<PanelBody, Error> {
         let id = player_id(req)?;
         let identities = self.svc.store.identity_rows(id).await.map_err(internal)?;
-        let rows = identities.iter().map(|i| identity_row(id, i)).collect();
+        let rows = identities.iter().map(identity_row).collect();
         let columns = vec![
             column("provider", "Provider", CellKind::Ref),
             column("subject", "Subject", CellKind::Mono),
@@ -643,14 +637,18 @@ fn player_row(row: &PlayerListRow) -> Row {
     }
 }
 
-fn identity_row(player_id: &str, identity: &IdentityRow) -> Row {
+fn last_used(identity: &IdentityRow) -> String {
+    identity.last_used_secs.map_or_else(|| "—".to_string(), controlplane::ago)
+}
+
+fn identity_row(identity: &IdentityRow) -> Row {
     Row {
         entity: None,
         cells: vec![
             text(CellKind::Ref, identity.provider.clone()),
             text(CellKind::Mono, mask(&identity.subject)),
             text(CellKind::Text, identity.linked.clone()),
-            text(CellKind::Text, fake_last_used(player_id, &identity.provider)),
+            text(CellKind::Text, last_used(identity)),
         ],
         highlight: false,
         item: None,

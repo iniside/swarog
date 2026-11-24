@@ -2,6 +2,12 @@
 
 Last updated: 2026-11-24
 
+- [x] **Identity last used** (2026-11-24, admin-second-pass step 12)
+  ADMIN2-22. Mockup: the Linked identities Last used column. Removed: `fake_last_used`.
+  Replaced by `accounts.identities.last_used_at`, stamped in the session-minting transaction
+  (`Service::issue_session_tx`) for the identity the session went through: register, password
+  login, federated and Epic login, guest. A refresh does not stamp. Never used shows "—"; the
+  age is computed in SQL and drawn with `controlplane::ago`.
 - [x] **Deployment name and version** (2026-11-24, admin-second-pass step 11)
   ADMIN2-01. Mockup: top-bar deployment and the dashboard subtitle. Removed: `DEPLOYMENT`,
   `DASHBOARD_SUBTITLE` and the process count and topology from the subtitle (mockup

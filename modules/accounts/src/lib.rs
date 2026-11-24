@@ -167,6 +167,7 @@ CREATE TABLE IF NOT EXISTS accounts.identities (
 	player_id   uuid NOT NULL REFERENCES accounts.players(id) ON DELETE CASCADE,
 	secret_hash text,                         -- dev/password: argon2id PHC; guest: SHA-256 digest
 	created_at  timestamptz NOT NULL DEFAULT now(),
+	last_used_at timestamptz,                 -- the newest session family minted through it
 	PRIMARY KEY (provider, subject)
 );
 
@@ -274,14 +275,22 @@ impl Service {
     }
 
     /// Mints one login: a new refresh FAMILY and the first access token inside it, on
-    /// the caller's transaction. Both rows commit with whatever else that transaction
-    /// carries (the player row, the `player.registered` append).
+    /// the caller's transaction, and stamps the identity `(provider, subject)` it was
+    /// minted through as last used. All three commit with whatever else that
+    /// transaction carries (the player row, the `player.registered` append); a refresh
+    /// rotates inside a family and never comes here, so it never stamps.
     async fn issue_session_tx(
         &self,
         conn: &mut PgConnection,
         p: &Player,
+        provider: &str,
+        subject: &str,
         token: String,
     ) -> Result<accountsapi::Session, Error> {
+        self.store
+            .stamp_identity_used_tx(conn, provider, subject, &p.id)
+            .await
+            .map_err(internal)?;
         let refresh_token = store::new_token();
         let family_id = self
             .store
@@ -300,12 +309,17 @@ impl Service {
         })
     }
 
-    /// Mints a fresh bearer token for `p` in its own thin transaction. Password
-    /// login uses this path; registration/external login use their outer tx.
-    async fn issue_session(&self, p: &Player) -> Result<accountsapi::Session, Error> {
+    /// Mints a fresh bearer token for `p` through its `dev` identity `email` in its own
+    /// thin transaction. Password login uses this path; registration/external login use
+    /// their outer tx.
+    async fn issue_password_session(
+        &self,
+        p: &Player,
+        email: &str,
+    ) -> Result<accountsapi::Session, Error> {
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
         let session = self
-            .issue_session_tx(&mut tx, p, store::new_token())
+            .issue_session_tx(&mut tx, p, providers::DEV, email, store::new_token())
             .await?;
         tx.commit().await.map_err(internal)?;
         Ok(session)
@@ -343,7 +357,10 @@ impl Service {
             tx.rollback().await.ok();
             return Err(err);
         }
-        let session = match self.issue_session_tx(&mut tx, &p, token).await {
+        let session = match self
+            .issue_session_tx(&mut tx, &p, providers::DEV, email, token)
+            .await
+        {
             Ok(session) => session,
             Err(err) => {
                 tx.rollback().await.ok();
@@ -377,7 +394,7 @@ impl Service {
             .map_err(internal)?
         {
             let session = match self
-                .issue_session_tx(&mut tx, &p, store::new_token())
+                .issue_session_tx(&mut tx, &p, provider, subject, store::new_token())
                 .await
             {
                 Ok(session) => session,
@@ -414,7 +431,7 @@ impl Service {
             return Err(err);
         }
         let session = match self
-            .issue_session_tx(&mut tx, &p, store::new_token())
+            .issue_session_tx(&mut tx, &p, provider, subject, store::new_token())
             .await
         {
             Ok(session) => session,
@@ -902,7 +919,7 @@ impl accountsapi::Auth for Service {
             return Err(Error::unauthorized("invalid credentials"));
         }
         let (p, _) = identity.expect("known_user implies identity");
-        self.issue_session(&p).await
+        self.issue_password_session(&p, &email).await
     }
 
     /// Federated login (AuthNone): resolves `provider`, verifies `credential` with

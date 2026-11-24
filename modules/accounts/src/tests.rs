@@ -6,6 +6,7 @@ mod dev_auth_gate;
 mod delete;
 mod directory;
 mod guest;
+mod last_used;
 mod prune;
 mod refresh;
 use crate::oidc::{IssuerMatch, OidcVerifier};

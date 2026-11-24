@@ -329,6 +329,8 @@ pub(crate) struct IdentityRow {
     pub subject: String,
     /// `YYYY-MM-DD`, UTC.
     pub linked: String,
+    /// Whole seconds since the newest session minted through it; `None` when none was.
+    pub last_used_secs: Option<i64>,
 }
 
 /// One live refresh family: a login on one device, whatever its token rotations.
@@ -769,6 +771,31 @@ impl Store {
         Ok(())
     }
 
+    /// Stamps identity `(provider, subject)` of `player_id` as used now, on the caller's
+    /// tx. No such identity of that player is an error: a session is never minted through
+    /// an identity that does not exist.
+    pub async fn stamp_identity_used_tx(
+        &self,
+        conn: &mut PgConnection,
+        provider: &str,
+        subject: &str,
+        player_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        let done = sqlx::query(
+            "UPDATE accounts.identities SET last_used_at = now() \
+              WHERE provider = $1 AND subject = $2 AND player_id = $3::uuid",
+        )
+        .bind(provider)
+        .bind(subject)
+        .bind(player_id)
+        .execute(&mut *conn)
+        .await?;
+        if done.rows_affected() != 1 {
+            return Err(sqlx::Error::RowNotFound);
+        }
+        Ok(())
+    }
+
     /// Starts a NEW refresh family on the caller's tx: the row Postgres mints the
     /// `family_id` for, and the only place a 30-day expiry is ever written.
     pub async fn insert_refresh_family_tx(
@@ -1109,8 +1136,9 @@ impl Store {
         if !is_canonical_uuid(player_id) {
             return Ok(Vec::new());
         }
-        let rows: Vec<(String, String, String)> = sqlx::query_as(
-            "SELECT provider, subject, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') \
+        let rows: Vec<(String, String, String, Option<i64>)> = sqlx::query_as(
+            "SELECT provider, subject, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'), \
+                    floor(EXTRACT(EPOCH FROM (now() - last_used_at)))::int8 \
                FROM accounts.identities WHERE player_id = $1::uuid \
               ORDER BY created_at, provider, subject",
         )
@@ -1119,10 +1147,11 @@ impl Store {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(provider, subject, linked)| IdentityRow {
+            .map(|(provider, subject, linked, last_used_secs)| IdentityRow {
                 provider,
                 subject,
                 linked,
+                last_used_secs,
             })
             .collect())
     }

@@ -299,16 +299,21 @@ async fn identities_panel_masks_the_subject_and_counts_the_links() {
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("ident-{}@test.local", suffix().to_lowercase());
     let id = svc.register(email.clone(), "pw".into(), "Ident".into()).await.unwrap().player_id;
+    let linked = svc.link_identity(&id, "epic", &format!("ident-{}", suffix())).await.map(|_| ());
     let body = AccountsAdmin::new(Arc::clone(&svc)).panel(player_query("identities", &id)).await;
     cleanup_player(&pool, &id).await;
 
+    linked.unwrap();
     let body = body.unwrap();
-    assert_eq!(body.meta.as_deref(), Some("1"));
+    assert_eq!(body.meta.as_deref(), Some("2"));
     let t = table(body);
     let row = &t.rows[0];
     assert_eq!(row.cells[0].value, "dev");
     assert_eq!(row.cells[1].value, mask(&email), "the email subject is masked");
     assert!(!row.cells[1].value.contains(&email[4..email.len() - 4]), "the masked middle never leaks");
+    assert_eq!(row.cells[3].value, "now", "the registration session used dev just now");
+    assert_eq!(t.rows[1].cells[0].value, "epic");
+    assert_eq!(t.rows[1].cells[3].value, "—", "no session went through the linked identity");
     assert!(row.actions.is_empty(), "no operator action exists on a linked identity");
     assert!(row.item.is_none(), "nothing acts on an identity row");
 }
