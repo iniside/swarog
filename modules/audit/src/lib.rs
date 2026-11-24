@@ -40,8 +40,7 @@ use futures::future::BoxFuture;
 use lifecycle::{Context, Ddl, Module};
 use sqlx::PgConnection;
 
-// Used by the provider in 24.a1b.
-#[allow(dead_code)]
+mod admin;
 mod store;
 
 /// The domain events audit records, each on the DURABLE plane via `on_tx_raw`. This is
@@ -254,8 +253,9 @@ impl Module for Audit {
         Ok(())
     }
 
-    /// Only wires up — no I/O (#8). Subscribes each durable topic (raw JSON, inserted on
-    /// the handed delivery tx) and the `scheduler.fired` prune reaction.
+    /// Only wires up — no I/O (#8). Contributes the admin provider, subscribes each durable
+    /// topic (raw JSON, inserted on the handed delivery tx) and the `scheduler.fired` prune
+    /// reaction.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         // Validated FIRST so a bad value fails startup loudly (fail-closed at init — the
         // apikeys/gateway explicit-gate convention) — a non-positive retention would delete
@@ -270,6 +270,13 @@ impl Module for Audit {
                  retention would delete the ledger; unset it for the default {DEFAULT_RETENTION_DAYS}"
             );
         }
+        // Contributed unconditionally: whichever process hosts audit serves its admin page.
+        let pool = ctx
+            .db()
+            .ok_or_else(|| anyhow::anyhow!("audit requires a DB pool"))?
+            .clone();
+        let provider: Arc<dyn controlplane::Provider> = Arc::new(admin::AuditAdmin::new(pool));
+        ctx.contribute(controlplane::PROVIDER_SLOT, provider);
         // Durable plane: the producer emitted via emit_tx; messaging delivers here
         // through its per-(event_id,"audit") delivery tx, in BOTH topologies. We
         // subscribe by raw string (no payload-type import) and insert the raw JSON on

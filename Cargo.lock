@@ -496,6 +496,7 @@ dependencies = [
  "lifecycle",
  "mailevents",
  "matchevents",
+ "opsapi",
  "schedulerevents",
  "serde",
  "serde_json",

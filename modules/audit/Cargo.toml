@@ -26,6 +26,9 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 futures = { workspace = true }
+# The control-plane contract (a core crate): audit contributes its Audit log page provider.
+controlplane = { workspace = true }
+opsapi = { workspace = true }
 
 [dev-dependencies]
 testdb = { workspace = true }
@@ -35,7 +38,6 @@ charactersevents = { workspace = true }
 accountsevents = { workspace = true }
 configevents = { workspace = true }
 matchevents = { workspace = true }
-controlplane = { workspace = true }
 walletevents = { workspace = true }
 friendsevents = { workspace = true }
 groupsevents = { workspace = true }

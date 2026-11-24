@@ -257,6 +257,10 @@ async fn init_ok_when_retention_unset() {
         audit
             .init(&ctx)
             .expect("unset AUDIT_RETENTION_DAYS must not fail startup");
+        // Whichever process hosts audit serves its admin page.
+        let providers = ctx.slots().contributions(controlplane::PROVIDER_SLOT);
+        let modules: Vec<String> = providers.iter().map(|p| p.manifest().module).collect();
+        assert_eq!(modules, ["audit"]);
     });
 }
 

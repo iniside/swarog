@@ -146,6 +146,11 @@ modules/mail/src/admin.rs landed in 544dd4e5; the line numbers are its committed
   create and edit as `Then::Form` (name, interval), delete as `Then::Confirm`, fire now as
   `Then::Invoke` (an immediate fire under the advisory lock), with `writes: true` and a
   `cp.invoke scheduler` conformance case.
+- [ ] **Audit log export**
+  ADMIN2-69. Mockup: the Audit log head's "Export" button (UILayout/redesign/assets/pages-platform.js:118).
+  Action `log.export`, `implemented: false` and `Then::Invoke`: modules/audit/src/admin.rs:275;
+  `invoke` refuses it, and the control plane has no download carrier. Replaced by: a
+  download carrier in `core/controlplane` (decision O-3) and an export of the narrowed rows.
 - [ ] **Friends remove friend**
   The player's Friends tab row-menu "Remove friend…" on a `friendship` row is
   `implemented: false`; tracked as FRIENDS-08 in `docs/todo/friends.md`.
@@ -308,6 +313,26 @@ modules/apikeys/src/admin.rs, as committed in admin-control-plane-redesign step 
   static text, neither tags nor bound to the selected option. Replaced by: a per-option
   help on an Enum field.
 
+### Fake data and actions of the audit port
+
+modules/audit/src/admin.rs, as committed in admin-control-plane-redesign step 24 part a1b.
+
+- [ ] **Audit log actor options with no source**
+  ADMIN2-70. Mockup: the Actor select's `scheduler` and `apikey:ak_c4a8` options
+  (UILayout/redesign/assets/pages-platform.js:121). Fake: modules/audit/src/admin.rs:42
+  (`FAKE_ACTORS`, appended by `actor_options` at :113): only `admin.action` rows carry an
+  actor, so both options narrow the table to zero rows. Replaced by: actors recorded by the
+  scheduler and the API key verifier (the acting key's name), or an owner decision to drop
+  the two options.
+- [ ] **Audit log inline styles**
+  ADMIN2-71. Mockup: the search box is 260 px wide (pages-platform.js:120), the Action cell
+  has `font-weight:500` and the Target cell `font-size:11.5px` (pages-platform.js:123). The
+  portal draws the search box at 220 px (core/admin/src/templates/primitives.html.tmpl:216,
+  see ADMIN2-35) and Mono cells without either style; checklist
+  docs/plans/2026-11-24-step24-audit-checklist.md H4/H6. Replaced by: the ADMIN2-35 search
+  width field set to 260 by audit, and a cell emphasis or size the template draws, or an
+  owner decision to keep the shared Mono style.
+
 ### Pages without a mockup
 
 - [ ] **Group entity page**
@@ -346,8 +371,8 @@ modules/apikeys/src/admin.rs, as committed in admin-control-plane-redesign step 
 
 - [ ] **Per-page toolbar search width** (low priority, owner 2026-11-17)
   ADMIN2-35. Mockup: `searchWidth: 280` for players (UILayout/redesign/assets/pages-core.js:98),
-  260 for the mail outbox (pages-platform.js:120), 220 elsewhere. The portal's `table_toolbar`
-  hard-codes `style="width:220px"` (core/admin/src/templates/primitives.html.tmpl:189), so the
+  260 for the mail outbox (pages-platform.js:120) and the audit log (ADMIN2-71), 220 elsewhere. The portal's `table_toolbar`
+  hard-codes `style="width:220px"` (core/admin/src/templates/primitives.html.tmpl:216), so the
   players box is 60 px and the outbox box 40 px narrower than the mockup. admindiff compares
   no attributes, so no accept entry covers it. Found in step 13 part b. Closed by: a
   `DataTable` search-width field in `core/controlplane` that the template reads, set by

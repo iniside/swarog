@@ -5,7 +5,7 @@
 
 use lifecycle::{Module, ProcessWiring};
 
-/// audit-svc dials no peer (it only SERVES `admin.adminData` over its own edge and
+/// audit-svc dials no peer (it only SERVES the `cp.*` face over its own edge and
 /// pulls durable events), so the accepted `wiring` is unused today — the parameter
 /// exists so every `cmd/*-svc` lib shares the one `modules(&ProcessWiring)` signature
 /// `tools/checkmodules` depends on.
