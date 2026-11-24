@@ -21,8 +21,8 @@ use std::process::ExitCode;
 
 use anyhow::{anyhow, Result};
 use asyncevents::admin::{
-    bump_generation, info, pause, resume, retire, retry, skip, snapshot, Retired,
-    SkipResult, StateSnapshot,
+    bump_generation, info, pause, resume, retire, retry, skip, snapshot, SkipResult,
+    StateSnapshot, VerbError,
 };
 use eventctl::dsn;
 use eventctl::seed::{seed_mockup, LAGGING_ID, PAUSED_ID};
@@ -106,11 +106,14 @@ async fn run() -> Result<()> {
     }
 }
 
-/// Names a [`Retired`] refusal as the verb's refusal; other errors pass through.
-fn refused(verb: &'static str) -> impl FnOnce(anyhow::Error) -> anyhow::Error {
-    move |err| match err.downcast_ref::<Retired>() {
-        Some(_) => err.context(format!("eventctl: {verb} refused; retirement is permanent")),
-        None => err,
+/// Names a [`VerbError::Retired`] refusal as the verb's refusal; other errors pass
+/// through.
+fn refused(verb: &'static str) -> impl FnOnce(VerbError) -> anyhow::Error {
+    move |err| match err {
+        VerbError::Retired { .. } => {
+            anyhow::Error::new(err).context(format!("eventctl: {verb} refused; retirement is permanent"))
+        }
+        other => other.into(),
     }
 }
 

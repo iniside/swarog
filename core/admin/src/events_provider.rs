@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use asyncevents::admin::{self as plane, SkipResult, StateSnapshot, SubInfo, SubState};
+use asyncevents::admin::{self as plane, SkipResult, StateSnapshot, SubInfo, SubState, VerbError};
 use controlplane::{
     ActionDecl, ActionPoint, Align, AttentionItem, Banner, Cell, CellKind, Column, ConfirmSpec, ConfirmTone,
     ContributionDecl, DataTable, Delta, Emphasis, EntityHeader, EntityKindDecl, EntityRef, FilterDef, FilterKind,
@@ -120,11 +120,15 @@ fn internal(error: anyhow::Error) -> opsapi::Error {
     opsapi::Error::internal(format!("{error:#}"))
 }
 
-/// A verb's [`plane::Retired`] refusal is `Invalid`; any other failure is internal.
-fn refused(error: anyhow::Error) -> opsapi::Error {
-    match error.downcast_ref::<plane::Retired>() {
-        Some(retired) => opsapi::Error::invalid(retired.to_string()),
-        None => internal(error),
+/// A verb's error as its status: an unknown id is `NotFound`, a refusal `Invalid`, a
+/// database failure `Internal`.
+fn verb_error(error: VerbError) -> opsapi::Error {
+    match error {
+        VerbError::NotFound { .. } => opsapi::Error::not_found(error.to_string()),
+        VerbError::Retired { .. } | VerbError::Healthy { .. } | VerbError::NothingToSkip { .. } => {
+            opsapi::Error::invalid(error.to_string())
+        }
+        VerbError::Db(error) => internal(error),
     }
 }
 
@@ -347,16 +351,6 @@ impl EventsProvider {
         plane::states(&self.pool).await.map_err(internal)
     }
 
-    /// The subscription's current state; `NotFound` for an unknown id, which the plane's
-    /// verbs report only as an untyped error.
-    async fn state_of(&self, id: &str) -> Result<SubState, opsapi::Error> {
-        self.states()
-            .await?
-            .into_iter()
-            .find(|s| s.id == id)
-            .ok_or_else(|| opsapi::Error::not_found(format!("no subscription {id:?}")))
-    }
-
     async fn nav_counter(&self) -> Result<Primitive, opsapi::Error> {
         let paused = self.states().await?.iter().filter(|s| s.state == "paused").count();
         if paused == 0 {
@@ -515,7 +509,7 @@ impl EventsProvider {
                 detail: "No subscription is paused.".to_string(),
             }));
         };
-        let event = plane::poison_event(&self.pool, &sub.id).await.map_err(internal)?;
+        let event = plane::poison_event(&self.pool, &sub.id).await.map_err(verb_error)?;
         let mut items = Vec::new();
         match &event {
             Some(ev) => {
@@ -596,21 +590,19 @@ impl EventsProvider {
     }
 
     async fn header(&self, entity: &EntityRef) -> Result<Primitive, opsapi::Error> {
-        let sub = self.state_of(&entity.id).await?;
-        let snap = plane::snapshot(&self.pool, &sub.id).await.map_err(internal)?;
+        let snap = plane::snapshot(&self.pool, &entity.id).await.map_err(verb_error)?;
         Ok(Primitive::EntityHeader(EntityHeader {
-            title: sub.id.clone(),
+            title: snap.id.clone(),
             crumb: None,
             subtitle: format!("checkpoint {}", snap.cursor),
             status: Some(state_cell(&snap.state, snap.consecutive_failures)),
             badges: Vec::new(),
-            avatar_seed: sub.id,
+            avatar_seed: snap.id,
         }))
     }
 
     async fn details(&self, entity: &EntityRef) -> Result<Primitive, opsapi::Error> {
-        let sub = self.state_of(&entity.id).await?;
-        let snap = plane::snapshot(&self.pool, &sub.id).await.map_err(internal)?;
+        let snap = plane::snapshot(&self.pool, &entity.id).await.map_err(verb_error)?;
         let none = || "—".to_string();
         let items = vec![
             prop("State", state_cell(&snap.state, snap.consecutive_failures)),
@@ -618,7 +610,7 @@ impl EventsProvider {
             prop("Failures", text(CellKind::Number, snap.consecutive_failures.to_string(), None)),
             prop("Next attempt", text(CellKind::Text, snap.next_attempt_at.as_deref().map_or_else(none, day_time), None)),
             prop("Last error", text(CellKind::Mono, snap.last_error.clone().unwrap_or_else(none), None)),
-            prop("Consumer", text(CellKind::Text, fakes::consumer(&sub.id), None)),
+            prop("Consumer", text(CellKind::Text, fakes::consumer(&snap.id), None)),
         ];
         Ok(Primitive::PropertyList(PropertyList { items, columns: 2, item: None, code: None }))
     }
@@ -632,14 +624,13 @@ impl EventsProvider {
     ) -> Result<InvokeOutcome, opsapi::Error>
     where
         F: FnOnce(PgPool, String) -> Fut,
-        Fut: std::future::Future<Output = anyhow::Result<(StateSnapshot, StateSnapshot)>>,
+        Fut: std::future::Future<Output = Result<(StateSnapshot, StateSnapshot), VerbError>>,
     {
         let id = match &req.entity {
             Some(e) if e.kind == KIND => e.id.clone(),
             _ => return Err(opsapi::Error::invalid(format!("{} needs a {KIND} entity", req.action))),
         };
-        self.state_of(&id).await?;
-        let (before, after) = verb(self.pool.clone(), id.clone()).await.map_err(refused)?;
+        let (before, after) = verb(self.pool.clone(), id.clone()).await.map_err(verb_error)?;
         if before == after {
             return Ok(unchanged(&id, &after));
         }
@@ -652,8 +643,7 @@ impl EventsProvider {
             .as_deref()
             .and_then(parse_poison_item)
             .ok_or_else(|| opsapi::Error::invalid("Resume needs the previewed subscription"))?;
-        self.state_of(id).await?;
-        let (before, after) = plane::resume_retry(&self.pool, id).await.map_err(refused)?;
+        let (before, after) = plane::resume_retry(&self.pool, id).await.map_err(verb_error)?;
         if before == after {
             return Ok(unchanged(id, &after));
         }
@@ -679,9 +669,8 @@ impl EventsProvider {
                 error,
             )])));
         }
-        self.state_of(id).await?;
         let note = format!("operator {}: {reason}", req.operator);
-        match plane::skip(&self.pool, id, &note, Some(event_id)).await.map_err(refused)? {
+        match plane::skip(&self.pool, id, &note, Some(event_id)).await.map_err(verb_error)? {
             SkipResult::Skipped(outcome) => {
                 Ok(done(format!("Skipped event {} on {id}; the subscription resumed", outcome.skipped_event_id)))
             }
@@ -794,3 +783,7 @@ impl Provider for EventsProvider {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "events_provider_tests.rs"]
+mod events_provider_tests;

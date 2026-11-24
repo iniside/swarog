@@ -237,6 +237,7 @@ async fn skip_refuses_a_healthy_subscription() {
     insert_sub(&pool, &id, &topic, "active", 0, (0, "0".to_string(), 0)).await;
 
     let err = skip(&pool, &id, "no", None).await.unwrap_err();
+    assert!(matches!(&err, VerbError::Healthy { id: e } if *e == id), "unexpected: {err}");
     assert!(err.to_string().contains("refusing to skip"), "unexpected: {err}");
 
     cleanup(&pool, &topic, &id).await;
@@ -366,4 +367,86 @@ async fn unknown_subscription_errors() {
     let Some(pool) = test_pool().await else { return };
     let err = retry(&pool, "eventctl.does-not-exist").await.unwrap_err();
     assert!(err.to_string().contains("no such subscription"), "unexpected: {err}");
+}
+
+/// An unknown id is [`VerbError::NotFound`] from every verb that names one subscription.
+#[tokio::test]
+async fn unknown_subscription_is_not_found_from_every_verb() {
+    let Some(pool) = test_pool().await else { return };
+    let id = unique("sub.missing");
+    let not_found = |what: &str, err: VerbError| {
+        assert!(matches!(&err, VerbError::NotFound { id: e } if *e == id), "{what}: {err}");
+    };
+    not_found("snapshot", snapshot(&pool, &id).await.unwrap_err());
+    not_found("retry", retry(&pool, &id).await.unwrap_err());
+    not_found("pause", pause(&pool, &id).await.unwrap_err());
+    not_found("resume", resume(&pool, &id).await.unwrap_err());
+    not_found("resume_retry", resume_retry(&pool, &id).await.unwrap_err());
+    not_found("retire", retire(&pool, &id).await.unwrap_err());
+    not_found("skip", skip(&pool, &id, "r", None).await.unwrap_err());
+    not_found("skip expected", skip(&pool, &id, "r", Some("e")).await.unwrap_err());
+    not_found("poison_event", poison_event(&pool, &id).await.unwrap_err());
+}
+
+/// A retired subscription is [`VerbError::Retired`] from every verb that moves it,
+/// and from `skip` whatever `expected` is.
+#[tokio::test]
+async fn retired_subscription_is_refused_by_every_moving_verb() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique("evctl.retired");
+    let id = unique("sub.retired");
+    append_positions(&pool, &topic, 1).await;
+    insert_sub(&pool, &id, &topic, "retired", 3, (0, "0".to_string(), 0)).await;
+
+    let retired = |what: &str, err: VerbError| {
+        assert!(matches!(&err, VerbError::Retired { id: e } if *e == id), "{what}: {err}");
+    };
+    retired("retry", retry(&pool, &id).await.unwrap_err());
+    retired("pause", pause(&pool, &id).await.unwrap_err());
+    retired("resume", resume(&pool, &id).await.unwrap_err());
+    retired("resume_retry", resume_retry(&pool, &id).await.unwrap_err());
+    retired("skip", skip(&pool, &id, "r", None).await.unwrap_err());
+    retired("skip expected", skip(&pool, &id, "r", Some("e")).await.unwrap_err());
+    assert_eq!(snapshot(&pool, &id).await.unwrap().state, "retired", "nothing moved");
+
+    cleanup(&pool, &topic, &id).await;
+}
+
+/// `skip` with no expected event on a faulted subscription with no eligible event past
+/// its cursor is [`VerbError::NothingToSkip`]; with an expected event it is a result.
+#[tokio::test]
+async fn skip_with_no_eligible_event_is_nothing_to_skip() {
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique("evctl.empty");
+    let id = unique("sub.empty");
+    insert_sub(&pool, &id, &topic, "paused", 2, (0, "0".to_string(), 0)).await;
+
+    let err = skip(&pool, &id, "r", None).await.unwrap_err();
+    assert!(matches!(&err, VerbError::NothingToSkip { id: e } if *e == id), "unexpected: {err}");
+    let resolved = skip(&pool, &id, "r", Some("e")).await.unwrap();
+    assert!(matches!(resolved, SkipResult::AlreadyResolved { healthy: false }), "{resolved:?}");
+
+    cleanup(&pool, &topic, &id).await;
+}
+
+/// `eventctl` prints a verb error's `Display`; these are its messages, and `Db`
+/// prints the whole context chain of its source.
+#[test]
+fn verb_error_messages_are_the_operator_messages() {
+    let id = "s.v1".to_string();
+    assert_eq!(VerbError::NotFound { id: id.clone() }.to_string(), "eventctl: no such subscription \"s.v1\"");
+    assert_eq!(VerbError::Retired { id: id.clone() }.to_string(), "subscription \"s.v1\" is retired");
+    assert_eq!(
+        VerbError::Healthy { id: id.clone() }.to_string(),
+        "eventctl: refusing to skip \"s.v1\" — it is active with no failures; skip only steps past the \
+         CURRENT failing event of a paused/faulted subscription (pause it first, or use retry)"
+    );
+    assert_eq!(
+        VerbError::NothingToSkip { id }.to_string(),
+        "eventctl: no eligible event past \"s.v1\"'s cursor to skip — nothing to do"
+    );
+    let db = VerbError::from(anyhow!("connection refused").context("eventctl: read subscription"));
+    assert_eq!(db.to_string(), "eventctl: read subscription: connection refused");
+    let wrapped = anyhow::Error::new(db);
+    assert_eq!(format!("{wrapped:#}"), "eventctl: read subscription: connection refused", "no repeated chain");
 }

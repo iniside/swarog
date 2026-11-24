@@ -2,7 +2,7 @@
 //! command returns a before/after [`StateSnapshot`] pair so the caller can PRINT
 //! the transition — a checkpoint is never advanced silently.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use sqlx::{PgPool, Row};
 
 /// A subscription projection for `list`/`lag`: identity, delivery state, cursor, and
@@ -150,8 +150,8 @@ pub async fn states(pool: &PgPool) -> Result<Vec<SubState>> {
 }
 
 /// A before/after snapshot of one subscription (its identity, state, cursor, failure
-/// state). Errors if the id is unknown.
-pub async fn snapshot(pool: &PgPool, id: &str) -> Result<StateSnapshot> {
+/// state). [`VerbError::NotFound`] if the id is unknown.
+pub async fn snapshot(pool: &PgPool, id: &str) -> Result<StateSnapshot, VerbError> {
     let row = sqlx::query(
         "SELECT subscription_id, state, cursor_generation, cursor_xid::text AS cursor_xid, \
                 cursor_tie, consecutive_failures, next_attempt_at::text AS next_attempt_at, last_error \
@@ -161,7 +161,7 @@ pub async fn snapshot(pool: &PgPool, id: &str) -> Result<StateSnapshot> {
     .fetch_optional(pool)
     .await
     .context("eventctl: read subscription")?
-    .ok_or_else(|| anyhow!("eventctl: no such subscription {id:?}"))?;
+    .ok_or_else(|| VerbError::NotFound { id: id.to_string() })?;
     let g: i64 = row.get("cursor_generation");
     let x: String = row.get("cursor_xid");
     let t: i64 = row.get("cursor_tie");
@@ -175,20 +175,48 @@ pub async fn snapshot(pool: &PgPool, id: &str) -> Result<StateSnapshot> {
     })
 }
 
-/// The error a verb returns when it refuses to move a retired subscription; callers
-/// find it with `anyhow::Error::downcast_ref`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Retired {
-    pub id: String,
+/// Why a verb on one subscription failed. `Display` is the message `eventctl` prints.
+#[derive(Debug)]
+pub enum VerbError {
+    /// No subscription has this id.
+    NotFound { id: String },
+    /// The subscription is retired, and retirement is permanent.
+    Retired { id: String },
+    /// [`skip`] with no expected event, on an active subscription with no failures.
+    Healthy { id: String },
+    /// [`skip`] with no expected event, and no event past the cursor is eligible.
+    NothingToSkip { id: String },
+    /// The database failed, or a guarded update matched no row on a subscription that
+    /// is neither missing nor retired. `Display` prints the whole context chain.
+    Db(anyhow::Error),
 }
 
-impl std::fmt::Display for Retired {
+impl std::fmt::Display for VerbError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "subscription {:?} is retired", self.id)
+        match self {
+            VerbError::NotFound { id } => write!(f, "eventctl: no such subscription {id:?}"),
+            VerbError::Retired { id } => write!(f, "subscription {id:?} is retired"),
+            VerbError::Healthy { id } => write!(
+                f,
+                "eventctl: refusing to skip {id:?} — it is active with no failures; skip only steps \
+                 past the CURRENT failing event of a paused/faulted subscription (pause it first, or \
+                 use retry)"
+            ),
+            VerbError::NothingToSkip { id } => {
+                write!(f, "eventctl: no eligible event past {id:?}'s cursor to skip — nothing to do")
+            }
+            VerbError::Db(error) => write!(f, "{error:#}"),
+        }
     }
 }
 
-impl std::error::Error for Retired {}
+impl std::error::Error for VerbError {}
+
+impl From<anyhow::Error> for VerbError {
+    fn from(error: anyhow::Error) -> Self {
+        VerbError::Db(error)
+    }
+}
 
 /// Applies `set` (a static SET list; `$1` binds the id) to a subscription that is not
 /// retired, returning the before/after pair. The refusal is the UPDATE's own
@@ -198,7 +226,7 @@ async fn update_unretired(
     id: &str,
     set: &'static str,
     what: &'static str,
-) -> Result<(StateSnapshot, StateSnapshot)> {
+) -> Result<(StateSnapshot, StateSnapshot), VerbError> {
     let before = snapshot(pool, id).await?;
     let sql = format!(
         "UPDATE asyncevents.subscriptions SET {set}, updated_at = now() \
@@ -216,41 +244,43 @@ async fn update_unretired(
     Ok((before, snapshot(pool, id).await?))
 }
 
-/// Why a guarded UPDATE matched no row: [`Retired`], or the snapshot's unknown-id error.
-async fn refusal(pool: &PgPool, id: &str) -> anyhow::Error {
+/// Why a guarded UPDATE matched no row: [`VerbError::Retired`], the snapshot's
+/// [`VerbError::NotFound`], or else a race the verbs do not name ([`VerbError::Db`]).
+async fn refusal(pool: &PgPool, id: &str) -> VerbError {
     match snapshot(pool, id).await {
-        Ok(now) if now.state == "retired" => Retired { id: id.to_string() }.into(),
-        Ok(now) => anyhow!("eventctl: update of {id:?} matched no row in state {}", now.state),
+        Ok(now) if now.state == "retired" => VerbError::Retired { id: id.to_string() },
+        Ok(now) => anyhow!("eventctl: update of {id:?} matched no row in state {}", now.state).into(),
         Err(error) => error,
     }
 }
 
 /// `retry`: clear the backoff window and failure count so the next worker pass
-/// re-attempts the CURRENT event — the cursor is untouched (no skip). [`Retired`] for
-/// a retired subscription.
-pub async fn retry(pool: &PgPool, id: &str) -> Result<(StateSnapshot, StateSnapshot)> {
+/// re-attempts the CURRENT event — the cursor is untouched (no skip).
+/// [`VerbError::Retired`] for a retired subscription.
+pub async fn retry(pool: &PgPool, id: &str) -> Result<(StateSnapshot, StateSnapshot), VerbError> {
     let set = "consecutive_failures = 0, next_attempt_at = NULL, last_error = NULL";
     update_unretired(pool, id, set, "retry").await
 }
 
 /// `pause`: stop delivery (the worker's due-select ignores non-`active` rows).
-/// [`Retired`] for a retired subscription.
-pub async fn pause(pool: &PgPool, id: &str) -> Result<(StateSnapshot, StateSnapshot)> {
+/// [`VerbError::Retired`] for a retired subscription.
+pub async fn pause(pool: &PgPool, id: &str) -> Result<(StateSnapshot, StateSnapshot), VerbError> {
     update_unretired(pool, id, "state = 'paused'", "pause").await
 }
 
 /// `resume`: return to `active` and clear the backoff window so delivery restarts
 /// promptly. The failure count is left for `retry` to reset — resume/pause are the
-/// state toggle, retry is the backoff reset. [`Retired`] for a retired subscription.
-pub async fn resume(pool: &PgPool, id: &str) -> Result<(StateSnapshot, StateSnapshot)> {
+/// state toggle, retry is the backoff reset. [`VerbError::Retired`] for a retired
+/// subscription.
+pub async fn resume(pool: &PgPool, id: &str) -> Result<(StateSnapshot, StateSnapshot), VerbError> {
     update_unretired(pool, id, "state = 'active', next_attempt_at = NULL", "resume").await
 }
 
 /// `retire`: mark the subscription retired (an explicit operator decision — deleting
 /// code is NOT retirement). The worker never delivers a retired row, and retention
 /// excludes it from the GC floor. Permanent: retry, pause, resume, resume_retry and skip
-/// refuse a retired row with [`Retired`].
-pub async fn retire(pool: &PgPool, id: &str) -> Result<(StateSnapshot, StateSnapshot)> {
+/// refuse a retired row with [`VerbError::Retired`].
+pub async fn retire(pool: &PgPool, id: &str) -> Result<(StateSnapshot, StateSnapshot), VerbError> {
     let before = snapshot(pool, id).await?;
     sqlx::query(
         "UPDATE asyncevents.subscriptions SET state = 'retired', updated_at = now() WHERE subscription_id = $1",
@@ -284,7 +314,8 @@ macro_rules! next_eligible_event {
 ///
 /// With `expected = Some(event_id)`, a healthy subscription, no eligible event, or a
 /// next eligible event other than `event_id` returns [`SkipResult::AlreadyResolved`]
-/// and moves nothing; with `None` the first two are errors.
+/// and moves nothing; with `None` the first two are [`VerbError::Healthy`] and
+/// [`VerbError::NothingToSkip`].
 ///
 /// The read-pick-update runs in ONE transaction that claims the subscription row
 /// `FOR UPDATE` — the same row workers serialize their delivery/checkpoint on — so
@@ -293,8 +324,13 @@ macro_rules! next_eligible_event {
 /// silently no-oping. If a worker advanced past the failure first, the guard re-checks
 /// on the locked row and finds `consecutive_failures = 0`, so skip REFUSES instead of
 /// rewinding the checkpoint — the correct outcome. A retired subscription, read on the
-/// locked row, is a [`Retired`] error whatever `expected` is.
-pub async fn skip(pool: &PgPool, id: &str, reason: &str, expected: Option<&str>) -> Result<SkipResult> {
+/// locked row, is [`VerbError::Retired`] whatever `expected` is.
+pub async fn skip(
+    pool: &PgPool,
+    id: &str,
+    reason: &str,
+    expected: Option<&str>,
+) -> Result<SkipResult, VerbError> {
     // Cosmetic before/after reads stay pool-side; the real work is the tx below.
     let before = snapshot(pool, id).await?;
 
@@ -313,7 +349,7 @@ pub async fn skip(pool: &PgPool, id: &str, reason: &str, expected: Option<&str>)
     .fetch_optional(&mut *tx)
     .await
     .context("eventctl: claim subscription for skip")?
-    .ok_or_else(|| anyhow!("eventctl: no such subscription {id:?}"))?;
+    .ok_or_else(|| VerbError::NotFound { id: id.to_string() })?;
     let topic: String = sub.get("topic");
     let version: i32 = sub.get("contract_version");
     let cg: i64 = sub.get("cursor_generation");
@@ -324,7 +360,7 @@ pub async fn skip(pool: &PgPool, id: &str, reason: &str, expected: Option<&str>)
 
     if state == "retired" {
         tx.rollback().await.context("eventctl: rollback skip of a retired subscription")?;
-        return Err(Retired { id: id.to_string() }.into());
+        return Err(VerbError::Retired { id: id.to_string() });
     }
 
     // Re-evaluate the refuse-healthy guard on the LOCKED row: a worker that advanced
@@ -335,11 +371,7 @@ pub async fn skip(pool: &PgPool, id: &str, reason: &str, expected: Option<&str>)
         if expected.is_some() {
             return Ok(SkipResult::AlreadyResolved { healthy: true });
         }
-        bail!(
-            "eventctl: refusing to skip {id:?} — it is active with no failures; skip only steps \
-             past the CURRENT failing event of a paused/faulted subscription (pause it first, or \
-             use retry)"
-        );
+        return Err(VerbError::Healthy { id: id.to_string() });
     }
 
     // The failing event = the next event the worker would attempt: exact
@@ -371,7 +403,7 @@ pub async fn skip(pool: &PgPool, id: &str, reason: &str, expected: Option<&str>)
         if expected.is_some() {
             return Ok(SkipResult::AlreadyResolved { healthy: false });
         }
-        bail!("eventctl: no eligible event past {id:?}'s cursor to skip — nothing to do");
+        return Err(VerbError::NothingToSkip { id: id.to_string() });
     };
     let event_id: String = ev.get("event_id");
     let eg: i64 = ev.get("generation");
@@ -434,8 +466,8 @@ pub struct PoisonEvent {
 /// The next eligible event past subscription `id`'s cursor (the one [`skip`] steps
 /// over), read without moving anything. It does not apply `skip`'s refuse-healthy
 /// guard, so on a healthy subscription it is just the next event due. `None` when no
-/// event past the cursor is eligible. Errors if the id is unknown.
-pub async fn poison_event(pool: &PgPool, id: &str) -> Result<Option<PoisonEvent>> {
+/// event past the cursor is eligible. [`VerbError::NotFound`] if the id is unknown.
+pub async fn poison_event(pool: &PgPool, id: &str) -> Result<Option<PoisonEvent>, VerbError> {
     let sub = sqlx::query(
         "SELECT topic, contract_version, cursor_generation, cursor_xid::text AS cursor_xid_text, \
                 cursor_tie \
@@ -445,7 +477,7 @@ pub async fn poison_event(pool: &PgPool, id: &str) -> Result<Option<PoisonEvent>
     .fetch_optional(pool)
     .await
     .context("asyncevents: read subscription for poison event")?
-    .ok_or_else(|| anyhow!("asyncevents: no such subscription {id:?}"))?;
+    .ok_or_else(|| VerbError::NotFound { id: id.to_string() })?;
     let topic: String = sub.get("topic");
     let version: i32 = sub.get("contract_version");
     let cg: i64 = sub.get("cursor_generation");
@@ -474,8 +506,8 @@ pub async fn poison_event(pool: &PgPool, id: &str) -> Result<Option<PoisonEvent>
 }
 
 /// [`resume`] plus the [`retry`] reset: also clears the failure count and last error,
-/// which `resume` deliberately leaves. [`Retired`] for a retired subscription.
-pub async fn resume_retry(pool: &PgPool, id: &str) -> Result<(StateSnapshot, StateSnapshot)> {
+/// which `resume` deliberately leaves. [`VerbError::Retired`] for a retired subscription.
+pub async fn resume_retry(pool: &PgPool, id: &str) -> Result<(StateSnapshot, StateSnapshot), VerbError> {
     let set = "state = 'active', consecutive_failures = 0, next_attempt_at = NULL, last_error = NULL";
     update_unretired(pool, id, set, "resume-retry").await
 }
