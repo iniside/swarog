@@ -368,15 +368,26 @@ fn process(process: &'static str, modules: &[&str], dialled: &[&str]) -> Process
     }
 }
 
-/// admin-svc dials `mail`, mail-svc hosts `mail`, the monolith hosts `mail`: clean.
-/// Each peer case below adds to this split, so the one finding it asserts is that case's.
+/// admin-svc hosts `admin` and dials `mail`, mail-svc hosts `mail`, idle-svc hosts nothing
+/// and is not dialled, the monolith hosts `admin` and `mail`: clean. The portal's own
+/// provider and the idle process pin the two filters of the undialled-host check. Each peer
+/// case below adds to this split, so the one finding it asserts is that case's.
 fn clean_split(admin_dials: &[&str]) -> Vec<ProcessControlPlane> {
-    vec![process("admin-svc", &[], admin_dials), process("mail-svc", &["mail"], &[])]
+    vec![
+        process("admin-svc", &["admin"], admin_dials),
+        process("mail-svc", &["mail"], &[]),
+        process("idle-svc", &[], &[]),
+    ]
+}
+
+/// The monolith of [`clean_split`] plus `extra`.
+fn monolith(extra: &[&str]) -> Vec<Manifest> {
+    ["admin", "mail"].iter().chain(extra).map(|m| provider(m)).collect()
 }
 
 #[test]
 fn a_dialled_peer_whose_svc_hosts_a_provider_is_clean() {
-    assert_eq!(peer_findings(&[provider("mail")], &clean_split(&["mail"])), Vec::<String>::new());
+    assert_eq!(peer_findings(&monolith(&[]), &clean_split(&["mail"])), Vec::<String>::new());
 }
 
 /// The once-silent branch: a dialled peer's process exists but hosts no provider.
@@ -385,7 +396,7 @@ fn a_dialled_peer_whose_svc_hosts_no_provider_is_refused() {
     let mut split = clean_split(&["mail", "x"]);
     split.push(process("x-svc", &[], &[]));
     assert_eq!(
-        peer_findings(&[provider("mail")], &split),
+        peer_findings(&monolith(&[]), &split),
         vec![r#"admin-svc dials peer "x", but x-svc hosts no control-plane provider"#.to_string()]
     );
 }
@@ -394,7 +405,7 @@ fn a_dialled_peer_whose_svc_hosts_no_provider_is_refused() {
 #[test]
 fn a_dialled_peer_with_no_svc_is_refused_once() {
     assert_eq!(
-        peer_findings(&[provider("mail")], &clean_split(&["mail", "x"])),
+        peer_findings(&monolith(&[]), &clean_split(&["mail", "x"])),
         vec![r#"admin-svc dials peer "x", but no split process is x-svc"#.to_string()]
     );
 }
@@ -403,9 +414,8 @@ fn a_dialled_peer_with_no_svc_is_refused_once() {
 fn a_provider_host_admin_svc_does_not_dial_is_refused() {
     let mut split = clean_split(&["mail"]);
     split.push(process("ledger-svc", &["wallet", "audit"], &[]));
-    let monolith = [provider("mail"), provider("wallet"), provider("audit")];
     assert_eq!(
-        peer_findings(&monolith, &split),
+        peer_findings(&monolith(&["wallet", "audit"]), &split),
         vec![r#"ledger-svc: hosts provider(s) audit, wallet but admin-svc does not dial peer "ledger""#.to_string()]
     );
 }
@@ -415,20 +425,19 @@ fn a_module_hosted_by_two_split_processes_is_refused() {
     let mut split = clean_split(&["mail", "post"]);
     split.push(process("post-svc", &["mail"], &[]));
     assert_eq!(
-        peer_findings(&[provider("mail")], &split),
+        peer_findings(&monolith(&[]), &split),
         vec!["mail: hosted by more than one split process: mail-svc, post-svc".to_string()]
     );
 }
 
 #[test]
 fn a_provider_hosted_in_one_topology_only_is_refused() {
-    let monolith = [provider("mail"), provider("chat")];
     assert_eq!(
-        peer_findings(&monolith, &clean_split(&["mail"])),
+        peer_findings(&monolith(&["chat"]), &clean_split(&["mail"])),
         vec!["chat: the monolith hosts this provider but no split process does".to_string()]
     );
     assert_eq!(
-        peer_findings(&[], &clean_split(&["mail"])),
+        peer_findings(&[provider("admin")], &clean_split(&["mail"])),
         vec!["mail: a split process hosts this provider but the monolith does not".to_string()]
     );
 }
