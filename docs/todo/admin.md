@@ -24,6 +24,16 @@ _None._
   (`primitives.html.tmpl:416`, `hx-swap-oob`), so the first-render colour can differ from the
   swapped one, and a mixed-case id gives another colour (review of 2fdcfd93).
 
+### Known limits (admin-second-pass step 5b)
+
+- [ ] **No table shape check**
+  Nothing checks that a `DataTable` row has as many cells as the table has columns:
+  `core/admin/src/render/table.rs:234` tolerates the mismatch (`at.min(cells.len())`), so a
+  stray extra cell passes every gate, while `controlplane::form_spec_errors`
+  (`core/controlplane/src/lib.rs:984`) covers forms only. Intended fix: a `DataTable` shape
+  check in controlplane next to `form_spec_errors`, reached from the shared manifest/panel
+  test path so every module's tables get it.
+
 ### Known limits (admin-control-plane-redesign step 25)
 
 - [ ] **Panel cache serves only on a failed provider call**

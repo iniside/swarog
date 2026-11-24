@@ -63,14 +63,12 @@ pub mod player_fact {
     pub const ACCOUNTS_ID: i32 = 10;
     pub const ACCOUNTS_JOINED: i32 = 20;
     pub const CHARACTERS: i32 = 30;
-    pub const LORE: i32 = 40;
     pub const WALLET: i32 = 50;
 }
 
 /// `Point::EntityListColumn` on the `player` kind.
 pub mod player_column {
     pub const CHARACTERS: i32 = 10;
-    pub const LORE: i32 = 20;
     pub const WALLET: i32 = 30;
 }
 

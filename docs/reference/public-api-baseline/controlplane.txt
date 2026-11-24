@@ -217,13 +217,11 @@ pub const controlplane::order::platform_nav::MAIL: i32
 pub const controlplane::order::platform_nav::SCHEDULER: i32
 pub mod controlplane::order::player_column
 pub const controlplane::order::player_column::CHARACTERS: i32
-pub const controlplane::order::player_column::LORE: i32
 pub const controlplane::order::player_column::WALLET: i32
 pub mod controlplane::order::player_fact
 pub const controlplane::order::player_fact::ACCOUNTS_ID: i32
 pub const controlplane::order::player_fact::ACCOUNTS_JOINED: i32
 pub const controlplane::order::player_fact::CHARACTERS: i32
-pub const controlplane::order::player_fact::LORE: i32
 pub const controlplane::order::player_fact::WALLET: i32
 pub mod controlplane::order::player_header_action
 pub const controlplane::order::player_header_action::ACCOUNTS_SUSPEND: i32
