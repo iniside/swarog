@@ -231,7 +231,7 @@ pub const CONTROL_PLANE_INVOKE_METHOD: &str = "cp.invoke";
 /// The conformance entry that proves a control-plane writer's caps.
 fn control_plane_writer_entry(module: &str) -> &str {
     match module {
-        "core.events" | "portal" => "admin",
+        "core.events" => "admin",
         other => other,
     }
 }

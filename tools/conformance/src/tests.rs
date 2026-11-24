@@ -722,23 +722,48 @@ fn a_validated_cp_invoke_row_on_another_field_is_not_the_invoke_row() {
     assert!(findings[0].contains("is not Validated"), "{findings:?}");
 }
 
-/// `core.events` and `portal` have no conformance entry of their own: both are proven
-/// in the `admin` entry, under their own module name.
+/// `core.events` has no conformance entry of its own: it is proven in the `admin`
+/// entry, under its own module name.
 #[test]
-fn core_events_and_portal_map_to_the_admin_entry() {
+fn core_events_maps_to_the_admin_entry() {
     let entries = [caps_entry(
         "admin",
-        vec![
-            writer_case("cp.invoke core.events input value", "core.events", 4096),
-            writer_case("cp.invoke portal input value", "portal", 4096),
-        ],
+        vec![writer_case("cp.invoke core.events input value", "core.events", 4096)],
     )];
-    let both = writers(&["core.events", "portal"]);
-    let findings = control_plane_cap_findings(&both, &entries, &[invoke_row(4096)]);
+    let events = writers(&["core.events"]);
+    let findings = control_plane_cap_findings(&events, &entries, &[invoke_row(4096)]);
     assert!(findings.is_empty(), "{findings:?}");
-    let findings = control_plane_cap_findings(&both, &[], &[invoke_row(4096)]);
-    assert_eq!(findings.len(), 2, "{findings:?}");
-    for finding in &findings {
-        assert!(finding.contains("conformance entry admin does not exist"), "{finding}");
-    }
+    let findings = control_plane_cap_findings(&events, &[], &[invoke_row(4096)]);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings[0].contains("conformance entry admin does not exist"), "{findings:?}");
+}
+
+/// With no writers at all, a marked case is still checked: it names a module that
+/// declares no `writes: true` manifest.
+#[test]
+fn a_marked_case_with_no_writers_is_a_finding() {
+    let entries = [caps_entry("mail", vec![writer_case("cp.invoke mail input value", "mail", 4096)])];
+    let findings = control_plane_cap_findings(&writers(&[]), &entries, &[]);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings[0].contains("no monolith manifest named mail"), "{findings:?}");
+}
+
+/// The real writers (every monolith manifest with `writes: true`), the real entries and
+/// the real input policies — the same preflight the binary runs, provable under
+/// `cargo test`.
+#[test]
+fn real_control_plane_writer_caps_match_the_invoke_row() {
+    let writers: BTreeSet<String> = checkmodules::monolith_manifests()
+        .expect("monolith manifests")
+        .into_iter()
+        .filter(|manifest| manifest.writes)
+        .map(|manifest| manifest.module)
+        .collect();
+    assert!(!writers.is_empty(), "the monolith declares no control-plane writer");
+    let findings = control_plane_cap_findings(
+        &writers,
+        &crate::policy::entries(),
+        &crate::policy::input_policies(),
+    );
+    assert!(findings.is_empty(), "control-plane writer cap findings: {findings:?}");
 }
