@@ -153,3 +153,42 @@ async fn skip_without_a_previewed_event_is_invalid_without_calling_skip() {
         assert_eq!((err.status, err.msg.as_str()), (opsapi::Status::Invalid, SKIP_NEEDS_ITEM), "{item:?}");
     }
 }
+
+#[test]
+fn consumer_is_the_subscription_id_prefix() {
+    assert_eq!(consumer("audit.player-deleted.v1"), "audit");
+    assert_eq!(consumer("solo"), "solo");
+}
+
+#[test]
+fn manifest_declares_only_backed_tiles_and_row_actions() {
+    let manifest = manifest();
+    assert_eq!(manifest.pages[0].tiles, [KPI_SUBSCRIPTIONS, KPI_MAX_LAG]);
+    let row_actions: Vec<&str> =
+        manifest.actions.iter().filter(|a| a.id.starts_with("sub.")).map(|a| a.id.as_str()).collect();
+    assert_eq!(row_actions, [SUB_PAUSE, SUB_RESUME, SUB_RETRY]);
+}
+
+#[tokio::test]
+async fn subscription_row_shows_the_stored_cursor_and_the_id_prefix() {
+    let Some(pool) = test_pool().await else { return };
+    let id = unique("core-events.cursor");
+    insert_sub(&pool, &id, "active").await;
+    sqlx::query(
+        "UPDATE asyncevents.subscriptions SET cursor_generation = 4, cursor_xid = '77'::xid8, cursor_tie = 9 \
+         WHERE subscription_id = $1",
+    )
+    .bind(&id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let provider = EventsProvider::new(pool.clone());
+    let query = PanelQuery { search: Some(id.clone()), ..panel_query(SUBSCRIPTIONS, &id) };
+    let body = provider.panel(query).await.unwrap();
+    delete_sub(&pool, &id).await;
+    let Primitive::DataTable(table) = body.primitive else { panic!("the subscriptions panel is a table") };
+    let labels: Vec<&str> = table.columns.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["Subscription", "Topic", "Consumer", "Checkpoint", "Lag", "State"]);
+    let cells: Vec<&str> = table.rows[0].cells.iter().map(|c| c.value.as_str()).collect();
+    assert_eq!(&cells[..5], [id.as_str(), &format!("{id} v1"), "core-events", "4/77/9", "0"]);
+}

@@ -36,22 +36,6 @@ _None._
   ADMIN2-03. Mockup: the 48-bucket uptime bar per service. Fake:
   core/admin/src/fakes.rs:81 (`history`): no health history is stored. Replaced by: a
   stored probe history (needs ADMIN2-02 first).
-- [ ] **Event plane head sequence, append rate and checkpoints**
-  ADMIN2-08. Mockup: Head sequence KPI with its rate, and each subscription's Head and
-  Checkpoint numbers. Fakes: core/admin/src/fakes.rs:179 (`HEAD_SEQUENCE`), :182
-  (`HEAD_RATE`), :189 (`checkpoint`, used at events_provider.rs:442): the event log has a
-  (generation, xid, tie) position, not a sequence number, and no append rate is measured.
-  Replaced by: a display ordinal for the log position and a measured append rate.
-- [ ] **Dead-lettered count and who skipped**
-  ADMIN2-09. Mockup: "Dead-lettered (7 d)" KPI, "all skipped by operator". Fakes:
-  core/admin/src/fakes.rs:185 (`DEAD_LETTERED`), core/admin/src/events_provider.rs:697:
-  skipped events are not kept. Replaced by: a stored record of skipped events with the
-  operator.
-- [ ] **Subscription consumer module and handler name**
-  ADMIN2-10. Mockup: the Consumer column and "module · handler" line. Fakes:
-  core/admin/src/fakes.rs:195 (`consumer`, first dotted segment of the id), :200
-  (`handler`, hash-picked): neither is stored. Replaced by: the subscription registry
-  recording its module and handler.
 
 ### Fake data of the config port
 
@@ -130,14 +114,9 @@ modules/mail/src/admin.rs landed in 544dd4e5; the line numbers are its committed
   "Revoke item…" are `implemented: false`; tracked as INVENTORY-05 in `docs/todo/inventory.md`.
 - [ ] **Copy payload**
   ADMIN2-16. Mockup: the poison-event "Copy payload" tool. Action `POISON_COPY`,
-  `implemented: false`: core/admin/src/events_provider.rs:315-316; copying to the
+  `implemented: false`: core/admin/src/events_provider.rs:330-331; copying to the
   clipboard is a client action no backend call performs. Replaced by: a client-side
   copy handler in `admin.js`, or an owner decision to drop the button.
-- [ ] **Rewind checkpoint**
-  ADMIN2-17. Mockup: the subscription row's "Rewind checkpoint…". Action `SUB_REWIND`,
-  `implemented: false`: core/admin/src/events_provider.rs:320-322; no checkpoint rewind
-  exists. Replaced by: a rewind operation in the event plane (a fenced, danger-level
-  write).
 
 ### Fake data and actions of the accounts port
 

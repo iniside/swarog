@@ -15,7 +15,6 @@ use controlplane::{
 use controlplane::order;
 use sqlx::PgPool;
 
-use crate::fakes;
 use crate::render::{day_and_time, thousands};
 
 pub(crate) const MODULE: &str = controlplane::EVENT_LOG_PAGE_MODULE;
@@ -44,10 +43,8 @@ const ALREADY_RESOLVED: &str =
 const NAV_PAUSED: &str = "nav.paused";
 const TILE_PAUSED: &str = "tile.paused";
 const ATTENTION_PAUSED: &str = "attention.paused";
-const KPI_HEAD: &str = "kpi.head";
 const KPI_SUBSCRIPTIONS: &str = "kpi.subscriptions";
 const KPI_MAX_LAG: &str = "kpi.max-lag";
-const KPI_DEAD_LETTERED: &str = "kpi.dead-lettered";
 const POISON: &str = "poison";
 const SUBSCRIPTIONS: &str = "subscriptions";
 const HEADER: &str = "subscription.header";
@@ -59,7 +56,6 @@ const POISON_COPY: &str = "poison.copy";
 pub(crate) const SUB_PAUSE: &str = "sub.pause";
 const SUB_RESUME: &str = "sub.resume";
 const SUB_RETRY: &str = "sub.retry";
-const SUB_REWIND: &str = "sub.rewind";
 
 /// The table filter key; `state` is the portal's work-queue key.
 const FILTER_STATE: &str = "sub_state";
@@ -183,6 +179,11 @@ fn unchanged(id: &str, after: &StateSnapshot) -> InvokeOutcome {
     noop(format!("Nothing changed — {id} is already {}", after.state))
 }
 
+/// The consuming module: the `<consumer>` segment of a `<consumer>.<topic-kebab>.v<N>` id.
+fn consumer(subscription: &str) -> &str {
+    subscription.split('.').next().unwrap_or(subscription)
+}
+
 fn count(n: i64) -> String {
     thousands(n.max(0) as u64)
 }
@@ -280,7 +281,7 @@ fn manifest() -> Manifest {
             title: "Event plane".to_string(),
             subtitle: "Durable topics, subscription checkpoints and lag.".to_string(),
             head_actions: Vec::new(),
-            tiles: [KPI_HEAD, KPI_SUBSCRIPTIONS, KPI_MAX_LAG, KPI_DEAD_LETTERED].map(str::to_string).to_vec(),
+            tiles: [KPI_SUBSCRIPTIONS, KPI_MAX_LAG].map(str::to_string).to_vec(),
             layout: Layout::Stack([POISON, SUBSCRIPTIONS].map(str::to_string).to_vec()),
             params: vec![FILTER_STATE.to_string()],
         }],
@@ -299,10 +300,8 @@ fn manifest() -> Manifest {
                 "Paused subscriptions",
                 "zap",
             ),
-            contribution(KPI_HEAD, page(), 10, "Head sequence", ""),
             contribution(KPI_SUBSCRIPTIONS, page(), 20, "Subscriptions", ""),
             contribution(KPI_MAX_LAG, page(), 30, "Max lag", ""),
-            contribution(KPI_DEAD_LETTERED, page(), 40, "Dead-lettered (7 d)", ""),
             contribution(POISON, page(), 50, "Paused", ""),
             contribution(SUBSCRIPTIONS, page(), 60, "Subscriptions", ""),
             contribution(HEADER, Point::EntityHeader(KIND.to_string()), 0, "Subscription", "zap"),
@@ -333,9 +332,6 @@ fn manifest() -> Manifest {
             act(SUB_PAUSE, row(), "Pause…", "pause", 10, Then::Confirm(pause)).decl(false, Emphasis::Default, true),
             act(SUB_RESUME, row(), "Resume", "play", 20, Then::Invoke).decl(false, Emphasis::Default, true),
             act(SUB_RETRY, row(), "Retry now", "refresh", 30, Then::Invoke).decl(false, Emphasis::Default, true),
-            // NEW: no checkpoint rewind exists.
-            act(SUB_REWIND, row(), "Rewind checkpoint…", "left", 40, Then::Invoke)
-                .decl(true, Emphasis::Default, false),
         ],
         search: Vec::new(),
         writes: true,
@@ -444,27 +440,22 @@ impl EventsProvider {
             .filter(|s| {
                 needle.is_empty() || s.id.to_lowercase().contains(&needle) || s.topic.to_lowercase().contains(&needle)
             })
-            .map(|s| {
-                let checkpoint = fakes::checkpoint(&s.id);
-                let head = checkpoint + s.lag_events.max(0) as u64;
-                Row {
-                    entity: Some(EntityRef { kind: KIND.to_string(), id: s.id.clone() }),
-                    cells: vec![
-                        text(CellKind::Mono, s.id.clone(), None),
-                        text(CellKind::Ref, format!("{} v{}", s.topic, s.version), None),
-                        text(CellKind::Text, fakes::consumer(&s.id), None),
-                        text(CellKind::Mono, thousands(checkpoint), None),
-                        text(CellKind::MonoMuted, thousands(head), None),
-                        Cell {
-                            bar: Some(lag_bar(s.lag_events)),
-                            ..text(CellKind::Number, count(s.lag_events), lag_tone(&s))
-                        },
-                        state_cell(&s.state, s.consecutive_failures),
-                    ],
-                    highlight: s.state == "paused",
-                    item: None,
-                    actions: Vec::new(),
-                }
+            .map(|s| Row {
+                entity: Some(EntityRef { kind: KIND.to_string(), id: s.id.clone() }),
+                cells: vec![
+                    text(CellKind::Mono, s.id.clone(), None),
+                    text(CellKind::Ref, format!("{} v{}", s.topic, s.version), None),
+                    text(CellKind::Text, consumer(&s.id), None),
+                    text(CellKind::Mono, s.cursor.clone(), None),
+                    Cell {
+                        bar: Some(lag_bar(s.lag_events)),
+                        ..text(CellKind::Number, count(s.lag_events), lag_tone(&s))
+                    },
+                    state_cell(&s.state, s.consecutive_failures),
+                ],
+                highlight: s.state == "paused",
+                item: None,
+                actions: Vec::new(),
             })
             .collect();
         let column = |key: &str, label: &str, kind: CellKind, align: Align| Column {
@@ -481,8 +472,7 @@ impl EventsProvider {
                 column("subscription", "Subscription", CellKind::Mono, Align::Left),
                 column("topic", "Topic", CellKind::Ref, Align::Left),
                 column("consumer", "Consumer", CellKind::Text, Align::Left),
-                column("checkpoint", "Checkpoint", CellKind::Mono, Align::Right),
-                column("head", "Head", CellKind::Mono, Align::Right),
+                column("checkpoint", "Checkpoint", CellKind::Mono, Align::Left),
                 column("lag", "Lag", CellKind::Number, Align::Left),
                 column("state", "State", CellKind::Badge, Align::Left),
             ],
@@ -521,8 +511,7 @@ impl EventsProvider {
                 items.push(prop("Event", text(CellKind::Text, none, None)));
             }
         }
-        let consumer = format!("{} · handler {}", fakes::consumer(&sub.id), fakes::handler(&sub.id));
-        items.push(prop("Consumer", text(CellKind::Text, consumer, None)));
+        items.push(prop("Consumer", text(CellKind::Text, consumer(&sub.id), None)));
         if let Some(error) = &sub.last_error {
             items.push(prop("Error", text(CellKind::Mono, error.clone(), Some(Tone::Err))));
         }
@@ -610,7 +599,7 @@ impl EventsProvider {
             prop("Failures", text(CellKind::Number, snap.consecutive_failures.to_string(), None)),
             prop("Next attempt", text(CellKind::Text, snap.next_attempt_at.as_deref().map_or_else(none, day_time), None)),
             prop("Last error", text(CellKind::Mono, snap.last_error.clone().unwrap_or_else(none), None)),
-            prop("Consumer", text(CellKind::Text, fakes::consumer(&snap.id), None)),
+            prop("Consumer", text(CellKind::Text, consumer(&snap.id), None)),
         ];
         Ok(Primitive::PropertyList(PropertyList { items, columns: 2, item: None, code: None }))
     }
@@ -687,33 +676,8 @@ impl EventsProvider {
             NAV_PAUSED => self.nav_counter().await,
             TILE_PAUSED => self.paused_tile().await,
             ATTENTION_PAUSED => self.attention().await,
-            KPI_HEAD => Ok(Primitive::KpiTile(KpiTile {
-                label: "Head sequence".to_string(),
-                value: fakes::HEAD_SEQUENCE.to_string(),
-                unit: None,
-                delta: Some(Delta { value: String::new(), period: fakes::HEAD_RATE.to_string(), tone: None }),
-                series: Vec::new(),
-                spark: Palette::Chart1,
-                capacity: None,
-                link: None,
-            })),
             KPI_SUBSCRIPTIONS => self.subscriptions_kpi().await,
             KPI_MAX_LAG => self.max_lag_kpi().await,
-            KPI_DEAD_LETTERED => Ok(Primitive::KpiTile(KpiTile {
-                label: "Dead-lettered (7 d)".to_string(),
-                value: fakes::DEAD_LETTERED.to_string(),
-                unit: None,
-                delta: Some(Delta {
-                    value: String::new(),
-                    // FAKE: skipped events are not kept, so who skipped them is not either.
-                    period: "all skipped by operator".to_string(),
-                    tone: None,
-                }),
-                series: Vec::new(),
-                spark: Palette::Chart1,
-                capacity: None,
-                link: None,
-            })),
             SUBSCRIPTIONS => self.table(req).await,
             HEADER => self.header(entity()?).await,
             DETAILS => self.details(entity()?).await,
@@ -771,7 +735,7 @@ impl Provider for EventsProvider {
                 let verb = |pool: PgPool, id: String| async move { plane::retry(&pool, &id).await };
                 self.transition(&req, verb, "Retry scheduled for").await
             }
-            POISON_COPY | SUB_REWIND => Err(opsapi::Error::forbidden("not implemented yet")),
+            POISON_COPY => Err(opsapi::Error::forbidden("not implemented yet")),
             other => Err(opsapi::Error::not_found(format!("{MODULE} has no action {other:?}"))),
         }
     }

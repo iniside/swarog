@@ -2,6 +2,35 @@
 
 Last updated: 2026-11-24
 
+- [x] **Rewind checkpoint** (2026-11-24, admin-second-pass step 4)
+  ADMIN2-17. Mockup: the subscription row's "Rewind checkpoint…". No checkpoint rewind
+  exists in the event plane. Removed by owner ruling: the `sub.rewind` action, its invoke
+  arm and its drawn_orders.txt line, and the mockup row menu entry. A rewind operation (a
+  fenced, danger-level write) would be a new feature.
+
+- [x] **Subscription consumer module and handler name** (2026-11-24, admin-second-pass step 4)
+  ADMIN2-10. Mockup: the Consumer column and "module · handler" line. Closed by plan D4:
+  the subscription id convention is `<consumer>.<topic-kebab>.v<N>` (core/bus/src/lib.rs,
+  `SubscriptionSpec`), so the Consumer column is the id prefix, a derived fact, and lost
+  its FAKE marker. No handler name exists anywhere, so the handler half left the portal and
+  the mockup.
+
+- [x] **Dead-lettered count and who skipped** (2026-11-24, admin-second-pass step 4)
+  ADMIN2-09. Mockup: "Dead-lettered (7 d)" KPI, "all skipped by operator", and the skip
+  texts naming a dead-letter list. Skipped events are not kept. Removed by owner ruling: the
+  `kpi.dead-lettered` tile and `DEAD_LETTERED` in the portal; the KPI, the "Goes to
+  dead-letter list" impact row and the dead-letter hint in the mockup. A stored record of
+  skipped events with the operator would be a new feature.
+
+- [x] **Event plane head sequence, append rate and checkpoints** (2026-11-24, admin-second-pass step 4)
+  ADMIN2-08. Mockup: Head sequence KPI with its rate, and each subscription's Head and
+  Checkpoint numbers. The event log has a (generation, xid, tie) position, not a sequence
+  number, and no append rate is measured. Removed by owner ruling: the `kpi.head` tile,
+  `HEAD_SEQUENCE`, `HEAD_RATE`, the fake `checkpoint` and the Head column, in the portal
+  and the mockup. The Checkpoint column shows the stored cursor
+  (`asyncevents::admin::SubInfo.cursor`, "generation/xid/tie"); Lag stays the real count.
+  A display ordinal for the log position and a measured append rate would be new features.
+
 - [x] **Scheduler run outcomes** (2026-11-24, admin-second-pass step 3)
   ADMIN2-07. Mockup: the dashboard's "storage.gc failed at 03:30" attention item, and the
   Scheduler page's Target, Last result and Enabled columns and each Recent fires entry's

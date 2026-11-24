@@ -131,33 +131,31 @@
     meta: { nav: "events", crumbs: [plat, ["Event plane"]] },
     render: () => {
       const tiles = [
-        { label: "Head sequence", value: "991,210", delta: "1.8 k events/min" },
         { label: "Subscriptions", value: String(D.subs.length), delta: ["running", "lagging", "paused"].map(st => `${D.subs.filter(x => x.state === st).length} ${st}`).join(" · ") },
         { label: "Max lag", value: "273", delta: '<span class="bad-up">wallet.on_match.v1 (wallet down)</span>' },
-        { label: "Dead-lettered (7 d)", value: "3", delta: "all skipped by operator" },
       ].map(t => kpi({ ...t, c: pg("core.events", "KpiTile") })).join("");
       const subsTbl = panel({ c: pg("core.events", "DataTable"), title: "Subscriptions", flush: true,
         body: table({ pager: false, filters: [{ k: "State", v: "any" }], searchPlaceholder: "Subscription id or topic",
-          cols: [{ label: "Subscription" }, { label: "Topic" }, { label: "Consumer" }, { label: "Checkpoint", num: true }, { label: "Head", num: true }, { label: "Lag" }, { label: "State" }],
-          rows: D.subs.map(s => ({ sel: s.state === "paused", cells: [`<span class="mono" style="font-weight:500">${s.id}</span>`, `<span class="tag">${s.topic}</span>`, s.module, `<span class="mono">${s.checkpoint.toLocaleString("en-US")}</span>`, `<span class="mono muted">${s.head.toLocaleString("en-US")}</span>`, lagBar(s), status(s.state)] })),
-          rowMenu: () => `<button class="btn sm icon ghost" onclick="UI.toast('Pause · Rewind checkpoint · Inspect','info')">${icon("more")}</button>` }) });
+          cols: [{ label: "Subscription" }, { label: "Topic" }, { label: "Consumer" }, { label: "Checkpoint" }, { label: "Lag" }, { label: "State" }],
+          rows: D.subs.map(s => ({ sel: s.state === "paused", cells: [`<span class="mono" style="font-weight:500">${s.id}</span>`, `<span class="tag">${s.topic}</span>`, s.module, `<span class="mono">${s.cursor}</span>`, lagBar(s), status(s.state)] })),
+          rowMenu: () => `<button class="btn sm icon ghost" onclick="UI.toast('Pause · Resume · Retry now','info')">${icon("more")}</button>` }) });
       const s = D.subs.find(x => x.poison);
       const poison = panel({ c: pg("core.events", "PoisonEventResolver"), title: `Paused: <span class="mono">${s.id}</span>`, meta: `since ${s.poison.at}`,
         banner: `<div class="banner err">${icon("alert")} Consumer failed 5× on the same event and stopped to preserve ordering. ${s.lag} events are waiting behind it.</div>`,
-        body: `${props([["Event", `<span class="mono">wallet.debited #${s.poison.seq.toLocaleString("en-US")}</span>`], ["Consumer", `${s.module} · handler on_purchase`], ["Error", `<span class="mono" style="color:var(--err)">${esc(s.poison.err)}</span>`]])}<div class="code" style="margin-top:10px">{
+        body: `${props([["Event", `<span class="mono">wallet.debited #${s.poison.seq.toLocaleString("en-US")}</span>`], ["Consumer", s.module], ["Error", `<span class="mono" style="color:var(--err)">${esc(s.poison.err)}</span>`]])}<div class="code" style="margin-top:10px">{
   "seq": 12905,
   "topic": "wallet.debited",
   "player_id": "${D.byHandle.kestrel.id}",
   "amount": { "value": 1, "currency": "TOK2" },
   "reason": "store.purchase",
   "tx": "tx_89f7"
-}</div><div class="row" style="margin-top:12px;flex-wrap:wrap"><button class="btn primary" onclick="UI.toast('Resumed — retrying #12,905')">${icon("play")} Resume (retry event)</button><button class="btn" onclick="PAGES.skipPoison()">${icon("skip")} Skip event…</button><button class="btn ghost">${icon("download")} Copy payload</button><span class="muted" style="font-size:12px">Fix the consumer first, then Resume. Skip moves the event to the dead-letter list.</span></div>` });
+}</div><div class="row" style="margin-top:12px;flex-wrap:wrap"><button class="btn primary" onclick="UI.toast('Resumed — retrying #12,905')">${icon("play")} Resume (retry event)</button><button class="btn" onclick="PAGES.skipPoison()">${icon("skip")} Skip event…</button><button class="btn ghost">${icon("download")} Copy payload</button><span class="muted" style="font-size:12px">Fix the consumer first, then Resume. Skip advances the checkpoint past this event.</span></div>` });
       return P.head("Event plane", "Durable topics, subscription checkpoints and lag.", "") + `<div class="grid g-tiles" style="margin-bottom:12px">${tiles}</div><div class="stack">${poison}${subsTbl}</div>`;
     },
   };
   P.skipPoison = () => UI.confirm({ c: { module: "core.events", point: "page", prim: "ConfirmAction" }, title: "Skip event #12,905?", icon: "skip",
     body: "The checkpoint advances past this event and the subscription resumes. The inventory grant for this purchase will NOT be applied unless done by hand.",
-    impact: [["Subscription", '<span class="mono">inventory.on_purchase.v1</span>'], ["Event", '<span class="mono">wallet.debited #12,905</span>'], ["Goes to", "dead-letter list (kept 30 d)"]],
+    impact: [["Subscription", '<span class="mono">inventory.on_purchase.v1</span>'], ["Event", '<span class="mono">wallet.debited #12,905</span>']],
     reason: "e.g. bad currency code from store hotfix, compensated manually", typeToConfirm: "12905", confirm: "Skip and resume", done: "Skipped; subscription resumed" });
 
   // ---------- economy ----------

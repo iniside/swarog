@@ -71,4 +71,3 @@ row_action schedule | scheduler | schedule.fire | 10
 row_action subscription | core.events | sub.pause | 10
 row_action subscription | core.events | sub.resume | 20
 row_action subscription | core.events | sub.retry | 30
-row_action subscription | core.events | sub.rewind | 40

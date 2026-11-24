@@ -147,13 +147,13 @@ window.DATA = (() => {
   ];
 
   const subs = [
-    { id: "audit.lore-branch-pushed.v1", topic: "lore.branch.pushed", module: "audit", checkpoint: 18_442, head: 18_442, lag: "0", state: "running" },
-    { id: "notifications.lore-resource-locked.v1", topic: "lore.resource.locked", module: "notifications", checkpoint: 9_204, head: 9_210, lag: "6", state: "running" },
-    { id: "wallet.on_match.v1", topic: "match.finished", module: "wallet", checkpoint: 40_118, head: 40_391, lag: "273", state: "lagging" },
-    { id: "notifications.mail-sent.v1", topic: "mail.sent", module: "notifications", checkpoint: 88_160, head: 88_166, lag: "6", state: "running" },
-    { id: "inventory.on_purchase.v1", topic: "wallet.debited", module: "inventory", checkpoint: 12_904, head: 13_022, lag: "118", state: "paused", poison: { seq: 12_905, err: "decode: unknown currency code \"TOK2\" at $.amount.currency", at: "2026-10-22 09:41" } },
-    { id: "leaderboard.on_rating.v1", topic: "rating.updated", module: "leaderboard", checkpoint: 220_418, head: 220_418, lag: "0", state: "running" },
-    { id: "storage.player-deleted.v1", topic: "player.deleted", module: "storage", checkpoint: 311, head: 311, lag: "0", state: "running" },
+    { id: "audit.lore-branch-pushed.v1", topic: "lore.branch.pushed", module: "audit", cursor: "1/18442/0", lag: "0", state: "running" },
+    { id: "notifications.lore-resource-locked.v1", topic: "lore.resource.locked", module: "notifications", cursor: "1/9204/0", lag: "6", state: "running" },
+    { id: "wallet.on_match.v1", topic: "match.finished", module: "wallet", cursor: "1/40118/0", lag: "273", state: "lagging" },
+    { id: "notifications.mail-sent.v1", topic: "mail.sent", module: "notifications", cursor: "1/88160/0", lag: "6", state: "running" },
+    { id: "inventory.on_purchase.v1", topic: "wallet.debited", module: "inventory", cursor: "1/12904/0", lag: "118", state: "paused", poison: { seq: 12_905, err: "decode: unknown currency code \"TOK2\" at $.amount.currency", at: "2026-10-22 09:41" } },
+    { id: "leaderboard.on_rating.v1", topic: "rating.updated", module: "leaderboard", cursor: "1/220418/0", lag: "0", state: "running" },
+    { id: "storage.player-deleted.v1", topic: "player.deleted", module: "storage", cursor: "1/311/0", lag: "0", state: "running" },
   ];
 
   const audit = [
