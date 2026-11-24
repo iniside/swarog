@@ -2448,8 +2448,9 @@ The ports:
   - **23t** — dropped by the owner (2026-11-24): no config admin splitproof. Checklist §9
     stays as the unexecuted spec; the split write path is a known limit in
     `docs/todo/config.md`.
-  - **23b**: accept files after the crawls, including the nav `#ecbb9a` re-count now that
-    Config & flags is ported.
+  - **23b** — dropped by the owner (2026-11-24): admindiff is left out of the rest of this
+    plan (see Errata), so no crawl, no `config.txt` accept file and no nav `#ecbb9a`
+    re-count. The page draws through the generic macros; no template changed in Step 23.
 - **Step 24 — audit.** Audit log page (`pages-platform.js:112-126`), and the dashboard
   "Recent operator activity" panel. Once every port has landed, admincheck also reports
   any peer admin-svc dials whose `<peer>-svc` hosts no provider (owner, 2026-11-10; held
@@ -3859,3 +3860,13 @@ no fix-on-fix: a finding that needs the mirror back is an owner question.
     `engine::columns::cells`, shared by the list-column fan-out and the label pass.
   - The pass (`engine::labels::pass`) is not yet called from the slot route; 13c.2a2b calls
     it there, after the body and its columns, and draws its labels.
+- **Step 23 (2026-11-24, owner).**
+  - admindiff is left out of the rest of this plan ("ten caly admin diff zostaw"; the owner
+    finds the tool overcomplicated). 23b is dropped. The crawl, the accept files and the
+    `admindiff diff` runs that later steps name (24.a4's X9 accept-line sweep, 24.b's
+    accept files, Step 27 items 2 and 3) are not done unless the owner reopens them.
+  - The crawl stops on page-map drift from the 2026-11-23 redesign mockup. fdc97507 declares
+    the five new screens Pending; the `character` and `group` row menus the mockup draws on
+    the compared player Characters and Groups tabs are still undeclared, which
+    `validate_menus` refuses to exclude by design. Left as is; todo item in
+    `docs/todo/admin.md`.

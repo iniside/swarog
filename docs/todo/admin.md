@@ -27,12 +27,15 @@ _None._
 ### Known limits (admin-control-plane-redesign step 23)
 
 - [ ] **admindiff tests red on the new redesign screens**
-  `cargo test -p admindiff` fails 8 tests (`the_page_map_matches_the_real_mockup`,
-  `the_harness_records_every_real_registry_menu`, `the_real_mockup_draws_only_declared_*`
-  and others) since the redesign mockup commits 4fa3b2e0, 0390ec07 and b4303e23
-  (2026-11-23) added the character, characters, group, groups and items screens and the
-  `players.menu.user` menu, which `tools/admindiff/src/pages.rs` `PAGE_MAP` and its menu
-  lists do not declare. Fix: declare them (Pending or mapped) in one PAGE_MAP pass.
+  `cargo test -p admindiff --lib` fails 5 tests (`the_real_mockup_draws_only_declared_menus`,
+  `_modals`, `_tabs`, `the_real_mockup_defines_only_declared_menus`,
+  `a_real_mockup_tab_entry_needs_its_menu_entries`) and `admindiff crawl` stops on page-map
+  drift: the redesign mockup (2026-11-23) draws a `character` row menu on the player
+  Characters tab and a `group` row menu on the Groups tab, both compared, and the portal draws
+  neither; `validate_menus` (`tools/admindiff/src/pages.rs`) refuses to exclude a drawn
+  menu by design. The new screens themselves are declared Pending (fdc97507). Options: port
+  the two row menus, or let `EXCLUDED_MOCK_MENUS` cover a drawn menu. Owner 2026-11-24:
+  admindiff is left alone for now.
 - [ ] **Two change-note inputs with different behaviour**
   The confirm dialog's note (`core/admin/src/templates/modal.html.tmpl:19`, gated by
   `data-reason-required` in admin.js) and the form note (`reason_field`,
