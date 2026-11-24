@@ -9,7 +9,7 @@ _None._
 ## Open
 
 - [ ] **A CapCase label is not tied to the probe it runs**
-  CONFORMANCE-NEXT. A case's `writer` field (tools/conformance/src/model.rs CapCase) and the
+  CONFORMANCE-03. A case's `writer` field (tools/conformance/src/model.rs CapCase) and the
   `CREDENTIAL_CAPS` case names (tools/conformance/src/checks.rs:118-200) are labels. Nothing ties a
   label to the function its probe calls: a case marked `mail` that runs wallet's probe stays green,
   and so does the google credential case if it runs the epic probe (both share the 65 536 cap).
