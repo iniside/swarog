@@ -3242,6 +3242,497 @@ async fn only_an_entity_tabs_declared_params_reach_its_panel_query() {
     cleanup_user(&pool, &user).await;
 }
 
+// ---- claim and click-claim concurrency and windows -----------------------------------
+//
+// No test races a real clock: a window is crossed by setting `claimed_at` or `consumed_at`
+// in the row, and an overlap is held open by a provider waiting on a `Notify`.
+
+/// A provider whose invokes all answer `outcome`, recorded in order. While `hold` is set an
+/// invoke signals `entered` and waits on `release`, so competing requests overlap
+/// structurally.
+struct Held {
+    manifest: Manifest,
+    outcome: Mutex<InvokeOutcome>,
+    hold: std::sync::atomic::AtomicBool,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    invoked: Mutex<Vec<InvokeCall>>,
+}
+
+impl Held {
+    fn new(manifest: Manifest) -> Arc<Held> {
+        Arc::new(Held {
+            manifest,
+            outcome: Mutex::new(done()),
+            hold: std::sync::atomic::AtomicBool::new(false),
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            invoked: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn calls(&self) -> Vec<InvokeCall> {
+        self.invoked.lock().unwrap().clone()
+    }
+
+    /// The `request_id` of the last invoke.
+    fn last_request_id(&self) -> String {
+        let calls = self.calls();
+        calls.last().and_then(|c| c.request_id.clone()).expect("an invoke with a request id")
+    }
+
+    /// Waits until a held invoke has started; a guard, not a clock: the wait ends on the signal.
+    async fn wait_entered(&self) {
+        tokio::time::timeout(Duration::from_secs(10), self.entered.notified())
+            .await
+            .expect("the first POST reaches the provider");
+    }
+}
+
+fn done() -> InvokeOutcome {
+    InvokeOutcome::Ok { message: "done".to_string(), reveal: None, redirect: None }
+}
+
+#[async_trait::async_trait]
+impl controlplane::Provider for Held {
+    fn manifest(&self) -> Manifest {
+        self.manifest.clone()
+    }
+
+    async fn panel(&self, req: PanelQuery) -> Result<PanelBody, opsapi::Error> {
+        Err(opsapi::Error::internal(format!("no panel {}", req.contribution)))
+    }
+
+    async fn search(&self, _req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error> {
+        Ok(Vec::new())
+    }
+
+    async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error> {
+        self.invoked.lock().unwrap().push(req);
+        if self.hold.load(Ordering::SeqCst) {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        Ok(self.outcome.lock().unwrap().clone())
+    }
+}
+
+/// A portal POST answered in full; `htmx` sends it as htmx does.
+async fn portal_send(
+    engine: &Arc<Engine>,
+    st: &Arc<AdminState>,
+    cookie: &str,
+    uri: &str,
+    body: &str,
+    htmx: bool,
+) -> Response {
+    let portal = crate::routes::Portal { st: st.clone(), engine: engine.clone() };
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("cookie", cookie)
+        .header("content-type", "application/x-www-form-urlencoded");
+    if htmx {
+        req = req.header("hx-request", "true");
+    }
+    let req = req.body(Body::from(body.to_string())).unwrap();
+    crate::routes::router(portal).oneshot(req).await.unwrap()
+}
+
+/// [`portal_send`] without htmx on a task of its own, so it can be held while others run.
+fn spawn_post(
+    engine: &Arc<Engine>,
+    st: &Arc<AdminState>,
+    cookie: &str,
+    uri: &str,
+    body: &str,
+) -> tokio::task::JoinHandle<Response> {
+    let (engine, st) = (engine.clone(), st.clone());
+    let (cookie, uri, body) = (cookie.to_string(), uri.to_string(), body.to_string());
+    tokio::spawn(async move { portal_send(&engine, &st, &cookie, &uri, &body, false).await })
+}
+
+/// The repeated-click answer: the neutral toast to htmx, else a bare 303 with no flash.
+async fn assert_repeated(resp: Response, htmx: bool, why: &str) {
+    if htmx {
+        assert_eq!(resp.status(), StatusCode::OK, "{why}");
+        assert!(resp.headers().get("hx-redirect").is_none(), "{why}: no redirect");
+        let raw = body_string(resp).await;
+        assert!(raw.contains("Already submitted"), "{why}: {raw}");
+    } else {
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER, "{why}");
+        let at = location_of(&resp);
+        assert!(!at.contains("reveal="), "{why}: no flash is stashed: {at}");
+    }
+}
+
+/// The 303 of a completed invoke, carrying its flash.
+fn assert_completed(resp: &Response, why: &str) {
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER, "{why}");
+    assert!(location_of(resp).contains("reveal="), "{why}: the answer carries its flash");
+}
+
+/// Sets `column` of form row `id` to `secs` seconds before Postgres `now()`.
+async fn set_ago(pool: &PgPool, id: &str, column: &str, secs: i64) {
+    let sql = format!("UPDATE admin.forms SET {column} = now() - make_interval(secs => $2) WHERE id = $1");
+    sqlx::query(&sql).bind(id).bind(secs as f64).execute(pool).await.unwrap();
+}
+
+async fn generation_of(pool: &PgPool, id: &str) -> i64 {
+    sqlx::query_scalar("SELECT generation FROM admin.forms WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// A modal `Then::Form` row action of no fields.
+fn modal_form(id: &str) -> ActionDecl {
+    let point = ActionPoint::RowAction("player".to_string());
+    ActionDecl { then: Then::Form(moded_spec(Vec::new())), ..action_decl(id, point, true) }
+}
+
+/// Two POSTs of one form instance invoke once: while the first holds the claim (its invoke
+/// held open) the second gets the repeated answer, a toast to htmx and a bare 303 without a
+/// flash otherwise, and so does a POST after completion (the tombstone). A claim abandoned
+/// 31 s ago is taken over; one 29 s old still holds.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_form_instance_posted_twice_invokes_once() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-form-claim");
+    let cookie = operator_cookie(&pool, &user).await;
+    let ledger = Held::new(player_owner(module("ledger", Vec::new(), vec![modal_form("adjust")], true)));
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+    let modal = "/admin/_action/ledger/adjust?entity=player:p-1";
+    let post = "/admin/_action/ledger/adjust";
+
+    let (_, raw) = portal_get(&engine, &st, &cookie, modal).await;
+    let body = format!("_csrf=csrf&_form={}", form_id_of(&raw));
+    ledger.hold.store(true, Ordering::SeqCst);
+    let first = spawn_post(&engine, &st, &cookie, post, &body);
+    ledger.wait_entered().await;
+    for htmx in [true, false] {
+        let resp = portal_send(&engine, &st, &cookie, post, &body, htmx).await;
+        assert_repeated(resp, htmx, "a POST while the first holds the claim").await;
+    }
+    ledger.release.notify_one();
+    assert_completed(&first.await.unwrap(), "the first POST");
+    ledger.hold.store(false, Ordering::SeqCst);
+    for htmx in [true, false] {
+        let resp = portal_send(&engine, &st, &cookie, post, &body, htmx).await;
+        assert_repeated(resp, htmx, "a POST after completion").await;
+    }
+    assert_eq!(ledger.calls().len(), 1, "one form instance invokes once");
+
+    let (_, raw) = portal_get(&engine, &st, &cookie, modal).await;
+    let held = form_id_of(&raw);
+    set_ago(&pool, &held, "claimed_at", 29).await;
+    let resp = portal_send(&engine, &st, &cookie, post, &format!("_csrf=csrf&_form={held}"), false).await;
+    assert_repeated(resp, false, "a claim taken 29 s ago").await;
+    assert_eq!(ledger.calls().len(), 1, "a claim taken 29 s ago still holds");
+    set_ago(&pool, &held, "claimed_at", 31).await;
+    let resp = portal_send(&engine, &st, &cookie, post, &format!("_csrf=csrf&_form={held}"), false).await;
+    assert_completed(&resp, "a claim taken 31 s ago");
+    assert_eq!(ledger.calls().len(), 2, "a claim abandoned 31 s ago is taken over");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A release by a claim that was taken over matches only its own `claimed_at`: it leaves
+/// the new claim held and unconsumed, and the new holder's release still ends it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_late_release_after_a_takeover_leaves_the_new_claim() {
+    use crate::engine::{actions, forms};
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let who = actions::Claimant {
+        login: uniq("t-late-release"),
+        module: "ledger".to_string(),
+        action: "kick".to_string(),
+    };
+    let id = actions::click_row_id(&who, None, None);
+    forms::upsert_click(&pool, &id, &who, None, None).await.unwrap();
+    forms::claim_click(&pool, &id, &who).await.unwrap().expect("a free row is claimed");
+    // The first claim as its holder saw it, taken 31 s ago and so open to a takeover.
+    set_ago(&pool, &id, "claimed_at", 31).await;
+    let late = forms::lookup(&pool, &id).await.unwrap().0.expect("the row");
+    let taken = forms::claim_click(&pool, &id, &who).await.unwrap().expect("an abandoned claim is taken over");
+    assert_ne!(taken.claimed_at, late.claimed_at);
+    let state = || async {
+        sqlx::query_as::<_, (Option<i64>, bool)>(
+            "SELECT (extract(epoch FROM claimed_at) * 1000000)::bigint, consumed_at IS NOT NULL \
+             FROM admin.forms WHERE id = $1",
+        )
+        .bind(&id)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+
+    forms::settle(&pool, &late, false).await;
+    assert_eq!(state().await, (taken.claimed_at, false), "a late release leaves the takeover held");
+    forms::settle(&pool, &late, true).await;
+    assert_eq!(state().await, (taken.claimed_at, false), "a late consume leaves the takeover unconsumed");
+    forms::settle(&pool, &taken, false).await;
+    assert_eq!(state().await, (None, false), "the holder's own release ends the claim");
+
+    let _ = sqlx::query("DELETE FROM admin.forms WHERE id = $1").bind(&id).execute(&pool).await;
+}
+
+/// The token-less click claim: a burst on one button invokes once and the rest get the
+/// repeated answer. Past the 5 s repeat window the next click invokes as the next
+/// `generation` with a new `request_id`; the retry of a released claim keeps its
+/// `request_id`; an expired row invokes rather than refusing; a deleted row's next click
+/// has a `request_id` no earlier click had.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_click_claim_invokes_once_per_burst_and_keys_its_request_id() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-click-claim");
+    let cookie = operator_cookie(&pool, &user).await;
+    let kick = vec![action_decl("kick", ActionPoint::RowAction("player".to_string()), true)];
+    let ledger = Held::new(player_owner(module("ledger", Vec::new(), kick, true)));
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+    let (post, body) = ("/admin/_action/ledger/kick", "_csrf=csrf&_entity=player:p-1");
+    let who = crate::engine::actions::Claimant {
+        login: user.clone(),
+        module: "ledger".to_string(),
+        action: "kick".to_string(),
+    };
+    let id = crate::engine::actions::click_row_id(&who, Some(&player_ref("p-1")), None);
+
+    ledger.hold.store(true, Ordering::SeqCst);
+    let first = spawn_post(&engine, &st, &cookie, post, body);
+    ledger.wait_entered().await;
+    for htmx in [true, false] {
+        let resp = portal_send(&engine, &st, &cookie, post, body, htmx).await;
+        assert_repeated(resp, htmx, "a click while the first holds the claim").await;
+    }
+    ledger.release.notify_one();
+    assert_completed(&first.await.unwrap(), "the first click");
+    ledger.hold.store(false, Ordering::SeqCst);
+    let resp = portal_send(&engine, &st, &cookie, post, body, true).await;
+    assert_repeated(resp, true, "a click within 5 s of completion").await;
+    assert_eq!(ledger.calls().len(), 1, "a burst on one button invokes once");
+    let (first_id, first_generation) = (ledger.last_request_id(), generation_of(&pool, &id).await);
+
+    set_ago(&pool, &id, "consumed_at", 6).await;
+    assert_completed(&portal_send(&engine, &st, &cookie, post, body, false).await, "a click past 5 s");
+    assert_eq!(ledger.calls().len(), 2, "a click past the repeat window invokes again");
+    assert_eq!(generation_of(&pool, &id).await, first_generation + 1, "as the next generation");
+    let again_id = ledger.last_request_id();
+    assert_ne!(again_id, first_id, "a deliberate repeat has a new request id");
+
+    let refused = BTreeMap::from([("why".to_string(), "refused".to_string())]);
+    *ledger.outcome.lock().unwrap() = InvokeOutcome::FieldErrors(refused);
+    set_ago(&pool, &id, "consumed_at", 6).await;
+    let resp = portal_send(&engine, &st, &cookie, post, body, true).await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY, "field errors release the claim");
+    let released_id = ledger.last_request_id();
+    assert_ne!(released_id, again_id, "a click past the window is the next generation");
+    let resp = portal_send(&engine, &st, &cookie, post, body, true).await;
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(ledger.calls().len(), 4, "the retry of a released claim invokes");
+    assert_eq!(ledger.last_request_id(), released_id, "the retry of a released claim keeps its request id");
+
+    *ledger.outcome.lock().unwrap() = done();
+    sqlx::query("UPDATE admin.forms SET expires_at = now() - interval '1 second' WHERE id = $1")
+        .bind(&id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_completed(&portal_send(&engine, &st, &cookie, post, body, false).await, "a click on an expired row");
+    assert_eq!(ledger.calls().len(), 5, "a click on an expired row invokes");
+
+    let earlier: Vec<String> = ledger.calls().iter().filter_map(|c| c.request_id.clone()).collect();
+    sqlx::query("DELETE FROM admin.forms WHERE id = $1").bind(&id).execute(&pool).await.unwrap();
+    assert_completed(&portal_send(&engine, &st, &cookie, post, body, false).await, "a click on a deleted row");
+    assert_eq!(ledger.calls().len(), 6, "a click on a deleted row invokes");
+    let fresh = ledger.last_request_id();
+    assert!(!earlier.contains(&fresh), "a re-inserted row's request id is new: {fresh} in {earlier:?}");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// Makes every claim of form row `id` find no row while the row stays free: the trigger
+/// `name` skips the claim's UPDATE and counts it in the `generation` of the row `counter`.
+async fn stall_claims(pool: &PgPool, name: &str, id: &str, counter: &str) {
+    assert!(!id.contains('\'') && !counter.contains('\''), "the ids are quoted into the trigger");
+    let function = format!(
+        "CREATE FUNCTION admin.\"{name}\"() RETURNS trigger LANGUAGE plpgsql AS $f$ \
+         BEGIN UPDATE admin.forms SET generation = generation + 1 WHERE id = TG_ARGV[0]; RETURN NULL; END $f$"
+    );
+    let trigger = format!(
+        "CREATE TRIGGER \"{name}\" BEFORE UPDATE ON admin.forms FOR EACH ROW \
+         WHEN (OLD.id = '{id}' AND NEW.claimed_at IS DISTINCT FROM OLD.claimed_at) \
+         EXECUTE FUNCTION admin.\"{name}\"('{counter}')"
+    );
+    for sql in [function, trigger] {
+        sqlx::query(&sql).execute(pool).await.unwrap();
+    }
+}
+
+async fn unstall_claims(pool: &PgPool, name: &str) {
+    let trigger = format!("DROP TRIGGER IF EXISTS \"{name}\" ON admin.forms");
+    let function = format!("DROP FUNCTION IF EXISTS admin.\"{name}\"()");
+    for sql in [trigger, function] {
+        sqlx::query(&sql).execute(pool).await.unwrap();
+    }
+}
+
+/// A claim whose `Retry` fails again answers repeated-click without a third attempt, on the
+/// form path and the click path: the row stays free, so the classify reads `Retry`, while a
+/// trigger skips (and counts) every claim of it; the provider is never called.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retry_that_fails_again_answers_repeated_without_a_third_attempt() {
+    use crate::engine::{actions, forms};
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-retry-again");
+    let cookie = operator_cookie(&pool, &user).await;
+    let kick = action_decl("kick", ActionPoint::RowAction("player".to_string()), true);
+    let ledger = Held::new(player_owner(module("ledger", Vec::new(), vec![modal_form("adjust"), kick], true)));
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+    let tally = actions::Claimant { login: user.clone(), module: "ledger".to_string(), action: "tally".to_string() };
+    let claimant = |action: &str| actions::Claimant {
+        login: user.clone(),
+        module: "ledger".to_string(),
+        action: action.to_string(),
+    };
+
+    let (_, raw) = portal_get(&engine, &st, &cookie, "/admin/_action/ledger/adjust?entity=player:p-1").await;
+    let form_id = form_id_of(&raw);
+    let entity = player_ref("p-1");
+    let click_id = actions::click_row_id(&claimant("kick"), Some(&entity), None);
+    let paths = [
+        ("adjust", form_id.clone(), format!("_csrf=csrf&_form={form_id}"), "the form path"),
+        ("kick", click_id, "_csrf=csrf&_entity=player:p-1".to_string(), "the click path"),
+    ];
+    for (action, id, body, why) in paths {
+        let counter = actions::click_row_id(&tally, None, Some(action));
+        forms::upsert_click(&pool, &counter, &tally, None, Some(action)).await.unwrap();
+        let name = uniq("t-stall");
+        stall_claims(&pool, &name, &id, &counter).await;
+        let resp = portal_send(&engine, &st, &cookie, &format!("/admin/_action/ledger/{action}"), &body, true).await;
+        unstall_claims(&pool, &name).await;
+        assert_repeated(resp, true, why).await;
+        assert_eq!(generation_of(&pool, &counter).await, 2, "{why}: one claim and one retry, no third");
+    }
+    assert!(ledger.calls().is_empty(), "a stalled claim never reaches the provider");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A `_form` that is missing, expired, another login's or minted for another action is
+/// refused with 400 before the provider runs; so is a computed `click:` row id posted as
+/// `_form`, whether its click row is free, claimed or consumed. A fresh instance posted to
+/// its own action still invokes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_form_id_classified_as_reject_is_a_400_with_no_call() {
+    use crate::engine::{actions, forms};
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let (user, other) = (uniq("t-form-reject"), uniq("t-form-reject-other"));
+    let (cookie, other_cookie) = (operator_cookie(&pool, &user).await, operator_cookie(&pool, &other).await);
+    let kick = action_decl("kick", ActionPoint::RowAction("player".to_string()), true);
+    let actions_ = vec![modal_form("adjust"), modal_form("credit"), kick];
+    let ledger = Held::new(player_owner(module("ledger", Vec::new(), actions_, true)));
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+    let modal = "/admin/_action/ledger/adjust?entity=player:p-1";
+
+    let (_, raw) = portal_get(&engine, &st, &cookie, modal).await;
+    let expired = form_id_of(&raw);
+    sqlx::query("UPDATE admin.forms SET expires_at = now() - interval '1 second' WHERE id = $1")
+        .bind(&expired)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_, raw) = portal_get(&engine, &st, &cookie, modal).await;
+    let fresh = form_id_of(&raw);
+    let cases = [
+        (cookie.as_str(), "adjust", uniq("f-missing"), "a missing form id"),
+        (cookie.as_str(), "adjust", expired, "an expired form id"),
+        (other_cookie.as_str(), "adjust", fresh.clone(), "another login's form id"),
+        (cookie.as_str(), "credit", fresh.clone(), "a form id minted for another action"),
+    ];
+    for (cookie, action, id, why) in cases {
+        let (uri, body) = (format!("/admin/_action/ledger/{action}"), format!("_csrf=csrf&_form={id}"));
+        let (status, raw) = portal_post(&engine, &st, cookie, &uri, &body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{why}: {raw}");
+    }
+
+    let who = actions::Claimant { login: user.clone(), module: "ledger".to_string(), action: "kick".to_string() };
+    let entity = player_ref("p-1");
+    let click_id = actions::click_row_id(&who, Some(&entity), None);
+    let as_form = format!("_csrf=csrf&_form={click_id}");
+    forms::upsert_click(&pool, &click_id, &who, Some(&entity), None).await.unwrap();
+    let (status, raw) = portal_post(&engine, &st, &cookie, "/admin/_action/ledger/kick", &as_form).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a free click row posted as a form: {raw}");
+    let row = forms::claim_click(&pool, &click_id, &who).await.unwrap().expect("a free click row is claimed");
+    let (status, raw) = portal_post(&engine, &st, &cookie, "/admin/_action/ledger/kick", &as_form).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a claimed click row posted as a form: {raw}");
+    forms::settle(&pool, &row, true).await;
+    let (status, raw) = portal_post(&engine, &st, &cookie, "/admin/_action/ledger/kick", &as_form).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a consumed click row posted as a form: {raw}");
+    assert!(ledger.calls().is_empty(), "a refused form id never reaches the provider");
+
+    let body = format!("_csrf=csrf&_form={fresh}");
+    let resp = portal_send(&engine, &st, &cookie, "/admin/_action/ledger/adjust", &body, false).await;
+    assert_completed(&resp, "the fresh instance on its own action");
+    assert_eq!(ledger.calls().len(), 1, "the refusals left the fresh instance claimable");
+
+    cleanup_user(&pool, &user).await;
+    cleanup_user(&pool, &other).await;
+}
+
+/// The invoke of a form instance takes `item`, `expected_revision` and `request_id` from the
+/// row, and a readonly field its stored default over a posted value.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_form_s_invoke_call_is_built_from_its_row() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-call-from-row");
+    let cookie = operator_cookie(&pool, &user).await;
+    let field = |key: &str, readonly: bool, default: Option<&str>| controlplane::Field {
+        key: key.to_string(),
+        label: key.to_string(),
+        kind: controlplane::FieldKind::String,
+        required: false,
+        help: None,
+        default: default.map(str::to_string),
+        readonly,
+        mono: false,
+        placeholder: None,
+    };
+    let spec = controlplane::FormSpec {
+        fields: vec![field("note", false, None), field("lock", true, Some("kept"))],
+        revision: Some(7),
+        ..moded_spec(Vec::new())
+    };
+    let point = ActionPoint::RowAction("player".to_string());
+    let adjust = ActionDecl { then: Then::Form(spec), ..action_decl("adjust", point, true) };
+    let ledger = Recording::new(player_owner(module("ledger", Vec::new(), vec![adjust], true)), &[]);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+
+    let modal = "/admin/_action/ledger/adjust?entity=player:p-1&item=slot-3";
+    let (status, raw) = portal_get(&engine, &st, &cookie, modal).await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let form_id = form_id_of(&raw);
+    let body = format!("_csrf=csrf&_form={form_id}&note=hi&lock=forged");
+    let _ = portal_post(&engine, &st, &cookie, "/admin/_action/ledger/adjust", &body).await;
+    let calls = ledger.invoked.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1, "one invoke");
+    assert_eq!(calls[0].item.as_deref(), Some("slot-3"), "the item is the row's");
+    assert_eq!(calls[0].expected_revision, Some(7), "the expected revision is the stored spec's");
+    assert_eq!(calls[0].request_id.as_deref(), Some(form_id.as_str()), "the request id is the row id");
+    assert_eq!(calls[0].entity, Some(player_ref("p-1")), "the entity is the row's");
+    let want = BTreeMap::from([("note".to_string(), "hi".to_string()), ("lock".to_string(), "kept".to_string())]);
+    assert_eq!(calls[0].input, want, "a readonly field takes its stored default");
+
+    cleanup_user(&pool, &user).await;
+}
+
 // ---- classify_form / classify_click tables -------------------------------------------
 //
 // The two classifiers read no clock: each case passes the row as the classifying SELECT
@@ -3307,6 +3798,7 @@ mod classify {
             ),
             ("3: consumed", Some(FormRow { consumed_at: ago(60_000_000), ..form() }), Claim::Repeated),
             ("3: claimed 29.99 s ago", Some(FormRow { claimed_at: ago(29_990_000), ..form() }), Claim::Repeated),
+            ("3: claimed exactly 30 s ago", Some(FormRow { claimed_at: ago(30_000_000), ..form() }), Claim::Repeated),
             (
                 "3 before 4: expired, claimed < 30 s ago",
                 Some(FormRow { claimed_at: ago(1_000_000), expires_at: NOW - 1, ..form() }),
@@ -3348,10 +3840,20 @@ mod classify {
                 Some(FormRow { claimed_at: ago(29_990_000), ..click() }),
                 Claim::Repeated,
             ),
+            (
+                "claimed exactly 30 s ago, unconsumed",
+                Some(FormRow { claimed_at: ago(30_000_000), ..click() }),
+                Claim::Repeated,
+            ),
             ("claimed 30.01 s ago, unconsumed", Some(FormRow { claimed_at: ago(30_010_000), ..click() }), Claim::Retry),
             (
                 "consumed 4.99 s ago",
                 Some(FormRow { claimed_at: ago(6_000_000), consumed_at: ago(4_990_000), ..click() }),
+                Claim::Repeated,
+            ),
+            (
+                "consumed exactly 5 s ago",
+                Some(FormRow { claimed_at: ago(6_000_000), consumed_at: ago(5_000_000), ..click() }),
                 Claim::Repeated,
             ),
             (
