@@ -104,7 +104,24 @@ pub(crate) async fn claim_form(pool: &PgPool, id: &str, who: &Claimant) -> anyho
         .bind(&who.action)
         .fetch_optional(pool)
         .await?;
-    row.as_ref().map(decode).transpose()
+    claimed(pool, row).await
+}
+
+/// Decodes the row a claim just took. A row that does not decode is released before the
+/// error returns, so the 503 it answers does not hold the row for [`CLAIM_WINDOW`].
+async fn claimed(pool: &PgPool, row: Option<PgRow>) -> anyhow::Result<Option<FormRow>> {
+    let Some(row) = row else { return Ok(None) };
+    match decode(&row) {
+        Ok(decoded) => Ok(Some(decoded)),
+        Err(err) => {
+            let id = row.try_get::<String, _>("id");
+            let claimed_at = row.try_get::<Option<i64>, _>("claimed_us");
+            if let (Ok(id), Ok(claimed_at)) = (id, claimed_at) {
+                end_claim(pool, &id, claimed_at, false).await;
+            }
+            Err(err)
+        }
+    }
 }
 
 /// The row `id`, if any, and Postgres `now()` in epoch microseconds.
@@ -176,19 +193,24 @@ pub(crate) async fn claim_click(pool: &PgPool, id: &str, who: &Claimant) -> anyh
         .bind(&who.action)
         .fetch_optional(pool)
         .await?;
-    row.as_ref().map(decode).transpose()
+    claimed(pool, row).await
 }
 
 /// Ends the claim `row` holds: consumed (kept as a tombstone until it expires) or released.
 /// Matches the claim's own `claimed_at`, so it never touches a later takeover. A failure is
 /// logged.
 pub(crate) async fn settle(pool: &PgPool, row: &FormRow, consumed: bool) {
+    end_claim(pool, &row.id, row.claimed_at, consumed).await;
+}
+
+/// [`settle`] for the claim of row `id` taken at `claimed_at` (epoch microseconds).
+async fn end_claim(pool: &PgPool, id: &str, claimed_at: Option<i64>, consumed: bool) {
     let set = if consumed { "consumed_at = now()" } else { "claimed_at = NULL" };
     let sql = format!(
         "UPDATE admin.forms SET {set} \
          WHERE id = $1 AND (extract(epoch FROM claimed_at) * 1000000)::bigint = $2"
     );
-    if let Err(err) = sqlx::query(&sql).bind(&row.id).bind(row.claimed_at).execute(pool).await {
-        tracing::warn!(%err, id = %row.id, consumed, "admin forms: settling a claim failed");
+    if let Err(err) = sqlx::query(&sql).bind(id).bind(claimed_at).execute(pool).await {
+        tracing::warn!(%err, %id, consumed, "admin forms: settling a claim failed");
     }
 }

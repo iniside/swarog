@@ -2650,6 +2650,46 @@ async fn a_panel_form_draws_the_admitted_modes_and_submits_the_posted_one() {
     cleanup_user(&pool, &user).await;
 }
 
+/// A claimed form row whose stored spec no longer decodes answers 503 and is released
+/// before the answer, so it is not held for the claim window; the provider is never called.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_undecodable_claimed_form_answers_503_and_is_released() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-undecodable-form");
+    let cookie = operator_cookie(&pool, &user).await;
+    let point = ActionPoint::PanelForm("funds".to_string());
+    let grant = vec![action_decl("grant", point, true)];
+    let manifest = player_owner(module("ledger", vec![player_tab("funds", "funds")], grant, true));
+    let ledger = Recording::new(manifest, &[("funds", answer(Primitive::Form(moded_spec(Vec::new()))))]);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/ledger/funds?entity=player:p-1").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let form_id = form_id_of(&raw);
+    sqlx::query("UPDATE admin.forms SET spec = '{\"kind\":\"Form\"}'::jsonb WHERE id = $1")
+        .bind(&form_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let held = || async {
+        sqlx::query_scalar::<_, bool>("SELECT claimed_at IS NOT NULL FROM admin.forms WHERE id = $1")
+            .bind(&form_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    let body = format!("_csrf=csrf&_form={form_id}");
+    for attempt in ["the first submit", "a resubmit"] {
+        let (status, raw) = portal_post(&engine, &st, &cookie, "/admin/_action/ledger/grant", &body).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{attempt}: {raw}");
+        assert!(!held().await, "{attempt}: the undecodable row is released before the 503");
+    }
+    assert!(ledger.invoked_actions().is_empty(), "an undecodable row never reaches the provider");
+
+    cleanup_user(&pool, &user).await;
+}
+
 /// A modal `Then::Form`'s mode actions draw in no menu and are refused as a bare click; the
 /// modal's form posted with a mode invokes that mode's action.
 #[tokio::test(flavor = "multi_thread")]
