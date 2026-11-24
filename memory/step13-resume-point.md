@@ -1,11 +1,11 @@
 ---
 name: step13-resume-point
-description: "Admin redesign resume point 2026-11-24: Step 23 config — 23a2 last dispatched, owner said stop after it; 23t dropped; next 23b"
+description: "Admin redesign resume point 2026-11-24: Step 24 audit — a1/a2 done, 24t splitproof running; then 24.a3, 24.t, 24.a4, 24.b"
 metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-24T10:22:07.570Z
+  modified: 2026-11-24T11:23:59.668Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -117,3 +117,10 @@ a9094615 ("any" = no filter in core filter_views) review REJECT structural S1: "
 - 23a2 aaf1ab3b + review-fix f58d4b2d (core-reviewer + proof-auditor ACCEPT); todo bccd2cd6 (replay safety, duplicate-create revision gap, no redirect after create → config.md; Confirm _reason leak → admin.md).
 - fdc97507 declares 5 new mockup screens Pending in admindiff; crawl still blocked (character/group row menus on compared player tabs). Owner: leave admindiff entirely — 23b dropped, admindiff out of the plan (b6219934 errata).
 - Owner: "konczymy ten plan" — finish the plan. Next: Step 24 (audit) checklist; 24.a4 lane is an owner decision.
+
+## State 2026-11-24 (Step 24 in progress)
+- Checklist docs/plans/2026-11-24-step24-audit-checklist.md (owner: A1-A15 as recommended, 24t kept, a1 split a1a/a1b, 24.a4 = code-scout then sonnet).
+- Landed: 24.a1a 05037093, 24.a1b 9398d2c4, 24.a2 ebbaa19f, review-fixes 195ff826 (round 2 PASS) + c16b37cb; todo fixes 122cce79 (config heading), f7395f93 (groups purge test fails on foreign tombstones in the shared DB).
+- cargo test --workspace: all green except admindiff (out of plan) and groups one_sweep_fire_stamps_at_most_64_players (todo).
+- Owner open (structural): outcome-prefix constants in controlplane::events (+ does conflict: count as failure), drawn_orders test not in admincheck --strict, no core test for empty-Timeline hide, operator login "system" collides with system actor.
+- 24t (test-author opus, splitproof AU3 re-point + X5 + dashboard + break run) dispatched; then proof-auditor, 24.a3, 24.t, 24.a4, 24.b.
