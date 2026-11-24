@@ -424,8 +424,10 @@ pub fn peer_findings(monolith: &[Manifest], split: &[ProcessControlPlane]) -> Ve
     out
 }
 
+/// Checks admin-svc's hand-written dial list against the split in both directions: every
+/// split process hosting a provider must be dialled, and every dialled peer must be a
+/// `<peer>-svc` process that hosts at least one provider.
 fn dialled_peers(portal: &ProcessControlPlane, split: &[ProcessControlPlane], out: &mut Vec<String>) {
-    // admin-svc's dial list is hand-written, so it is checked against the hosts the split builds.
     let dialled: BTreeSet<&str> = portal.dialled.iter().map(String::as_str).collect();
     for p in split.iter().filter(|p| p.process != PORTAL_PROCESS && !p.manifests.is_empty()) {
         if !dialled.contains(peer_of(p.process)) {
@@ -440,8 +442,13 @@ fn dialled_peers(portal: &ProcessControlPlane, split: &[ProcessControlPlane], ou
         }
     }
     for peer in dialled {
-        if !split.iter().any(|p| peer_of(p.process) == peer) {
-            out.push(format!("{PORTAL_PROCESS} dials peer {peer:?}, but no split process is {peer}-svc"));
+        match split.iter().find(|p| peer_of(p.process) == peer) {
+            None => out.push(format!("{PORTAL_PROCESS} dials peer {peer:?}, but no split process is {peer}-svc")),
+            Some(p) if p.manifests.is_empty() => out.push(format!(
+                "{PORTAL_PROCESS} dials peer {peer:?}, but {} hosts no control-plane provider",
+                p.process
+            )),
+            Some(_) => {}
         }
     }
 }
