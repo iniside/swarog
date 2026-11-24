@@ -6,7 +6,7 @@
 
 use controlplane::{
     ActionDecl, ActionPoint, ContributionDecl, EntityKindDecl, Emphasis, Field, FieldKind, FormMode, FormSpec, Layout,
-    Manifest, PageDecl, Point, Role, Then,
+    Manifest, NavEntry, NavSection, PageDecl, Point, Role, Then,
 };
 
 use checkmodules::ProcessControlPlane;
@@ -353,6 +353,248 @@ fn a_request_id_field_with_a_default_is_refused() {
     assert_eq!(findings(&[with(None)]), Vec::<String>::new());
     let line = r#"mail: action "adjust" form: field "rid" is a request id, which the portal fills, and declares a default"#;
     assert_eq!(findings(&[with(Some("grant-7c1e0a"))]), vec![line.to_string()]);
+}
+
+/// The clean head-action fixture with `p` added by `p`, from a prepared `PanelTool("queue")`
+/// Confirm: the one point and variant (with `Then::Form`) a `prepare` call is valid on.
+fn prepared(p: impl FnOnce(ActionDecl) -> ActionDecl) -> Manifest {
+    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+    let confirm = controlplane::ConfirmSpec {
+        title: "Wipe".into(),
+        body: "Wipe the queue.".into(),
+        tone: controlplane::ConfirmTone::Danger,
+        impact: Vec::new(),
+        reason: controlplane::ReasonReq::None,
+        reason_hint: None,
+        type_to_confirm: None,
+        confirm_label: "Wipe".into(),
+    };
+    let tool = action("p", ActionPoint::PanelTool("queue".into()));
+    m.actions.push(p(ActionDecl { then: Then::Confirm(confirm), prepare: true, ..tool }));
+    m
+}
+
+fn outbox_link() -> Then {
+    Then::Link(controlplane::Link::Page { module: "mail".into(), page: PAGE.into(), params: Default::default() })
+}
+
+#[test]
+fn a_prepared_confirm_on_a_panel_tool_is_clean() {
+    assert_eq!(findings(&[prepared(|a| a)]), Vec::<String>::new());
+}
+
+#[test]
+fn prepare_on_then_invoke_is_refused() {
+    assert_eq!(
+        findings(&[prepared(|a| ActionDecl { then: Then::Invoke, ..a })]),
+        vec![r#"mail: action "p" sets prepare but is not Then::Confirm or Then::Form"#.to_string()]
+    );
+}
+
+#[test]
+fn prepare_on_then_link_is_refused() {
+    assert_eq!(
+        findings(&[prepared(|a| ActionDecl { then: outbox_link(), ..a })]),
+        vec![r#"mail: action "p" sets prepare but is not Then::Confirm or Then::Form"#.to_string()]
+    );
+}
+
+/// A `PanelForm` must be `Then::Invoke`, which `prepare` refuses too: no prepared panel
+/// form gives the point finding alone.
+#[test]
+fn prepare_on_a_panel_form_action_is_refused() {
+    let panel_form = |a| ActionDecl { point: ActionPoint::PanelForm("queue".into()), then: Then::Invoke, ..a };
+    assert_eq!(
+        findings(&[prepared(panel_form)]),
+        vec![
+            r#"mail: action "p" sets prepare but is not Then::Confirm or Then::Form"#.to_string(),
+            r#"mail: PanelForm action "p" sets prepare, but a panel form has no modal"#.to_string(),
+        ]
+    );
+}
+
+#[test]
+fn a_panel_form_action_that_is_not_then_invoke_is_refused() {
+    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+    m.actions.push(ActionDecl { then: outbox_link(), ..action("open", ActionPoint::PanelForm("queue".into())) });
+    assert_eq!(findings(&[m]), vec![r#"mail: PanelForm action "open" is not Then::Invoke"#.to_string()]);
+}
+
+#[test]
+fn an_action_on_a_contribution_the_module_lacks_is_refused() {
+    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+    m.actions.push(action("retry", ActionPoint::QueueRow("ghost".into())));
+    assert_eq!(
+        findings(&[m]),
+        vec![r#"mail: action "retry" is QueueRow("ghost"), which is not a contribution of this module"#.to_string()]
+    );
+}
+
+/// The clean fixture whose `outbox` tile row names `kpi`, a contribution at `point`.
+fn tiled(point: Point) -> Manifest {
+    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+    m.contributions.push(contribution("kpi", point));
+    m.pages[0].tiles = vec!["kpi".into()];
+    m
+}
+
+#[test]
+fn a_tiles_id_on_this_page_is_clean() {
+    assert_eq!(findings(&[tiled(Point::Page(PAGE.into()))]), Vec::<String>::new());
+}
+
+#[test]
+fn a_tiles_id_whose_contribution_is_a_dashboard_tile_is_refused() {
+    assert_eq!(
+        findings(&[tiled(Point::DashboardTile)]),
+        vec![r#"mail: page "outbox" lays out "kpi", which is not a contribution with Point::Page("outbox")"#.to_string()]
+    );
+}
+
+/// The clean fixture with a second `outbox` head action `new`, both actions at `emphasis`.
+fn two_heads(emphasis: Emphasis) -> Manifest {
+    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+    m.pages[0].head_actions.push("new".into());
+    m.actions.push(action("new", ActionPoint::PageHead(PAGE.into())));
+    m.actions.iter_mut().for_each(|a| a.emphasis = emphasis);
+    m
+}
+
+#[test]
+fn a_second_primary_head_action_is_refused() {
+    let mut one = two_heads(Emphasis::Primary);
+    one.actions[0].emphasis = Emphasis::Default;
+    assert_eq!(findings(&[one]), Vec::<String>::new());
+    assert_eq!(
+        findings(&[two_heads(Emphasis::Primary)]),
+        vec![r#"mail: page "outbox" has more than one primary head action: act, new"#.to_string()]
+    );
+}
+
+#[test]
+fn a_trailing_icon_off_a_link_is_refused() {
+    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+    let audit = action("audit", ActionPoint::PanelTool("queue".into()));
+    m.actions.push(ActionDecl { then: outbox_link(), trailing_icon: true, ..audit });
+    assert_eq!(findings(&[m.clone()]), Vec::<String>::new());
+    m.actions[1].then = Then::Invoke;
+    assert_eq!(findings(&[m]), vec![r#"mail: action "audit" sets trailing_icon but is not Then::Link"#.to_string()]);
+}
+
+#[test]
+fn when_empty_off_a_panel_tool_is_refused() {
+    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+    m.actions.push(ActionDecl { when_empty: true, ..action("compose", ActionPoint::PanelTool("queue".into())) });
+    assert_eq!(findings(&[m.clone()]), Vec::<String>::new());
+    m.actions[1].point = ActionPoint::QueueRow("queue".into());
+    assert_eq!(findings(&[m]), vec![r#"mail: action "compose" sets when_empty but is not a PanelTool"#.to_string()]);
+}
+
+#[test]
+fn a_module_declared_by_two_providers_is_refused() {
+    let m = manifest(ActionPoint::PageHead(PAGE.into()));
+    assert_eq!(findings(&[m.clone(), m]), vec!["mail: two providers declare this module".to_string()]);
+}
+
+#[test]
+fn a_repeated_contribution_or_action_id_is_refused() {
+    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+    m.contributions.push(m.contributions[0].clone());
+    m.actions.push(m.actions[0].clone());
+    assert_eq!(
+        findings(&[m]),
+        vec![
+            r#"mail: duplicate contribution id "queue""#.to_string(),
+            r#"mail: duplicate action id "act""#.to_string(),
+        ]
+    );
+}
+
+#[test]
+fn an_action_targeting_an_undeclared_entity_kind_is_refused() {
+    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+    m.actions.push(action("ban", ActionPoint::RowAction("message".into())));
+    assert_eq!(findings(&[m.clone()]), Vec::<String>::new());
+    m.actions[1].point = ActionPoint::RowAction("player".into());
+    assert_eq!(
+        findings(&[m]),
+        vec![r#"mail: action "ban" targets entity kind "player", which no manifest declares"#.to_string()]
+    );
+}
+
+#[test]
+fn an_id_longer_than_the_limit_is_refused() {
+    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+    let at_limit = "a".repeat(super::MAX_ID_BYTES);
+    m.actions.push(action(&at_limit, ActionPoint::PanelTool("queue".into())));
+    assert_eq!(findings(&[m.clone()]), Vec::<String>::new());
+    let over = format!("{at_limit}b");
+    m.actions[1].id = over.clone();
+    assert_eq!(findings(&[m]), vec![format!(r#"mail: action id "{over}" is longer than 64 bytes"#)]);
+}
+
+/// The clean fixture with nav entry `outbox` in section `platform` opening page `outbox`,
+/// counted by its `badge` `NavCounter`.
+fn navigated() -> Manifest {
+    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+    m.contributions.push(contribution("badge", Point::NavCounter));
+    m.entries.push(NavEntry {
+        section: "platform".into(),
+        id: "outbox".into(),
+        label: "Outbox".into(),
+        icon: "mail".into(),
+        order: 0,
+        page: PAGE.into(),
+        counter: Some("badge".into()),
+    });
+    m
+}
+
+#[test]
+fn a_nav_entry_on_a_declared_page_section_and_counter_is_clean() {
+    assert_eq!(findings(&[navigated()]), Vec::<String>::new());
+}
+
+#[test]
+fn a_nav_entry_opening_an_undeclared_page_is_refused() {
+    let mut m = navigated();
+    m.entries[0].page = "ghost".into();
+    assert_eq!(
+        findings(&[m]),
+        vec![r#"mail: nav entry "outbox" opens page "ghost", which this module does not declare"#.to_string()]
+    );
+}
+
+#[test]
+fn a_nav_counter_that_is_not_a_nav_counter_contribution_is_refused() {
+    let mut m = navigated();
+    m.entries[0].counter = Some("queue".into());
+    let line = r#"mail: nav entry "outbox" names counter "queue", which is not a Point::NavCounter contribution"#;
+    assert_eq!(findings(&[m]), vec![line.to_string()]);
+}
+
+#[test]
+fn a_nav_entry_in_an_unknown_section_is_refused() {
+    let mut m = navigated();
+    m.entries[0].section = "ops".into();
+    assert_eq!(
+        findings(&[m.clone()]),
+        vec![r#"mail: nav entry "outbox" names section "ops", which is neither fixed nor declared"#.to_string()]
+    );
+    m.sections.push(NavSection { id: "ops".into(), label: "Ops".into(), order: 50 });
+    assert_eq!(findings(&[m]), Vec::<String>::new(), "a declared section is known");
+}
+
+/// A section redeclared exactly as it wins is clean; one that loses with another label or
+/// order to the fixed `SECTIONS` entry is refused.
+#[test]
+fn a_section_declared_unlike_its_winner_is_refused() {
+    let mut m = navigated();
+    m.sections.push(NavSection { id: "platform".into(), label: "Platform".into(), order: 40 });
+    assert_eq!(findings(&[m.clone()]), Vec::<String>::new());
+    m.sections[0].label = "Ops".into();
+    let line = r#"mail: section "platform" is declared as ("Ops", 40) but controlplane::SECTIONS declares it as ("Platform", 40)"#;
+    assert_eq!(findings(&[m]), vec![line.to_string()]);
 }
 
 /// A provider manifest for `module`; `peer_findings` reads only the module name.
