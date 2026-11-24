@@ -553,11 +553,11 @@ impl Provider for MailAdmin {
             },
             RETRY_NOW => match self.svc.retry_now(outbox_id(req.item.as_deref())?).await? {
                 0 => Ok(noop("Nothing retried: the message is no longer retrying; refresh")),
-                _ => Ok(done("Retry queued")),
+                _ => Ok(done("Retry scheduled now")),
             },
             PARK => match self.svc.park(outbox_id(req.item.as_deref())?).await? {
-                0 => Ok(noop("Nothing parked: the message is no longer pending; refresh")),
-                _ => Ok(done("Message parked")),
+                0 => Ok(noop("Nothing parked: the message is no longer retrying; refresh")),
+                _ => Ok(done("Parked")),
             },
             CANCEL_PARKED => match self.svc.cancel_parked(outbox_id(req.item.as_deref())?).await? {
                 0 => Ok(noop("Nothing cancelled: the message is no longer parked; refresh")),

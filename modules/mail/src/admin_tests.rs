@@ -610,7 +610,8 @@ async fn an_attempt_in_flight_when_retry_now_lands_loses_its_status_write() {
     assert_eq!((state.as_str(), body.as_str()), (STATE_PENDING, "hello"), "still queued, body intact");
 }
 
-/// Park stops the retries and keeps the failure; only a pending row can be parked.
+/// Park stops the retries and keeps the failure; only a retrying row (pending with a failed
+/// attempt) can be parked.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn park_moves_a_pending_row_once_keeps_its_error_and_bumps_its_generation() {
     let Some(pool) = test_pool().await else { return };
@@ -642,14 +643,16 @@ async fn park_moves_a_pending_row_once_keeps_its_error_and_bumps_its_generation(
     assert!(is_noop(park().await.unwrap()), "a second park finds the row parked");
     assert_eq!(row_of(&pool, &key).await.3, now_generation, "the no-op did not bump again");
 
-    // Pending with no failed attempt parks too: park is not limited to the Retrying tab.
+    // Pending with no failed attempt (a stale form over a row another operator resumed): the
+    // park answers a no-op and writes nothing.
     let fresh = unique_key(&pool, "admin-park-fresh").await;
     let _cleanup_fresh = cleanup(&pool, &[&fresh]);
     enqueue(&svc, &pool, &mail_of(&fresh, "hello")).await;
     let fresh_id = id_of(&pool, &fresh).await;
-    assert!(is_ok(p.invoke(call("park", &[], Some(&fresh_id), None)).await.unwrap()));
-    let (state, _, _, _, last_error) = row_of(&pool, &fresh).await;
-    assert_eq!((state.as_str(), last_error.as_str()), (STATE_PARKED, ""));
+    let before = row_of(&pool, &fresh).await;
+    assert!(is_noop(p.invoke(call("park", &[], Some(&fresh_id), None)).await.unwrap()));
+    assert_eq!(row_of(&pool, &fresh).await, before, "nothing written");
+    assert_eq!(before.0, STATE_PENDING);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -662,6 +665,7 @@ async fn an_attempt_in_flight_when_the_row_is_parked_loses_its_status_write() {
     let _cleanup = cleanup(&pool, &[&key]);
     enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
     let id = id_of(&pool, &key).await;
+    backed_off_failure(&pool, &key, STATE_PENDING).await;
     let claimed = claim(&pool, &key).await;
 
     assert!(is_ok(p.invoke(call("park", &[], Some(&id), None)).await.unwrap()));

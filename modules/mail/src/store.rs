@@ -12,7 +12,8 @@ use crate::service::NewMail;
 pub(crate) const STATE_SENT: &str = "sent";
 pub(crate) const STATE_PENDING: &str = "pending";
 pub(crate) const STATE_PARKED: &str = "parked";
-/// Production writes `cancelled` inline in `cancel_pending_tx`'s SQL; only tests name it.
+/// Production writes `cancelled` inline in the SQL of `cancel_pending_tx` and `cancel_parked_tx`;
+/// only tests name it.
 #[cfg(test)]
 pub(crate) const STATE_CANCELLED: &str = "cancelled";
 
@@ -663,23 +664,26 @@ impl Store {
         Ok(done.rows_affected())
     }
 
-    /// Parks ONE pending row on the operator's say: kept, but no longer retried until a
-    /// resume. `last_error` is KEPT (it is why the operator parked it, and what the Parked
-    /// tab shows); `attempts` stays too, since a resume resets the ladder
-    /// ([`Store::requeue_parked_tx`]).
+    /// Parks ONE retrying row on the operator's say: kept, but no longer retried until a
+    /// resume. Only a row that has failed an attempt qualifies (`state = 'pending' AND
+    /// last_error IS NOT NULL`, the Retrying tab, which is where Park is offered): a stale
+    /// Park form must not re-park a row another operator already resumed
+    /// ([`Store::requeue_parked_tx`] clears `last_error`), which would lose that resume
+    /// silently. `last_error` is KEPT (it is why the operator parked it, and what the Parked
+    /// tab shows); `attempts` stays too, since a resume resets the ladder.
     ///
-    /// `generation` is bumped so an attempt in flight right now loses its status write
-    /// whatever the row does next: `finish_tx`'s `state = 'pending'` leg already refuses it
-    /// while the row stays parked, and the bump keeps it refused if the row is resumed to
-    /// pending before that attempt finishes. The in-flight message may still reach the relay
-    /// (as with a cancel); the park only stops the next one.
+    /// An attempt in flight right now loses its status write because `finish_tx`'s
+    /// `state = 'pending'` leg refuses it while the row is parked, and both resume paths bump
+    /// `generation` themselves. The bump here is belt-and-braces on top of that. The
+    /// in-flight message may still reach the relay (as with a cancel); the park only stops
+    /// the next one.
     ///
-    /// The `state = 'pending'` leg is the whole guard; any other state matches zero rows.
+    /// Any other state, or a pending row that never failed, matches zero rows.
     pub(crate) async fn park_tx(&self, conn: &mut PgConnection, id: &str) -> Result<u64, sqlx::Error> {
         let done = sqlx::query(
             "UPDATE mail.outbox \
                 SET state = 'parked', generation = generation + 1, updated_at = now() \
-              WHERE id = $1::uuid AND state = 'pending'",
+              WHERE id = $1::uuid AND state = 'pending' AND last_error IS NOT NULL",
         )
         .bind(id)
         .execute(&mut *conn)

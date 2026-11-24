@@ -232,7 +232,7 @@ impl Service {
         Ok(moved)
     }
 
-    /// Rows parked — `0` means the row was not pending when the statement ran.
+    /// Rows parked — `0` means the row was not retrying (moved, resumed, or never failed).
     pub(crate) async fn park(&self, id: &str) -> Result<u64, Error> {
         let mut tx = bounded_tx(&self.pool, ADMIN_BUDGET).await.map_err(crate::internal)?;
         let parked = self.store.park_tx(&mut tx, id).await.map_err(crate::internal)?;
