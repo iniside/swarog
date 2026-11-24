@@ -4307,7 +4307,8 @@ async fn a_money_field_drawn_by_the_portal_posts_back_as_one_money_object() {
     let cookie = operator_cookie(&pool, &user).await;
     let kind = FieldKind::Money(vec!["gold".to_string(), "gems".to_string()]);
     let price = plain_field("price", kind.clone(), Some(r#"{"amount":"12.5","currency":"gems"}"#));
-    let ledger = Held::new(player_owner(module("ledger", Vec::new(), vec![modal_form_of("grant", vec![price])], true)), &user);
+    let grant = vec![modal_form_of("grant", vec![price])];
+    let ledger = Held::new(player_owner(module("ledger", Vec::new(), grant, true)), &user);
     let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
 
     let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_action/ledger/grant?entity=player:p-1").await;
@@ -4342,7 +4343,8 @@ async fn an_unknown_or_repeated_key_is_a_400_that_releases_the_claim() {
     let post = "/admin/_action/ledger/count";
 
     for (wrong, why) in [("&qty=1&bogus=1", "an unknown key"), ("&qty=1&qty=2", "a repeated key")] {
-        let (status, raw) = portal_post(&engine, &st, &cookie, post, &format!("_csrf=csrf&_form={form_id}{wrong}")).await;
+        let body = format!("_csrf=csrf&_form={form_id}{wrong}");
+        let (status, raw) = portal_post(&engine, &st, &cookie, post, &body).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{why}: {raw}");
         assert!(ledger.calls().is_empty(), "{why}: never invokes");
         assert_eq!(claim_state(&pool, &form_id).await, (false, false), "{why}: releases the claim");
@@ -4461,7 +4463,8 @@ async fn a_modal_prepares_only_an_admitted_action_and_submits_against_the_prepar
     let modal = |action: &str| format!("/admin/_action/ledger/{action}?entity=player:p-1&item=evt-9");
     let prepares = || ledger.prepares.load(Ordering::SeqCst);
 
-    for (action, why) in [("purge", "a denied action"), ("later", "an action not implemented"), ("wipe", "a read-only one")] {
+    let refused = [("purge", "a denied action"), ("later", "an action not implemented"), ("wipe", "a read-only one")];
+    for (action, why) in refused {
         let (status, raw) = portal_get(&engine, &st, &cookie, &modal(action)).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{why}: {raw}");
     }
@@ -4514,12 +4517,19 @@ async fn a_failed_mint_is_a_toast_on_a_modal_and_an_error_panel_on_a_panel() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{raw}");
     assert!(raw.contains("Form unavailable"), "{raw}");
     assert_eq!(retarget.as_deref(), Some("#modal-root"), "the toast lands in the modal root");
-    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/ledger/funds?entity=player:p-1").await;
-    drop(refusal);
+    let panel = "/admin/_panel/ledger/funds?entity=player:p-1";
+    let (status, raw) = portal_get(&engine, &st, &cookie, panel).await;
     assert_eq!(status, StatusCode::OK, "{raw}");
     assert!(raw.contains(r#"data-state="error""#) && raw.contains("Form unavailable"), "{raw}");
+    assert!(!raw.contains("Form unavailable:"), "the mint failure, not a spec error: {raw}");
     assert!(!raw.contains(r#"name="_form""#), "no form instance is drawn: {raw}");
     assert_eq!(forms_of(&pool, &user).await, 0);
+
+    drop(refusal);
+    let (status, raw) = portal_get(&engine, &st, &cookie, panel).await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert!(raw.contains(r#"name="_form""#), "with the mint admitted the same panel serves a form: {raw}");
+    assert_eq!(forms_of(&pool, &user).await, 1);
 
     cleanup_user(&pool, &user).await;
 }

@@ -340,6 +340,32 @@ fn an_absent_range_shares_the_24h_cache_key_and_each_range_keys_apart() {
     assert_eq!(keys.len(), 4);
 }
 
+/// The search text is part of the cache key: each search writes its own last-good copy, and
+/// a failed answer to a search falls back to that search's copy, never another's.
+#[tokio::test]
+async fn each_search_keys_its_own_cached_copy() {
+    let decl = ContributionDecl { cache_ttl_s: Some(3600), ..panel("load", Role::Viewer) };
+    let (engine, scripted) = single(decl.clone(), Vec::new(), true, body(props())).await;
+    let operator = Operator { login: "ops".to_string(), role: Role::Admin };
+    let searched = |text: &str| PanelQuery { search: Some(text.to_string()), ..query(&decl, None) };
+    let view = super::resolve(&engine, &engine.snapshot(), &operator, "m", &decl, searched("a")).await;
+    assert_eq!(view.body.map(|b| b.primitive), Some(props()));
+    assert_eq!(scripted.calls(), 1);
+
+    scripted.reply(body(tile(None)));
+    let view = super::resolve(&engine, &engine.snapshot(), &operator, "m", &decl, searched("b")).await;
+    assert_eq!(view.body.map(|b| b.primitive), Some(tile(None)), "another search is another key");
+    assert_eq!(scripted.calls(), 2);
+
+    scripted.reply(Reply::Fail(opsapi::Error::internal("boom")));
+    for (text, want) in [("a", props()), ("b", tile(None))] {
+        let view = super::resolve(&engine, &engine.snapshot(), &operator, "m", &decl, searched(text)).await;
+        assert_eq!(view.state, PanelState::Stale, "search {text}");
+        assert_eq!(view.body.map(|b| b.primitive), Some(want), "search {text} falls back to its own copy");
+    }
+    assert_eq!(scripted.calls(), 4);
+}
+
 /// The module's banner shows in `ok` and `readonly` only.
 #[test]
 fn the_module_banner_shows_only_in_ok_and_readonly() {

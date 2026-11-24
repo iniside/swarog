@@ -97,6 +97,79 @@ fn a_timed_out_invoke_releases_the_claim() {
     assert!(!consumes(&Invoked::TimedOut));
 }
 
+fn field(key: &str, kind: FieldKind, required: bool) -> Field {
+    Field { kind, required, ..form(key).fields.remove(0) }
+}
+
+fn form_spec(fields: Vec<Field>) -> StoredSpec {
+    StoredSpec::Form { form: Box::new(FormSpec { fields, ..form("unused") }), chrome: Chrome::default() }
+}
+
+fn posted(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
+/// A blank Int, Float, Json, Duration and Ref, a Money with an empty amount and a Multi with
+/// no box ticked are left out of the input when optional and are "required" when required.
+#[test]
+fn blank_typed_fields_are_left_out_when_optional_and_required_otherwise() {
+    let kinds = [
+        ("count", FieldKind::Int),
+        ("ratio", FieldKind::Float),
+        ("blob", FieldKind::Json),
+        ("wait", FieldKind::Duration),
+        ("owner", FieldKind::Ref("player".to_string())),
+        ("price", FieldKind::Money(vec!["gold".to_string()])),
+        ("regions", FieldKind::Multi(vec!["a".to_string()])),
+    ];
+    let body = posted(&[
+        ("count", ""),
+        ("ratio", ""),
+        ("blob", ""),
+        ("wait", ""),
+        ("owner", ""),
+        ("price", ""),
+        ("price__currency", "gold"),
+    ]);
+    let optional = form_spec(kinds.iter().map(|(k, kind)| field(k, kind.clone(), false)).collect());
+    let Ok(submission) = build_submission(&optional, &body) else { panic!("blank optional fields are no error") };
+    assert!(submission.input.is_empty(), "{:?}", submission.input);
+
+    let required = form_spec(kinds.iter().map(|(k, kind)| field(k, kind.clone(), true)).collect());
+    let Err(errors) = build_submission(&required, &body) else { panic!("blank required fields are errors") };
+    let want: BTreeMap<String, String> = kinds.iter().map(|(k, _)| (k.to_string(), "required".to_string())).collect();
+    assert_eq!(errors, want);
+}
+
+/// A required read-only field with no default is left out, not an error; a required String
+/// posted as "" is "required"; an optional String posted as "" reaches the input as "".
+#[test]
+fn the_blank_rule_skips_readonly_then_keeps_an_optional_empty_string() {
+    let readonly = Field { readonly: true, ..field("shown", FieldKind::String, true) };
+    let name = field("name", FieldKind::String, true);
+    let spec = form_spec(vec![readonly, name, field("note", FieldKind::String, false)]);
+    let Err(errors) = build_submission(&spec, &posted(&[("shown", "x"), ("name", ""), ("note", "")])) else {
+        panic!("a blank required String is an error")
+    };
+    assert_eq!(errors, BTreeMap::from([("name".to_string(), "required".to_string())]));
+
+    let Ok(submission) = build_submission(&spec, &posted(&[("name", "Anna"), ("note", "")])) else {
+        panic!("a filled required String and an empty optional one submit")
+    };
+    let want = BTreeMap::from([("name".to_string(), "Anna".to_string()), ("note".to_string(), String::new())]);
+    assert_eq!(submission.input, want, "the read-only field without a default is left out");
+}
+
+/// A bound element id of 256 bytes is accepted; 257 bytes, an empty id and one with a
+/// control character are refused.
+#[test]
+fn validate_item_bounds_length_and_refuses_empty_and_control_characters() {
+    assert!(validate_item(&"x".repeat(ITEM_MAX)));
+    assert!(!validate_item(&"x".repeat(ITEM_MAX + 1)));
+    assert!(!validate_item(""));
+    assert!(!validate_item("row\n1"));
+}
+
 fn confirm(type_to_confirm: Option<&str>) -> ConfirmSpec {
     ConfirmSpec {
         title: "Skip".to_string(),
