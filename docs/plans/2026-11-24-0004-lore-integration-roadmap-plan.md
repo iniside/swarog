@@ -461,11 +461,11 @@ Resolved 2026-11-24: grants live in a separate `authz` module (Step 5a).
      `accounts` holds a copy of lore's data, with a lag window.
    - **(C)** An explicit archcheck exception for this one dependency. Not
      recommended: it is the first such exception.~~ Resolved: `authz` module.
-2. **Login for studio members (Step 1).** P5 lists email-and-password
+2. **Resolved 2026-11-24: yes.** **Login for studio members (Step 1).** P5 lists email-and-password
    self-registration and operator-created accounts. Proposal: build
    operator-created accounts first and self-registration as Step 1b. Federated
    Google/Epic stays available on the same page. OK?
-3. **Vendoring Lore's generated code (Step 6) vs linking `lore-proto`.** Linking
+3. **Resolved 2026-11-24: vendor.** **Vendoring Lore's generated code (Step 6) vs linking `lore-proto`.** Linking
    brings a C build (rpmalloc) and a second axum. Proposal: vendor.
 4. **The portal shares the vendored crate with Swarog.** It is third-party code,
    not Swarog code. Proposal: allow this one shared dependency in the portal's
