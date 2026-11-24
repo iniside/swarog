@@ -71,6 +71,15 @@ fn with_env(key: &str, val: Option<&str>, f: impl FnOnce()) {
     }
 }
 
+/// The startup read takes the name from `ADMIN_DEPLOYMENT_NAME` and from no other variable.
+#[test]
+fn deployment_name_is_read_from_its_variable() {
+    with_env("ADMIN_DEPLOYMENT_NAME", Some(" emberline-prod "), || {
+        assert_eq!(deployment_from_env().as_deref(), Some("emberline-prod"));
+    });
+    with_env("ADMIN_DEPLOYMENT_NAME", None, || assert_eq!(deployment_from_env(), None));
+}
+
 /// The deployment name is trimmed; unset and blank draw "—"; the subtitle carries the workspace version.
 #[test]
 fn deployment_name_and_subtitle() {

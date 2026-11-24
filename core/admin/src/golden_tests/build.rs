@@ -271,7 +271,7 @@ pub(super) fn shell_view(crumb: &str) -> ShellView {
         crumbs: vec![Crumb { label: crumb.to_string(), href: None }],
         scopes: Vec::new(),
         flash: None,
-        deployment: None,
+        deployment: Some("emberline-prod".to_string()),
         health: None,
         complete: true,
     }

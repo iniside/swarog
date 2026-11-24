@@ -48,6 +48,8 @@ Companion plan: `docs/plans/2026-07-10-2314-admin-hardening-plan.md`.
       or set it to the reverse proxy's range.
 - [ ] `ADMIN_COOKIE_SECURE` NOT set (defaults to Secure ON — correct behind
       https). Never set `=0` in production.
+- [ ] `ADMIN_DEPLOYMENT_NAME` set to the deployment's name (shown in the sidebar and the
+      dashboard subtitle; unset shows "—").
 - [ ] `ADMIN_OPEN` NOT set (it disables sessions AND CSRF).
 
 ## First boot

@@ -394,7 +394,7 @@ impl Module for Admin {
                 "admin portal is UNAUTHENTICATED (ADMIN_OPEN=1) — sessions AND CSRF disabled; intended for local use only"
             );
         }
-        let deployment = deployment_name(std::env::var("ADMIN_DEPLOYMENT_NAME").ok());
+        let deployment = deployment_from_env();
         let cookie_secure = cookie_secure_on();
         if !cookie_secure {
             tracing::warn!(
@@ -1068,6 +1068,11 @@ fn admin_open_explicitly_on() -> bool {
         std::env::var("ADMIN_OPEN"),
         Ok(v) if v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("on")
     )
+}
+
+/// The startup read of `ADMIN_DEPLOYMENT_NAME`, the one place the variable name is spelled.
+fn deployment_from_env() -> Option<String> {
+    deployment_name(std::env::var("ADMIN_DEPLOYMENT_NAME").ok())
 }
 
 /// The deployment name from `ADMIN_DEPLOYMENT_NAME`: trimmed, blank or unset is `None`.

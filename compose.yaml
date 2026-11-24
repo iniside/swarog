@@ -33,6 +33,7 @@ services:
       - ACME_DOMAINS
       - ACME_CONTACT
       - TRUSTED_PROXY_CIDRS
+      - ADMIN_DEPLOYMENT_NAME
       - MAIL_PROVIDER
       - MAIL_FROM
       - MAIL_SMTP_HOST
