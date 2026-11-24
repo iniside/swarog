@@ -333,13 +333,35 @@ pub(crate) struct IdentityRow {
     pub last_used_secs: Option<i64>,
 }
 
-/// One live refresh family: a login on one device, whatever its token rotations.
+/// One refresh family that still grants access: a login on one device, whatever its
+/// token rotations.
 pub(crate) struct FamilyRow {
     pub family_id: String,
     /// The family's first issue, `YYYY-MM-DD HH24:MI` UTC.
     pub started: String,
-    /// Seconds until the family's hard expiry, on the database clock.
+    /// Seconds until the last of the family's tokens expires, on the database clock.
     pub expires_in_secs: i64,
+}
+
+/// The refresh families of player `$1` that still grant access, as one statement
+/// selecting `$select` per family and ending in `$tail`. A family grants access while it
+/// holds an unexpired refresh token or an unexpired access session; per family, `since`
+/// is when its rows were minted and `expires_at` when they expire. The Sessions panel
+/// and Revoke all both read this one predicate, so the panel lists what the modal counts.
+macro_rules! granting_families {
+    ($select:literal, $tail:literal) => {
+        concat!(
+            "SELECT ", $select, " FROM (\
+               SELECT family_id, issued_at AS since, expires_at FROM accounts.refresh_tokens \
+                WHERE player_id = $1::uuid \
+               UNION ALL \
+               SELECT family_id, created_at, expires_at FROM accounts.sessions \
+                WHERE player_id = $1::uuid AND family_id IS NOT NULL\
+             ) AS family_rows \
+             GROUP BY family_id HAVING bool_or(expires_at > now()) ",
+            $tail,
+        )
+    };
 }
 
 pub(crate) struct Store {
@@ -1008,21 +1030,15 @@ impl Store {
         Ok(Some(tokens.rows_affected() + sessions.rows_affected()))
     }
 
-    /// The refresh families of a player that still grant access: those holding an
-    /// unexpired refresh token or an unexpired access session. A family past both expiries
-    /// grants nothing; the prune sweeps remove its rows.
+    /// The refresh families of a player that still grant access ([`granting_families`]):
+    /// those holding an unexpired refresh token or an unexpired access session. A family
+    /// past both expiries grants nothing; the prune sweeps remove its rows.
     pub async fn revocable_families_tx(
         &self,
         conn: &mut PgConnection,
         player_id: &str,
     ) -> Result<Vec<String>, sqlx::Error> {
-        sqlx::query_scalar(
-            "SELECT family_id::text FROM accounts.refresh_tokens \
-              WHERE player_id = $1::uuid AND expires_at > now() \
-             UNION \
-             SELECT family_id::text FROM accounts.sessions \
-              WHERE player_id = $1::uuid AND expires_at > now() AND family_id IS NOT NULL",
-        )
+        sqlx::query_scalar(granting_families!("family_id::text", ""))
         .bind(player_id)
         .fetch_all(&mut *conn)
         .await
@@ -1288,9 +1304,9 @@ impl Store {
             .collect())
     }
 
-    /// The newest `limit` live refresh families of a player, plus how many are live. A
-    /// family is live while it holds an unused, unexpired token; a revoked family has no
-    /// rows left.
+    /// The newest `limit` refresh families of a player that still grant access, plus how
+    /// many do: the set [`Store::revocable_families_tx`] counts and Revoke all deletes
+    /// ([`granting_families`]). A revoked family has no rows left.
     pub async fn live_families(
         &self,
         player_id: &str,
@@ -1300,15 +1316,13 @@ impl Store {
             return Ok((Vec::new(), 0));
         }
         let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
-            "SELECT family_id::text, \
-                    to_char(min(issued_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), \
-                    floor(EXTRACT(EPOCH FROM (max(expires_at) - now())))::int8, \
-                    count(*) OVER () \
-               FROM accounts.refresh_tokens WHERE player_id = $1::uuid \
-              GROUP BY family_id \
-             HAVING bool_or(used_at IS NULL AND expires_at > now()) \
-              ORDER BY min(issued_at) DESC, family_id \
-              LIMIT $2",
+            granting_families!(
+                "family_id::text, \
+                 to_char(min(since) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), \
+                 floor(EXTRACT(EPOCH FROM (max(expires_at) - now())))::int8, \
+                 count(*) OVER ()",
+                "ORDER BY min(since) DESC, family_id LIMIT $2"
+            ),
         )
         .bind(player_id)
         .bind(limit)

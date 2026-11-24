@@ -258,7 +258,7 @@ async fn nav_counter_draws_the_player_count_with_separators() {
 }
 
 #[tokio::test]
-async fn sessions_panel_lists_live_families_newest_first_and_counts_them() {
+async fn sessions_panel_lists_the_families_revoke_all_counts_newest_first() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("sess-{}@test.local", suffix());
@@ -267,29 +267,50 @@ async fn sessions_panel_lists_live_families_newest_first_and_counts_them() {
     // A rotated family stays one live family.
     let rotated = svc.refresh(registered.refresh_token.clone()).await.unwrap();
     let second = svc.login(email.clone(), "pw".into()).await.unwrap();
-    let expired = svc.login(email, "pw".into()).await.unwrap();
-    let (a, b, c) = (
+    let expired = svc.login(email.clone(), "pw".into()).await.unwrap();
+    let access_only = svc.login(email, "pw".into()).await.unwrap();
+    let (a, b, c, d) = (
         family_of(&pool, &rotated.refresh_token).await,
         family_of(&pool, &second.refresh_token).await,
         family_of(&pool, &expired.refresh_token).await,
+        family_of(&pool, &access_only.refresh_token).await,
     );
-    sqlx::query(
-        "UPDATE accounts.refresh_tokens SET expires_at = now() - interval '1 second' \
-          WHERE family_id = $1::uuid",
-    )
-        .bind(&c)
-        .execute(&pool)
-        .await
-        .unwrap();
-    let body = AccountsAdmin::new(Arc::clone(&svc)).panel(player_query("sessions", &id)).await;
+    // c is past both expiries; d's refresh token expired but its access session lives on.
+    for (rows, family) in [("refresh_tokens", &c), ("sessions", &c), ("refresh_tokens", &d)] {
+        sqlx::query(&format!(
+            "UPDATE accounts.{rows} SET expires_at = now() - interval '1 second' \
+              WHERE family_id = $1::uuid",
+        ))
+            .bind(family)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let admin = AccountsAdmin::new(Arc::clone(&svc));
+    let body = admin.panel(player_query("sessions", &id)).await;
+    let modal = admin
+        .prepare(PrepareCall {
+            module: "accounts".to_string(),
+            action: REVOKE_ALL.to_string(),
+            entity: Some(EntityRef { kind: "player".to_string(), id: id.clone() }),
+            item: None,
+            operator: "op".to_string(),
+        })
+        .await;
     cleanup_player(&pool, &id).await;
 
     let body = body.unwrap();
-    assert_eq!(body.meta.as_deref(), Some("2"), "the meta counts live families, not tokens");
+    assert_eq!(body.meta.as_deref(), Some("3"), "the meta counts live families, not tokens");
+    let Then::Confirm(modal) = modal.unwrap() else { panic!("revoke-all prepares a Confirm") };
+    assert_eq!(modal.impact[0].1.value, "3", "the Revoke all modal counts the families the panel lists");
     let t = table(body);
     let items: Vec<&str> = t.rows.iter().map(|r| r.item.as_deref().unwrap()).collect();
-    assert_eq!(items, vec![b.as_str(), a.as_str()], "live families newest first; the expired one is gone");
-    for (row, family) in t.rows.iter().zip([&b, &a]) {
+    assert_eq!(
+        items,
+        vec![d.as_str(), b.as_str(), a.as_str()],
+        "families still granting access newest first, the access-only one included; the expired one is gone",
+    );
+    for (row, family) in t.rows.iter().zip([&d, &b, &a]) {
         assert_eq!(row.cells[0].value, fake_client(family), "Client hashes the family id");
         assert_eq!(row.cells[1].value, fake_ip(family), "IP hashes the family id");
         assert!(row.cells[3].value.starts_with("in "), "Expires is relative: {:?}", row.cells[3].value);
