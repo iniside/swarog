@@ -84,5 +84,4 @@ pub mod player_row_action {
     pub const WALLET: i32 = 40;
     pub const INVENTORY: i32 = 50;
     pub const NOTIFICATIONS: i32 = 60;
-    pub const STORAGE: i32 = 80;
 }

@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use controlplane::{
-    order, ActionPoint, Align, CellKind, DataTable, Emphasis, EntityRef, InvokeCall, Palette, PanelBody, PanelQuery,
-    Point, Primitive, Provider, Role, Then,
+    order, Align, CellKind, DataTable, EntityRef, InvokeCall, Palette, PanelBody, PanelQuery, Point, Primitive,
+    Provider, Role,
 };
 use opsapi::Status;
 use storageapi::ACL_PRIVATE;
@@ -84,7 +84,7 @@ fn meta_counts_against_the_object_cap_with_the_owner_size() {
 }
 
 #[test]
-fn saves_body_maps_columns_cells_row_download_and_meta() {
+fn saves_body_maps_columns_cells_and_meta() {
     let rows = [object("saves", "autosave", 214, 18_400_000), object("settings", "ui", 1, 64)];
     let body = admin::saves_body(&rows, 2, 18_400_064, None);
     assert_eq!(body.meta.as_deref(), Some("2 of 10,000 slots · 18.4 MB"));
@@ -105,8 +105,7 @@ fn saves_body_maps_columns_cells_row_download_and_meta() {
     assert_eq!((noun.one.as_str(), noun.many.as_str()), ("slot", "slots"));
     let first = &t.rows[0];
     assert!(first.entity.is_none(), "rows are not clickable");
-    assert_eq!(first.item.as_deref(), Some("saves/autosave"));
-    assert_eq!(first.actions, vec![admin::DOWNLOAD.to_string()]);
+    assert!(first.item.is_none() && first.actions.is_empty(), "a row carries no action");
     let cells: Vec<_> = first.cells.iter().map(|c| (c.kind, c.value.as_str())).collect();
     let checksum = format!("sha256:{}", "ab".repeat(32));
     assert_eq!(cells, vec![
@@ -124,15 +123,14 @@ fn saves_body_maps_columns_cells_row_download_and_meta() {
 }
 
 #[test]
-fn tile_draws_the_byte_sum_the_cap_delta_and_a_stable_chart2_spark() {
+fn tile_draws_the_byte_sum_and_the_cap_delta_with_no_series() {
     let body = admin::tile_body(1_820_000_000_000);
     let Primitive::KpiTile(tile) = &body.primitive else { panic!("a KPI tile, got {:?}", body.primitive) };
     assert_eq!((tile.label.as_str(), tile.value.as_str(), tile.unit.as_deref()), ("Cloud saves used", "1.8", Some("TB")));
     let delta = tile.delta.as_ref().expect("the cap delta");
     assert_eq!((delta.value.as_str(), delta.period.as_str(), delta.tone), ("", "10,000 slots / player", None));
     assert_eq!(tile.spark, Palette::Chart2);
-    assert_eq!(tile.series.len(), 7);
-    assert_eq!(tile.series, admin::fake_spark(), "the fake series is a pure function");
+    assert!(tile.series.is_empty(), "storage keeps no history of its byte total");
     assert!(tile.link.is_none() && tile.capacity.is_none());
 
     let zero = admin::tile_body(0);
@@ -156,7 +154,7 @@ fn purges_body_is_empty_at_zero_and_one_item_otherwise() {
 }
 
 #[test]
-fn manifest_is_readonly_with_every_action_disabled_at_the_shared_orders() {
+fn manifest_is_readonly_and_declares_no_action() {
     let m = admin::manifest();
     assert!(!m.writes);
     assert!(m.entity_kinds.is_empty() && m.pages.is_empty() && m.search.is_empty());
@@ -168,7 +166,7 @@ fn manifest_is_readonly_with_every_action_disabled_at_the_shared_orders() {
     assert_eq!(tab.title, "Cloud saves");
     assert_eq!(
         tab.readonly.as_deref(),
-        Some("Read-only: storage exposes saves for inspection and download; edits and deletes are not remotely supported."),
+        Some("Read-only: storage exposes saves for inspection; edits and deletes are not remotely supported."),
     );
     assert_eq!(tab.cache_ttl_s, None);
     let tile = find(admin::TILE_USED);
@@ -180,32 +178,7 @@ fn manifest_is_readonly_with_every_action_disabled_at_the_shared_orders() {
     assert!(m.contributions.iter().all(|c| c.min_role == Role::Viewer));
     assert!(m.contributions.iter().filter(|c| c.id != admin::SAVES).all(|c| c.readonly.is_none()));
 
-    assert!(m.actions.iter().all(|a| !a.implemented && a.then == Then::Invoke && !a.prepare && a.min_role == Role::Operator));
-    let shape: Vec<_> = m
-        .actions
-        .iter()
-        .map(|a| (a.id.as_str(), &a.point, a.label.as_str(), a.icon.as_str(), a.order, a.danger, a.emphasis, a.icon_only))
-        .collect();
-    let saves = ActionPoint::PanelTool("saves".into());
-    let row = ActionPoint::TableRow("saves".into());
-    let player = ActionPoint::RowAction("player".into());
-    assert_eq!(shape, vec![
-        (admin::DOWNLOAD_ALL, &saves, "Download all", "download", 0, false, Emphasis::Default, false),
-        (admin::DELETE, &saves, "Delete", "trash", 1, true, Emphasis::Default, false),
-        (admin::DOWNLOAD, &row, "Download", "download", 0, false, Emphasis::Ghost, true),
-        (
-            admin::DOWNLOAD_PLAYER,
-            &player,
-            "Download cloud saves",
-            "download",
-            order::player_row_action::STORAGE,
-            false,
-            Emphasis::Default,
-            false,
-        ),
-    ]);
-    // `writes: false` refuses every action, the row menu's included.
-    assert!(m.actions.iter().all(|a| m.write_refusal(&a.id).is_some()));
+    assert!(m.actions.is_empty(), "no download carrier exists, so storage declares no action");
 }
 
 /// Over a live Postgres: 27 objects for one owner and one for another; the tab walks two
@@ -237,7 +210,7 @@ async fn saves_tab_pages_one_owner_newest_first_with_the_owner_totals() {
     assert_eq!(first.meta.as_deref(), Some(meta.as_str()));
     let t = table(&first);
     assert_eq!(t.rows.len(), 25);
-    assert_eq!(t.rows[0].item.as_deref(), Some("saves/slot-00"));
+    assert_eq!(t.rows[0].cells[0].value, "saves/slot-00");
     assert_eq!(t.rows[0].cells[2].value, "now");
     assert_eq!(t.rows[1].cells[2].value, "1 min ago");
     assert_eq!(t.rows[0].cells[3].value, "v1");
@@ -246,7 +219,7 @@ async fn saves_tab_pages_one_owner_newest_first_with_the_owner_totals() {
     let second = provider.panel(query(admin::SAVES, "player", &owner, Some(&cursor))).await.unwrap();
     assert_eq!(second.meta.as_deref(), Some(meta.as_str()));
     let t2 = table(&second);
-    let items: Vec<_> = t2.rows.iter().map(|r| r.item.clone().unwrap()).collect();
+    let items: Vec<_> = t2.rows.iter().map(|r| r.cells[0].value.clone()).collect();
     assert_eq!(items, vec!["saves/slot-25", "saves/slot-26"]);
     assert_eq!(t2.page.next_cursor, None);
 
@@ -356,15 +329,15 @@ async fn purges_item_names_the_oldest_unswept_tombstone_over_the_live_table() {
     f.cleanup().await;
 }
 
-/// `Provider::invoke` refuses every declared action, each with its id in the error, and
-/// writes nothing: the object the row download and Delete bind keeps its version.
+/// `Provider::invoke` refuses any action, each with its id in the error, and writes
+/// nothing: the object keeps its version.
 #[tokio::test]
-async fn invoke_refuses_every_declared_action_and_leaves_the_object() {
+async fn invoke_refuses_any_action_and_leaves_the_object() {
     let _lock = DB_LOCK.lock().await;
     let f = Fixture::new().await;
     f.put(0, "slot-1", "{\"a\": 1}", 0, ACL_PRIVATE).await.unwrap();
     let provider = admin::StorageAdmin::new(Arc::new(Service::new(f.pool().clone())));
-    for action in [admin::DOWNLOAD_ALL, admin::DELETE, admin::DOWNLOAD, admin::DOWNLOAD_PLAYER] {
+    for action in ["saves.download-all", "saves.delete", "save.download", "player.download-saves"] {
         let call = InvokeCall {
             module: "storage".into(),
             action: action.into(),

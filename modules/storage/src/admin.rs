@@ -1,15 +1,14 @@
 //! The `storage` control-plane provider: the player entity's Cloud saves tab (one keyset
 //! page of the player's objects, read-only), the dashboard's "Cloud saves used" tile and its
-//! "Storage purges pending" attention item. `writes` is false: every action the mockup draws
-//! (Download all, Delete, the row download, the row menu's "Download cloud saves") is
-//! declared `implemented: false`, so the portal draws it disabled and never invokes it.
+//! "Storage purges pending" attention item. `writes` is false and the manifest declares no
+//! action: the tab is read-only and no download carrier exists in the control plane.
 
 use async_trait::async_trait;
 use controlplane::order;
 use controlplane::{
-    ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ContributionDecl, DataTable, Delta, Emphasis, InvokeCall,
-    InvokeOutcome, KpiTile, Manifest, Noun, PageInfo, Palette, PanelBody, PanelQuery, Point, Primitive, Provider, Role,
-    Row, SearchHit, SearchQuery, Then, DEFAULT_PANEL_DEADLINE_MS,
+    Align, Cell, CellKind, Column, ContributionDecl, DataTable, Delta, InvokeCall, InvokeOutcome, KpiTile, Manifest,
+    Noun, PageInfo, Palette, PanelBody, PanelQuery, Point, Primitive, Provider, Role, Row, SearchHit, SearchQuery,
+    DEFAULT_PANEL_DEADLINE_MS,
 };
 use opsapi::Error;
 use std::sync::Arc;
@@ -32,17 +31,10 @@ pub(crate) const TILE_CACHE_TTL_S: u32 = 300;
 pub(crate) const SAVES: &str = "saves";
 pub(crate) const TILE_USED: &str = "tile.used";
 pub(crate) const ATTENTION_PURGES: &str = "attention.purges";
-/// The Cloud saves tab's tools and its row download; no download carrier exists yet.
-pub(crate) const DOWNLOAD_ALL: &str = "saves.download-all";
-/// Drawn disabled by design: storage exposes saves for inspection only.
-pub(crate) const DELETE: &str = "saves.delete";
-pub(crate) const DOWNLOAD: &str = "save.download";
-/// The player row menu's "Download cloud saves".
-pub(crate) const DOWNLOAD_PLAYER: &str = "player.download-saves";
 
-/// The tab's banner, verbatim from the mockup (UILayout/redesign/assets/pages-core.js:139).
+/// The tab's banner, verbatim from the mockup (UILayout/redesign/assets/pages-core.js:160).
 pub(crate) const READONLY_TEXT: &str =
-    "Read-only: storage exposes saves for inspection and download; edits and deletes are not remotely supported.";
+    "Read-only: storage exposes saves for inspection; edits and deletes are not remotely supported.";
 
 pub(crate) struct StorageAdmin {
     svc: Arc<Service>,
@@ -164,23 +156,22 @@ fn column(key: &str, label: &str, kind: CellKind, align: Align) -> Column {
     }
 }
 
-/// A tab row: not clickable (no `entity`); `item` is the slot address "collection/key",
-/// which the row download binds. `/` is outside both segments' alphabet, so it is
-/// unambiguous.
+/// A tab row: not clickable (no `entity`) and carrying no action. The Slot cell is
+/// "collection/key"; `/` is outside both segments' alphabet, so it is unambiguous.
 fn object_row(o: &AdminObjectRow) -> Row {
     let slot = format!("{}/{}", o.collection, o.key);
     Row {
         entity: None,
         cells: vec![
-            text(CellKind::Mono, slot.clone()),
+            text(CellKind::Mono, slot),
             text(CellKind::Bytes, size_text(o.bytes)),
             text(CellKind::Text, o.updated_ago.clone()),
             text(CellKind::Ref, format!("v{}", o.version)),
             text(CellKind::MonoMuted, o.checksum.clone()),
         ],
         highlight: false,
-        item: Some(slot),
-        actions: vec![DOWNLOAD.to_string()],
+        item: None,
+        actions: Vec::new(),
     }
 }
 
@@ -216,7 +207,7 @@ pub(crate) fn saves_body(rows: &[AdminObjectRow], count: i64, bytes: i64, next_c
 }
 
 /// The "Cloud saves used" tile: every stored byte across every owner, the object cap as
-/// its plain delta text, and no link.
+/// its plain delta text, no series (storage keeps no history of its byte total) and no link.
 pub(crate) fn tile_body(bytes: i64) -> PanelBody {
     let (value, unit) = format_bytes(bytes);
     PanelBody::new(Primitive::KpiTile(KpiTile {
@@ -228,20 +219,11 @@ pub(crate) fn tile_body(bytes: i64) -> PanelBody {
             period: format!("{} slots / player", thousands(MAX_OBJECTS_PER_OWNER)),
             tone: None,
         }),
-        series: fake_spark(),
+        series: Vec::new(),
         spark: Palette::Chart2,
         capacity: None,
         link: None,
     }))
-}
-
-/// The tile's seven-point sparkline: a rising base plus four bits of the hash per point,
-/// the same series on every load.
-pub(crate) fn fake_spark() -> Vec<f64> {
-    // FAKE: storage keeps no history of its byte total (no metric store), so the series is
-    // drawn from `controlplane::fake_hash` over a fixed salt.
-    let hash = controlplane::fake_hash("storage.tile.spark", "dashboard");
-    (0..7u32).map(|i| f64::from(40 + 6 * i + ((hash >> (8 * i)) & 0x0f) as u32)).collect()
 }
 
 /// The "Storage purges pending" attention item over storage's purge sweep backlog.
@@ -260,27 +242,6 @@ fn contribution(id: &str, point: Point, order: i32, title: &str) -> Contribution
         cache_ttl_s: None,
         deadline_ms: DEFAULT_PANEL_DEADLINE_MS,
         readonly: None,
-    }
-}
-
-/// An action with no implementation yet: drawn disabled, never invoked.
-fn not_implemented(id: &str, point: ActionPoint, label: &str, icon: &str, order: i32, danger: bool) -> ActionDecl {
-    ActionDecl {
-        id: id.to_string(),
-        point,
-        label: label.to_string(),
-        icon: icon.to_string(),
-        order,
-        danger,
-        multi: false,
-        min_role: Role::Operator,
-        then: Then::Invoke,
-        implemented: false,
-        emphasis: Emphasis::Default,
-        trailing_icon: false,
-        icon_only: false,
-        when_empty: false,
-        prepare: false,
     }
 }
 
@@ -314,23 +275,7 @@ pub(crate) fn manifest() -> Manifest {
                 "Storage purges pending",
             ),
         ],
-        actions: vec![
-            not_implemented(DOWNLOAD_ALL, ActionPoint::PanelTool(SAVES.to_string()), "Download all", "download", 0, false),
-            not_implemented(DELETE, ActionPoint::PanelTool(SAVES.to_string()), "Delete", "trash", 1, true),
-            ActionDecl {
-                emphasis: Emphasis::Ghost,
-                icon_only: true,
-                ..not_implemented(DOWNLOAD, ActionPoint::TableRow(SAVES.to_string()), "Download", "download", 0, false)
-            },
-            not_implemented(
-                DOWNLOAD_PLAYER,
-                ActionPoint::RowAction(KIND.to_string()),
-                "Download cloud saves",
-                "download",
-                order::player_row_action::STORAGE,
-                false,
-            ),
-        ],
+        actions: Vec::new(),
         search: Vec::new(),
         writes: false,
     }
@@ -355,8 +300,8 @@ impl Provider for StorageAdmin {
         Ok(Vec::new())
     }
 
-    /// Every declared action is `implemented: false` and `writes` is false, so the portal
-    /// never invokes one; a direct call is refused all the same.
+    /// The manifest declares no action, so the portal never invokes one; a direct call is
+    /// refused all the same.
     async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, Error> {
         Err(Error::not_found(format!("{MODULE} has no action {:?}", req.action)))
     }

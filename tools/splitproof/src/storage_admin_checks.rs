@@ -2,19 +2,18 @@ use anyhow::{bail, Context, Result};
 use sqlx::PgPool;
 
 use crate::characters_admin_checks::{attr, attr_values, cut, get, table, text};
-use crate::{extract_form_fields, friends_call, friends_player, pass_nonce, Ctx, Proof};
+use crate::{friends_call, friends_player, pass_nonce, Ctx, Proof};
 
 /// The banner the Cloud saves tab draws, verbatim from `modules/storage/src/admin.rs`
-/// `READONLY_TEXT` (the mockup's pages-core.js:139).
+/// `READONLY_TEXT` (the mockup's pages-core.js:160).
 const READONLY_TEXT: &str =
-    "Read-only: storage exposes saves for inspection and download; edits and deletes are not remotely supported.";
+    "Read-only: storage exposes saves for inspection; edits and deletes are not remotely supported.";
 
-/// The storage provider's Cloud saves tab on the player entity page, its disabled downloads
-/// and Delete, the row menu's "Download cloud saves" and the dashboard's "Cloud saves used"
-/// tile, drawn and posted through the portal that `admin` holds a session on, over one
+/// The storage provider's Cloud saves tab on the player entity page, the absence of any download or
+/// Delete control on it and on the player row menu, and the dashboard's "Cloud saves used" tile, drawn and posted through the portal that `admin` holds a session on, over one
 /// pass-minted player B who writes `saves/slot-1` through the public player API. In the split
-/// the portal is admin-svc: the storage manifest (tab, actions, `implemented: false`), the tab
-/// panel, the row menu group and the tile are all built in storage-svc and reach admin-svc only
+/// the portal is admin-svc: the storage manifest (tab and tile), the tab
+/// panel and the tile are all built in storage-svc and reach admin-svc only
 /// through its `storage` peer.
 ///
 /// "Storage purges pending" is not checked here: it shows only between a player's deletion and
@@ -99,43 +98,26 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
         ),
     );
 
-    // [SA2] every storage control draws disabled as not implemented: the panel's Download all
-    // and Delete, the row's download and the row menu's "Download cloud saves". A direct POST
-    // of the row download is refused by the portal's admission (403 "Not implemented yet", not
-    // the provider's 404), and B's object is untouched.
-    let refused = |html: &str| -> Vec<(String, String)> {
-        attr_values(html, "data-refused-action").into_iter().zip(attr_values(html, "data-refusal")).collect()
+    // [SA2] storage draws no control: the panel has no Download all, Delete or row download
+    // button, the player row menu has no "Download cloud saves" item, neither declares a refused
+    // action of the storage module, and B's object is untouched.
+    let refused = |html: &str| -> Vec<String> {
+        attr_values(html, "data-refused-action").into_iter().filter(|a| a.starts_with("storage/")).collect()
     };
-    let want = |id: &str| (format!("storage/{id}"), "not-implemented".to_string());
     let panel_refused = refused(&s_body);
-    let panel_ok = ["saves.download-all", "saves.delete", "save.download"].iter().all(|id| panel_refused.contains(&want(id)));
+    let panel_text = text(&s_body);
+    let panel_ok = panel_refused.is_empty()
+        && !panel_text.contains("Download")
+        && !panel_text.contains("Delete");
     let (menu_code, menu) = get(admin, &format!("{front}/admin/_menu/player/{}", b.player_id)).await?;
     let menu_refused = refused(&menu);
-    let menu_ok = menu_refused.contains(&want("player.download-saves")) && text(&menu).contains("Download cloud saves");
-    let csrf = extract_form_fields(&page).into_iter().find(|(k, _)| k == "_csrf").map(|(_, v)| v).unwrap_or_default();
-    if csrf.is_empty() {
-        bail!("no _csrf on {}'s entity page: {}", b.handle, cut(&page));
-    }
-    let entity = format!("player:{}", b.player_id);
-    let r = admin
-        .post(format!("{front}/admin/_action/storage/save.download"))
-        .form(&[("_csrf", csrf.as_str()), ("_entity", entity.as_str()), ("_item", "saves/slot-1")])
-        .send()
-        .await?;
-    let post_code = r.status().as_u16();
-    let post_text = text(&r.text().await.unwrap_or_default());
+    let menu_ok = menu_refused.is_empty() && !text(&menu).contains("Download cloud saves");
     let after = version().await?;
     p.check(
-        &format!("[SA2{tag}] storage downloads, Delete and the row menu item draw not-implemented and a direct download POST is refused by admission"),
-        s_code == 200
-            && panel_ok
-            && menu_code == 200
-            && menu_ok
-            && post_code == 403
-            && post_text.contains("Not implemented yet")
-            && after == Some(1),
+        &format!("[SA2{tag}] storage draws no download or Delete control on the tab or the player row menu"),
+        s_code == 200 && panel_ok && menu_code == 200 && menu_ok && after == Some(1),
         format!(
-            "panel_refused={panel_refused:?} menu={menu_code} menu_refused={menu_refused:?} post={post_code} post_text={post_text:?} version_after={after:?}"
+            "panel_refused={panel_refused:?} panel_ok={panel_ok} menu={menu_code} menu_refused={menu_refused:?} menu_ok={menu_ok} version_after={after:?}"
         ),
     );
 

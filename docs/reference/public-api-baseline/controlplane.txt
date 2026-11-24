@@ -230,7 +230,6 @@ pub const controlplane::order::player_row_action::ACCOUNTS_DELETE: i32
 pub const controlplane::order::player_row_action::ACCOUNTS_SUSPEND: i32
 pub const controlplane::order::player_row_action::INVENTORY: i32
 pub const controlplane::order::player_row_action::NOTIFICATIONS: i32
-pub const controlplane::order::player_row_action::STORAGE: i32
 pub const controlplane::order::player_row_action::WALLET: i32
 pub mod controlplane::order::player_tab
 pub const controlplane::order::player_tab::ACCOUNTS_IDENTITIES: i32

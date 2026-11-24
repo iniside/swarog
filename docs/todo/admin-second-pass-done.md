@@ -2,6 +2,21 @@
 
 Last updated: 2026-11-24
 
+- [x] **Cloud saves used sparkline** (2026-11-24, admin-second-pass step 8b)
+  ADMIN2-52. Mockup: the tile's sparkline. Removed: `fake_spark`, the tile's series and the
+  mockup spark sample (registry.js, pages-core.js catalog tile, KpiTile preview).
+- [x] **Download all cloud saves** (2026-11-24, admin-second-pass step 8b)
+  ADMIN2-53. Removed: `DOWNLOAD_ALL`, the mockup's Download all tool. No download carrier
+  exists in the control plane (D1).
+- [x] **Download one cloud save** (2026-11-24, admin-second-pass step 8b)
+  ADMIN2-54. Removed: `DOWNLOAD`, the row action, `Row.item` and the mockup's row download
+  button and empty action column.
+- [x] **Download cloud saves from the player row menu** (2026-11-24, admin-second-pass step 8b)
+  ADMIN2-55. Removed: `DOWNLOAD_PLAYER`, `order::player_row_action::STORAGE`, its drawn_orders.txt
+  line and the mockup's registry.js row-menu item.
+- [x] **Delete cloud saves** (2026-11-24, admin-second-pass step 8b)
+  ADMIN2-56. Removed: `DELETE` and the mockup's Delete tool. The tab's read-only banner now
+  reads "inspection" without "and download"; storage declares no action.
 - [x] **Character level** (2026-11-24, admin-second-pass step 8a)
   ADMIN2-48. Mockup: the Characters tab's Level column. Removed: `fake_level`, the Level cell and
   column, the pinned-hash test, the splitproof header; the mockup already drew four columns.

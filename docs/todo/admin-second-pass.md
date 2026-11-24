@@ -127,36 +127,6 @@ modules/accounts/src/admin.rs, as committed in admin-control-plane-redesign step
   decision 2026-11-17 (step 13 G6): exact for now. Replaced by: a `pg_class.reltuples`
   estimate past a size threshold, and an index if the keyset paging needs one.
 
-### Fake data and actions of the storage port
-
-modules/storage/src/admin.rs, as committed in admin-control-plane-redesign step 19 part a2.
-The four downloads and Delete are drawn disabled; storage's manifest declares `writes: false`.
-
-- [ ] **Cloud saves used sparkline**
-  ADMIN2-52. Mockup: the "Cloud saves used" tile's sparkline (UILayout/redesign/assets/registry.js:49).
-  Fake: modules/storage/src/admin.rs:241 (`fake_spark`, seven points from
-  `controlplane::fake_hash("storage.tile.spark", "dashboard")`): storage keeps no history of
-  its byte total. Replaced by: a stored-bytes series from a metric store.
-- [ ] **Download all cloud saves**
-  ADMIN2-53. Mockup: the Cloud saves tab's "Download all" tool. Action `DOWNLOAD_ALL`,
-  `implemented: false`: modules/storage/src/admin.rs:318; no carrier serves bytes to the
-  portal (`docs/todo/storage.md` "Admin download carrier for cloud saves"). Replaced by: that
-  carrier.
-- [ ] **Download one cloud save**
-  ADMIN2-54. Mockup: the icon-only download button on each Cloud saves row. Action
-  `DOWNLOAD`, `implemented: false`: modules/storage/src/admin.rs:323; same missing carrier as
-  ADMIN2-53.
-- [ ] **Download cloud saves from the player row menu**
-  ADMIN2-55. Mockup: the player row menu's "Download cloud saves" with the hint "read-only"
-  (UILayout/redesign/assets/registry.js:111). Action `DOWNLOAD_PLAYER`, `implemented: false`:
-  modules/storage/src/admin.rs:326; drawn disabled with "Not implemented yet" instead of
-  enabled with the hint. Same missing carrier as ADMIN2-53.
-- [ ] **Delete cloud saves (by design: no operator delete)**
-  ADMIN2-56. Mockup: the Cloud saves tab's "Delete" tool, which the mockup itself draws
-  disabled. Action `DELETE`, `implemented: false`, `danger`: modules/storage/src/admin.rs:319.
-  By design: storage exposes saves for inspection only (the tab's read-only banner), so no
-  operator delete exists. Replaced by: nothing unless an operator delete path is planned.
-
 ### Fake data and actions of the apikeys port
 
 modules/apikeys/src/admin.rs, as committed in admin-control-plane-redesign step 21 part a2.

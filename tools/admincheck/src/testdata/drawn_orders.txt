@@ -64,7 +64,6 @@ row_action player | wallet | currency.grant | 40
 row_action player | wallet | currency.revoke | 40
 row_action player | inventory | item.grant | 50
 row_action player | notifications | send | 60
-row_action player | storage | player.download-saves | 80
 row_action schedule | scheduler | schedule.fire | 10
 row_action subscription | core.events | sub.pause | 10
 row_action subscription | core.events | sub.resume | 20
