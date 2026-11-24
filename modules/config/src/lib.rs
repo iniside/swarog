@@ -85,7 +85,8 @@ const NOTIFY_CHANNEL: &str = "config_changed";
 /// The same trigger appends one `config.setting_history` row per mutation, with that revision,
 /// the operation, the new value (`NULL` on a DELETE) and the writer: the `config.writer`
 /// setting the module's writers set for their own statement ([`SET_WRITER`]), else the
-/// session's database role.
+/// session's database role. It then deletes the key's rows beyond the newest
+/// [`store::MAX_REVISIONS`] (by `revision`), so a key's history is bounded.
 ///
 /// Gaps in the global sequence are expected; readers rely only on strict increase. An
 /// `INSERT … ON CONFLICT DO UPDATE` that hits the conflict fires BEFORE INSERT (one
@@ -109,7 +110,7 @@ const NOTIFY_CHANNEL: &str = "config_changed";
 /// `CREATE TABLE IF NOT EXISTS` keeps an existing older table as it is (one without the
 /// `revision` column then fails its first write in the stamp trigger). No migration
 /// bridge.
-const SCHEMA_DDL: &str = r#"
+const SCHEMA_DDL_TEMPLATE: &str = r#"
 CREATE SCHEMA IF NOT EXISTS config;
 CREATE TABLE IF NOT EXISTS config.settings (
 	namespace  text NOT NULL,
@@ -183,6 +184,13 @@ BEGIN
 	_by := coalesce(nullif(current_setting('config.writer', true), ''), session_user);
 	INSERT INTO config.setting_history (namespace, key, revision, value, operation, by)
 		VALUES (_ns, _key, _rev, _value, _op, _by);
+	-- Keep only the newest @MAX_REVISIONS@ rows of this key (a delete entry counts like any
+	-- other): the panel draws no more, and nothing else reads older ones.
+	DELETE FROM config.setting_history
+		WHERE namespace = _ns AND key = _key
+		AND revision < (SELECT revision FROM config.setting_history
+			WHERE namespace = _ns AND key = _key
+			ORDER BY revision DESC OFFSET @MAX_REVISIONS@ - 1 LIMIT 1);
 
 	_payload := jsonb_build_object(
 		'namespace', _ns,
@@ -207,6 +215,13 @@ BEGIN
 	RETURN NULL;
 END;
 $$;"#;
+
+/// [`SCHEMA_DDL_TEMPLATE`] with the history bound filled in from [`store::MAX_REVISIONS`], the
+/// one source of N, so the trigger's trim and the panel's read cannot drift. The trigger
+/// function is `CREATE OR REPLACE`, so an existing database picks the trim up on boot.
+static SCHEMA_DDL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    SCHEMA_DDL_TEMPLATE.replace("@MAX_REVISIONS@", &store::MAX_REVISIONS.to_string())
+});
 
 /// The writer [`Service::set`] and [`Service::set_tx`] record in `config.setting_history`.
 pub(crate) const SYSTEM_WRITER: &str = "system";
@@ -584,7 +599,7 @@ impl Module for Config {
             .db()
             .ok_or_else(|| anyhow::anyhow!("config requires a DB pool"))?;
         Ddl::new(pool)
-            .sql(SCHEMA_DDL)
+            .sql(&SCHEMA_DDL)
             .trigger("config.settings", "settings_stamp", SETTINGS_STAMP_TRIGGER_DDL)
             .trigger("config.settings", "settings_notify", SETTINGS_NOTIFY_TRIGGER_DDL)
             .run()

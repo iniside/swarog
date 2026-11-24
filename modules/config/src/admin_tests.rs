@@ -846,7 +846,7 @@ async fn revisions_panel_draws_the_newest_stored_revisions() {
     assert!(matches!(saved, InvokeOutcome::Ok { .. }), "{saved:?}");
 
     let rows = history(&pool, &ns, "limit").await;
-    assert_eq!(rows.len() as i64, writes + 1);
+    assert_eq!(rows.len() as i64, store::MAX_REVISIONS, "the trigger trims the history to the panel's bound");
     let revisions = admin.panel(query(REVISIONS, None, &[("key", &id)])).await.unwrap();
     let entries = &timeline(&revisions).entries;
     let want: Vec<(String, String, Option<String>)> = rows
@@ -864,5 +864,45 @@ async fn revisions_panel_draws_the_newest_stored_revisions() {
     let keys = admin.panel(query(KEYS, Some(&id), &[])).await.unwrap();
     let writer = &table(&keys).rows[0].cells[4].more[0];
     assert_eq!((writer.kind, writer.value.as_str()), (CellKind::User, "tester"));
+    cleanup(&pool, &ns).await;
+}
+
+/// The trigger keeps the newest `MAX_REVISIONS` history rows of a key and no more, a delete
+/// entry counting like any other, and never touches another key's history; the panel still
+/// draws at most that many.
+#[tokio::test]
+async fn history_keeps_only_the_newest_revisions_per_key() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    let svc = Service::new(pool.clone());
+    let admin = ConfigAdmin::new(pool.clone());
+    let id = format!("{ns}.busy");
+    let bound = store::MAX_REVISIONS as usize;
+    svc.set(&ns, "quiet", "q").await.unwrap();
+    let quiet_before = history(&pool, &ns, "quiet").await;
+    for i in 0..(bound + 3) {
+        svc.set(&ns, "busy", &i.to_string()).await.unwrap();
+    }
+    let rows = history(&pool, &ns, "busy").await;
+    assert_eq!(rows.len(), bound);
+    let values: Vec<String> = rows.iter().map(|r| r.1.clone().unwrap()).collect();
+    let want: Vec<String> = (3..bound + 3).map(|i| i.to_string()).collect();
+    assert_eq!(values, want, "the newest rows remain, oldest first");
+    assert_eq!(history(&pool, &ns, "quiet").await, quiet_before, "another key's history is untouched");
+
+    sqlx::query("DELETE FROM config.settings WHERE namespace = $1 AND key = 'busy'")
+        .bind(&ns)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let rows = history(&pool, &ns, "busy").await;
+    assert_eq!(rows.len(), bound);
+    assert_eq!(rows.last().unwrap().2, "delete", "a delete entry is trimmed like any other");
+    assert_eq!(rows[0].1.as_deref(), Some("4"), "the delete pushed the oldest remaining row out");
+
+    svc.set(&ns, "busy", "again").await.unwrap();
+    let revisions = admin.panel(query(REVISIONS, None, &[("key", &id)])).await.unwrap();
+    assert!(timeline(&revisions).entries.len() <= bound);
     cleanup(&pool, &ns).await;
 }
