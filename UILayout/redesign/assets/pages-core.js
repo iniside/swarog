@@ -136,7 +136,7 @@ window.PAGES = window.PAGES || {};
     const kinds = [...new Set(all.map(h => P.itemById[h.item_id].kind))].sort();
     const list = all.filter(h => !P.holdKind || P.itemById[h.item_id].kind === P.holdKind);
     const off = "Grant and revoke are not exposed to admins by the inventory module yet";
-    const owner = h => h.owner_type === "player" ? `<span class="tag">player</span>` : `<span class="row" style="gap:6px"><span class="tag">character</span>${esc(P.charById[h.owner_id].name)}</span>`;
+    const owner = h => h.owner_type === "player" ? `<span class="mono">player</span>` : `<span class="mono">${esc(P.charById[h.owner_id].name)}</span>`;
     return panel({ c: { module: "inventory", point: "entity.user.tab", prim: "DataTable" }, title: "Inventory", meta: `player ${u.id.slice(0, 8)} and ${P.plural(mine.length, "character", "characters")}`, flush: true,
       tools: `<button class="btn sm" disabled title="${off}">${icon("gift")} Grant item</button>`,
       emptyTitle: "No items", emptyDetail: "Neither the player nor their characters hold anything.",
