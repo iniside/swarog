@@ -3,6 +3,7 @@ pub mod schedulerevents
 pub mod schedulerevents::schedule_names
 pub const schedulerevents::schedule_names::AUDIT_PRUNE: &str
 pub const schedulerevents::schedule_names::GROUPS_PRUNE: &str
+pub const schedulerevents::schedule_names::INVENTORY_GRANTS_PRUNE: &str
 pub const schedulerevents::schedule_names::MAIL_PRUNE: &str
 pub const schedulerevents::schedule_names::NOTIFICATIONS_PRUNE: &str
 pub const schedulerevents::schedule_names::PLAYER_PURGE: &str

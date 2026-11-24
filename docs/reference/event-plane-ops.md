@@ -96,6 +96,16 @@ already promoted to `member` before a given batch's `SELECT` simply no longer
 matches — the sweep never deletes a row out from under an accept that landed
 first.
 
+`inventory`'s grants prune (`modules/inventory/src/projection.rs`,
+`scheduler.fired{inventory-grants-prune}`) deletes `inventory.operator_grants` request
+ids past `OPERATOR_GRANT_RETENTION_DAYS` in the same `FOR UPDATE SKIP LOCKED` batches
+and takes no player or character lock. A resubmit of a request id the prune has locked
+blocks in its `INSERT … ON CONFLICT DO NOTHING` claim until the prune's transaction
+commits (about `SWEEP_BUDGET`, 5s, plus the last batch), then inserts and grants again,
+the same outcome as a resubmit after the prune. The claim is the grant's first statement,
+so the waiting grant holds no lock the prune could need, and the prune never waits on a
+row, so no deadlock is possible.
+
 ## A paused purge subscription: what an operator sees, and why `/readyz` stays green
 
 The account-deletion purge (seven `player.deleted` purge consumers plus `player-purge` sweeps) can
