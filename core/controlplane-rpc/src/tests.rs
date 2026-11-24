@@ -71,26 +71,39 @@ fn cell(value: &str) -> Cell {
     }
 }
 
+/// `kick` is a `Then::Invoke` and `copy` a `Then::Copy`, so both variants without a spec cross
+/// the wire.
 fn fixture_manifest() -> Manifest {
+    let kick = ActionDecl {
+        id: "kick".into(),
+        point: ActionPoint::PageHead("p".into()),
+        label: "Kick".into(),
+        icon: String::new(),
+        order: 0,
+        danger: true,
+        multi: false,
+        min_role: Role::Operator,
+        then: Then::Invoke,
+        implemented: true,
+        emphasis: Emphasis::Default,
+        trailing_icon: false,
+        icon_only: false,
+        when_empty: false,
+        prepare: true,
+    };
+    let copy = ActionDecl {
+        id: "copy".into(),
+        point: ActionPoint::PanelTool("poison".into()),
+        label: "Copy payload".into(),
+        danger: false,
+        then: Then::Copy,
+        emphasis: Emphasis::Ghost,
+        prepare: false,
+        ..kick.clone()
+    };
     Manifest {
         module: MODULE.into(),
-        actions: vec![ActionDecl {
-            id: "kick".into(),
-            point: ActionPoint::PageHead("p".into()),
-            label: "Kick".into(),
-            icon: String::new(),
-            order: 0,
-            danger: true,
-            multi: false,
-            min_role: Role::Operator,
-            then: Then::Invoke,
-            implemented: true,
-            emphasis: Emphasis::Default,
-            trailing_icon: false,
-            icon_only: false,
-            when_empty: false,
-            prepare: true,
-        }],
+        actions: vec![kick, copy],
         writes: true,
         ..Manifest::default()
     }
@@ -239,8 +252,10 @@ fn prepare_call() -> PrepareCall {
 }
 
 /// Every `cp.*` method crosses a loopback edge with its request and answer intact,
-/// including Step 9a's full `PanelBody` envelope and a prepared confirm built from the
-/// posted item; a provider-side NotFound comes back as NotFound, not as a transport error.
+/// including Step 9a's full `PanelBody` envelope, a manifest holding a `Then::Copy` action
+/// and a prepared confirm built from the posted item; an invoke of the copy is refused
+/// Invalid by the serving face and reaches no provider; a provider-side NotFound comes back
+/// as NotFound, not as a transport error.
 #[tokio::test(flavor = "multi_thread")]
 async fn every_method_round_trips_over_a_loopback_edge() {
     let fixture = Arc::new(Fixture::default());
@@ -264,6 +279,10 @@ async fn every_method_round_trips_over_a_loopback_edge() {
     );
 
     assert_eq!(face.prepare(prepare_call()).await.expect("prepare"), prepared_confirm("evt-7"));
+
+    let copy = InvokeCall { action: "copy".into(), ..invoke_call() };
+    let err = face.invoke(copy).await.expect_err("a copy has no invoke");
+    assert_eq!(err.status, opsapi::Status::Invalid, "the serving face refuses a copy: {}", err.msg);
 
     assert_eq!(
         *fixture.seen.lock().expect("seen lock"),

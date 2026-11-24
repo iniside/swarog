@@ -945,7 +945,7 @@ async fn action_modal(
         _ if matches!(found.decl.point, ActionPoint::PanelForm(_)) => None,
         Then::Form(form) => Some(StoredSpec::Form { form: Box::new(form.clone()), chrome: Chrome::default() }),
         Then::Confirm(confirm) => Some(StoredSpec::Confirm(confirm.clone())),
-        Then::Invoke | Then::Link(_) => None,
+        Then::Invoke | Then::Link(_) | Then::Copy => None,
     };
     let Some(declared) = declared else {
         return toast(&p, StatusCode::BAD_REQUEST, format!("{module}/{action} has no modal"));
@@ -1057,7 +1057,7 @@ async fn action_submit(
         return not_found(&p, &format!("{module}/{action}"));
     };
     if !found.decl.then.invokes() {
-        return toast(&p, StatusCode::BAD_REQUEST, format!("{module}/{action}: a link action has no invoke"));
+        return toast(&p, StatusCode::BAD_REQUEST, format!("{module}/{action}: a link or copy action has no invoke"));
     }
     let who = Claimant { login: operator.login.clone(), module: module.clone(), action: action.clone() };
     let s = Submit {

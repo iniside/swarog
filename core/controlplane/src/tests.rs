@@ -188,6 +188,7 @@ fn write_refusal_is_the_module_writes_and_the_contributions_readonly() {
         actions: vec![
             action("wipe", ActionPoint::PanelTool("saves".into()), Then::Invoke),
             action("open", ActionPoint::PanelTool("saves".into()), link),
+            action("copy", ActionPoint::PanelTool("saves".into()), Then::Copy),
             action("kick", ActionPoint::PageHead("p".into()), Then::Invoke),
         ],
         writes: true,
@@ -196,6 +197,7 @@ fn write_refusal_is_the_module_writes_and_the_contributions_readonly() {
     let on_saves = Some(WriteRefusal { readonly: Some(("saves".into(), "inspection only".into())) });
     assert_eq!(m.write_refusal("wipe"), on_saves);
     assert_eq!(m.write_refusal("open"), None, "a link never writes");
+    assert_eq!(m.write_refusal("copy"), None, "a copy never writes");
     assert_eq!(m.write_refusal("kick"), None);
     assert_eq!(m.write_refusal("ghost"), None, "an undeclared action is judged by writes alone");
     m.writes = false;
@@ -203,6 +205,7 @@ fn write_refusal_is_the_module_writes_and_the_contributions_readonly() {
         assert_eq!(m.write_refusal(id), Some(WriteRefusal { readonly: None }), "{id}");
     }
     assert_eq!(m.write_refusal("open"), None);
+    assert_eq!(m.write_refusal("copy"), None);
 }
 
 /// A remote module's manifest crosses the wire as JSON, so a tab's declared keys must
@@ -421,6 +424,21 @@ async fn local_face_refuses_every_invoke_of_a_module_without_writes() {
         assert!(err.msg.contains("does not declare writes"), "{action}: {}", err.msg);
     }
     assert_eq!(quiet.calls(), Vec::<&str>::new(), "a refused invoke reached the provider");
+}
+
+/// A `Then::Copy` action runs in the browser: `LocalFace::invoke` refuses it as Invalid,
+/// in a module that writes, before the provider sees the call.
+#[tokio::test]
+async fn local_face_refuses_an_invoke_of_a_copy_action() {
+    let mut m = writer("m");
+    m.actions.push(ActionDecl { then: Then::Copy, ..invoke_decl("copy", ActionPoint::PanelTool("saves".into())) });
+    let echo = Echo::new(m);
+    let face = LocalFace::new(vec![as_provider(&echo)]);
+
+    let err = face.invoke(invoke_call("m", "copy")).await.expect_err("a copy has no invoke");
+    assert_eq!(err.status, opsapi::Status::Invalid);
+    assert!(err.msg.contains("has no invoke"), "{}", err.msg);
+    assert_eq!(echo.calls(), Vec::<&str>::new(), "a copy's invoke reached the provider");
 }
 
 // ---------------------------------------------------------------------------

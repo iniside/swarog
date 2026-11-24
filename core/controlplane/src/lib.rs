@@ -287,7 +287,7 @@ impl ControlPlane for LocalFace {
         let local = self.local(&req.module)?;
         if local.manifest.actions.iter().any(|a| a.id == req.action && !a.then.invokes()) {
             return Err(opsapi::Error::invalid(format!(
-                "control-plane action {:?} of module {:?} is a link and has no invoke",
+                "control-plane action {:?} of module {:?} is a link or a copy and has no invoke",
                 req.action, req.module
             )));
         }
@@ -778,15 +778,20 @@ variants! {
         Form(FormSpec),
         Confirm(ConfirmSpec),
         Link(Link),
+        /// Copies the code block (`PropertyList::code`) of the panel its `ActionPoint::PanelTool`
+        /// names to the clipboard, in the browser: no backend call, so it is never invoked,
+        /// refused a write or audited.
+        Copy,
     }
 }
 
 impl Then {
-    /// Whether the action is invoked through `cp.invoke`; a link only navigates.
+    /// Whether the action is invoked through `cp.invoke`; a link only navigates and a copy
+    /// runs in the browser.
     pub fn invokes(&self) -> bool {
         match self {
             Then::Invoke | Then::Form(_) | Then::Confirm(_) => true,
-            Then::Link(_) => false,
+            Then::Link(_) | Then::Copy => false,
         }
     }
 }

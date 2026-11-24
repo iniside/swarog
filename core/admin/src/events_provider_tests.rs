@@ -2,6 +2,10 @@
 //! the verb's own `NotFound` with no pre-read. Live-Postgres tests fail without a
 //! database unless `TESTDB_ALLOW_SKIP` is set (`testdb`).
 
+use std::sync::Arc;
+
+use controlplane::ControlPlane;
+
 use super::*;
 
 async fn test_pool() -> Option<PgPool> {
@@ -166,6 +170,22 @@ fn manifest_declares_only_backed_tiles_and_row_actions() {
     assert_eq!(manifest.pages[0].tiles, [KPI_SUBSCRIPTIONS, KPI_MAX_LAG]);
     let actions: Vec<&str> = manifest.actions.iter().map(|a| a.id.as_str()).collect();
     assert_eq!(actions, [POISON_RESUME, POISON_SKIP, POISON_COPY, SUB_PAUSE, SUB_RESUME, SUB_RETRY]);
+}
+
+/// Copy payload is `Then::Copy` on the poison panel's tools, so it copies that panel's code
+/// block (the previewed payload) in the browser; an invoke of it never reaches the provider.
+#[tokio::test]
+async fn copy_payload_copies_the_poison_panel_and_has_no_invoke() {
+    let manifest = manifest();
+    let copy = manifest.actions.iter().find(|a| a.id == POISON_COPY).expect("Copy payload is declared");
+    assert_eq!(copy.then, Then::Copy);
+    assert_eq!(copy.point, ActionPoint::PanelTool(POISON.to_string()));
+    assert!(copy.implemented, "Copy payload is drawn enabled");
+    let provider: Arc<dyn Provider> = Arc::new(EventsProvider::new(unreachable_pool()));
+    let face = controlplane::LocalFace::new(vec![provider]);
+    let err = face.invoke(invoke_call(POISON_COPY, "core-events.copy")).await.expect_err("a copy has no invoke");
+    assert_eq!(err.status, opsapi::Status::Invalid);
+    assert!(err.msg.contains("has no invoke"), "{}", err.msg);
 }
 
 #[tokio::test]

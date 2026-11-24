@@ -327,8 +327,8 @@ fn manifest() -> Manifest {
                 ..act(POISON_SKIP, tool(), "Skip event…", "skip", 20, Then::Confirm(skip))
                     .decl(false, Emphasis::Default, true)
             },
-            // NEW: copying to the clipboard is a client action no backend call performs.
-            act(POISON_COPY, tool(), "Copy payload", "download", 30, Then::Invoke).decl(false, Emphasis::Ghost, false),
+            // Copies the poison panel's code block: the previewed event's payload, as previewed.
+            act(POISON_COPY, tool(), "Copy payload", "download", 30, Then::Copy).decl(false, Emphasis::Ghost, true),
             act(SUB_PAUSE, row(), "Pause…", "pause", 10, Then::Confirm(pause)).decl(false, Emphasis::Default, true),
             act(SUB_RESUME, row(), "Resume", "play", 20, Then::Invoke).decl(false, Emphasis::Default, true),
             act(SUB_RETRY, row(), "Retry now", "refresh", 30, Then::Invoke).decl(false, Emphasis::Default, true),
@@ -735,7 +735,6 @@ impl Provider for EventsProvider {
                 let verb = |pool: PgPool, id: String| async move { plane::retry(&pool, &id).await };
                 self.transition(&req, verb, "Retry scheduled for").await
             }
-            POISON_COPY => Err(opsapi::Error::forbidden("not implemented yet")),
             other => Err(opsapi::Error::not_found(format!("{MODULE} has no action {other:?}"))),
         }
     }

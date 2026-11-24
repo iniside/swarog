@@ -37,7 +37,7 @@ pub(crate) struct ActionItem {
     /// Why the action is drawn disabled: its admission refusal, or `ModuleDown` in a menu group
     /// whose module is down ([`menu_groups`]); `None` for an action drawn enabled.
     pub(crate) refusal: Option<actions::RefusalKind>,
-    /// `invoke`, `form`, `confirm` or `link`.
+    /// `invoke`, `form`, `confirm`, `link` or `copy`.
     pub(crate) then: &'static str,
     pub(crate) href: Option<String>,
     /// Fields an `invoke` posts without a modal; rendered as `hx-vals` JSON.
@@ -56,6 +56,7 @@ pub(crate) fn then_name(then: &controlplane::Then) -> &'static str {
         controlplane::Then::Form(_) => "form",
         controlplane::Then::Confirm(_) => "confirm",
         controlplane::Then::Link(_) => "link",
+        controlplane::Then::Copy => "copy",
     }
 }
 

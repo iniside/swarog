@@ -534,6 +534,15 @@ fn a_trailing_icon_off_a_link_is_refused() {
 }
 
 #[test]
+fn a_copy_off_a_panel_tool_is_refused() {
+    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+    m.actions.push(ActionDecl { then: Then::Copy, ..action("copy", ActionPoint::PanelTool("queue".into())) });
+    assert_eq!(findings(&[m.clone()]), Vec::<String>::new());
+    m.actions[1].point = ActionPoint::PageHead(PAGE.into());
+    assert_eq!(findings(&[m]), vec![r#"mail: action "copy" is Then::Copy but not a PanelTool"#.to_string()]);
+}
+
+#[test]
 fn when_empty_off_a_panel_tool_is_refused() {
     let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
     m.actions.push(ActionDecl { when_empty: true, ..action("compose", ActionPoint::PanelTool("queue".into())) });

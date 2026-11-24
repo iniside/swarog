@@ -894,6 +894,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for controlplane::SortDir
 impl core::panic::unwind_safe::UnwindSafe for controlplane::SortDir
 pub enum controlplane::Then
 pub controlplane::Then::Confirm(controlplane::ConfirmSpec)
+pub controlplane::Then::Copy
 pub controlplane::Then::Form(controlplane::FormSpec)
 pub controlplane::Then::Invoke
 pub controlplane::Then::Link(controlplane::Link)
