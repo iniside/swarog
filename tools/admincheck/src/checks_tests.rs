@@ -9,7 +9,9 @@ use controlplane::{
     Manifest, PageDecl, Point, Role, Then,
 };
 
-use super::findings;
+use checkmodules::ProcessControlPlane;
+
+use super::{findings, peer_findings};
 
 const PAGE: &str = "outbox";
 
@@ -351,4 +353,93 @@ fn a_request_id_field_with_a_default_is_refused() {
     assert_eq!(findings(&[with(None)]), Vec::<String>::new());
     let line = r#"mail: action "adjust" form: field "rid" is a request id, which the portal fills, and declares a default"#;
     assert_eq!(findings(&[with(Some("grant-7c1e0a"))]), vec![line.to_string()]);
+}
+
+/// A provider manifest for `module`; `peer_findings` reads only the module name.
+fn provider(module: &str) -> Manifest {
+    Manifest { module: module.into(), ..Manifest::default() }
+}
+
+fn process(process: &'static str, modules: &[&str], dialled: &[&str]) -> ProcessControlPlane {
+    ProcessControlPlane {
+        process,
+        manifests: modules.iter().map(|m| provider(m)).collect(),
+        dialled: dialled.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+/// admin-svc dials `mail`, mail-svc hosts `mail`, the monolith hosts `mail`: clean.
+/// Each peer case below adds to this split, so the one finding it asserts is that case's.
+fn clean_split(admin_dials: &[&str]) -> Vec<ProcessControlPlane> {
+    vec![process("admin-svc", &[], admin_dials), process("mail-svc", &["mail"], &[])]
+}
+
+#[test]
+fn a_dialled_peer_whose_svc_hosts_a_provider_is_clean() {
+    assert_eq!(peer_findings(&[provider("mail")], &clean_split(&["mail"])), Vec::<String>::new());
+}
+
+/// The once-silent branch: a dialled peer's process exists but hosts no provider.
+#[test]
+fn a_dialled_peer_whose_svc_hosts_no_provider_is_refused() {
+    let mut split = clean_split(&["mail", "x"]);
+    split.push(process("x-svc", &[], &[]));
+    assert_eq!(
+        peer_findings(&[provider("mail")], &split),
+        vec![r#"admin-svc dials peer "x", but x-svc hosts no control-plane provider"#.to_string()]
+    );
+}
+
+/// A dialled peer with no process gets only the no-process finding, not the no-provider one too.
+#[test]
+fn a_dialled_peer_with_no_svc_is_refused_once() {
+    assert_eq!(
+        peer_findings(&[provider("mail")], &clean_split(&["mail", "x"])),
+        vec![r#"admin-svc dials peer "x", but no split process is x-svc"#.to_string()]
+    );
+}
+
+#[test]
+fn a_provider_host_admin_svc_does_not_dial_is_refused() {
+    let mut split = clean_split(&["mail"]);
+    split.push(process("ledger-svc", &["wallet", "audit"], &[]));
+    let monolith = [provider("mail"), provider("wallet"), provider("audit")];
+    assert_eq!(
+        peer_findings(&monolith, &split),
+        vec![r#"ledger-svc: hosts provider(s) audit, wallet but admin-svc does not dial peer "ledger""#.to_string()]
+    );
+}
+
+#[test]
+fn a_module_hosted_by_two_split_processes_is_refused() {
+    let mut split = clean_split(&["mail", "post"]);
+    split.push(process("post-svc", &["mail"], &[]));
+    assert_eq!(
+        peer_findings(&[provider("mail")], &split),
+        vec!["mail: hosted by more than one split process: mail-svc, post-svc".to_string()]
+    );
+}
+
+#[test]
+fn a_provider_hosted_in_one_topology_only_is_refused() {
+    let monolith = [provider("mail"), provider("chat")];
+    assert_eq!(
+        peer_findings(&monolith, &clean_split(&["mail"])),
+        vec!["chat: the monolith hosts this provider but no split process does".to_string()]
+    );
+    assert_eq!(
+        peer_findings(&[], &clean_split(&["mail"])),
+        vec!["mail: a split process hosts this provider but the monolith does not".to_string()]
+    );
+}
+
+/// With no admin-svc the dial list is unchecked: an undialled host and a dial of nothing
+/// raise no dial finding, only the missing-portal one.
+#[test]
+fn a_split_with_no_admin_svc_is_refused_once() {
+    let split = vec![process("mail-svc", &["mail"], &["ghost"])];
+    assert_eq!(
+        peer_findings(&[provider("mail")], &split),
+        vec!["no split process is named admin-svc, so no dial list is checked".to_string()]
+    );
 }
