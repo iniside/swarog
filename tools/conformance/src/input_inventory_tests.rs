@@ -64,6 +64,55 @@ fn an_unresolvable_named_type_is_rejected_naming_type_method_field_and_remedy() 
 fn a_data_carrying_enum_request_argument_is_rejected() {
     let message = rejection(&contract("Mode", "pub enum Mode { A(String), B }"));
     assert!(message.contains("\"Mode\""), "{message}");
+    assert!(message.contains("data-carrying"), "{message}");
+}
+
+/// Every variant is checked, not only the first; a struct variant carries data like a
+/// tuple one; and a `#[cfg]` on a variant does not hide its fields from the scan.
+#[test]
+fn every_data_carrying_variant_shape_is_rejected() {
+    for body in [
+        "pub enum Mode { A, B(String) }",
+        "pub enum Mode { A, B { note: String } }",
+        "pub enum Mode { A, #[cfg(feature = \"x\")] B(String) }",
+    ] {
+        let message = rejection(&contract("Mode", body));
+        assert!(message.contains("\"Mode\""), "{body}: {message}");
+        assert!(message.contains("data-carrying"), "{body}: {message}");
+    }
+}
+
+/// A unit-only enum is one variant name on the wire: one key for the field, and one for
+/// an `Option` of it, with nothing recorded under the enum's variants.
+#[test]
+fn a_unit_only_enum_field_and_an_option_of_one_are_one_key_each() {
+    let source = contract(
+        "Request",
+        "pub struct Request { pub kind: Kind, pub maybe: Option<Kind> } pub enum Kind { A, B }",
+    );
+    assert_eq!(
+        keys(&source),
+        ["demo.send\trequest.kind\twire", "demo.send\trequest.maybe\twire"]
+    );
+}
+
+/// The type index is keyed by the last path segment, so a foreign `other::Kind` must not
+/// resolve to the local unit enum `Kind` and pass as one key; a `crate::` path still does.
+#[test]
+fn a_foreign_path_sharing_a_local_enum_name_is_not_resolved_locally() {
+    let local = "pub enum Kind { A, B }";
+    let foreign = contract(
+        "Request",
+        &format!("pub struct Request {{ pub kind: other::Kind }} {local}"),
+    );
+    let message = rejection(&foreign);
+    assert!(message.contains("\"other::Kind\""), "{message}");
+    assert!(message.contains("OPAQUE_REQUEST_TYPES"), "{message}");
+    let crate_path = contract(
+        "Request",
+        &format!("pub struct Request {{ pub kind: crate::Kind }} {local}"),
+    );
+    assert_eq!(keys(&crate_path), ["demo.send\trequest.kind\twire"]);
 }
 
 #[test]

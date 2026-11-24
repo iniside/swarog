@@ -11,8 +11,9 @@ use crate::model::{
 };
 
 use crate::checks::{
-    argon_parity_findings, completeness_findings, credential_cap_findings, drift_findings,
-    eval_cap_probe, input_policy_prose_findings, CORE_INFRA_MODULES,
+    argon_parity_findings, completeness_findings, control_plane_cap_findings,
+    credential_cap_findings, drift_findings, eval_cap_probe, input_policy_prose_findings,
+    CORE_INFRA_MODULES,
 };
 use crate::input_inventory::{Exposure, InputKey};
 
@@ -580,4 +581,91 @@ fn cap_case_probe_plumbing_smoke() {
     };
     assert!(!(case.probe)(case.cap));
     assert!((case.probe)(case.cap + 1));
+}
+
+// ---- Phase 1b (control plane): the manifest-derived writer check ----------------
+//
+// `control_plane_cap_findings` takes the writer set main.rs derives from the monolith
+// manifests (`writes: true`), so each fixture names its writers directly.
+
+fn writers(names: &[&str]) -> BTreeSet<String> {
+    names.iter().map(|name| name.to_string()).collect()
+}
+
+/// The `cp.invoke` `req.input.<value>` row, Validated at `cap`.
+fn invoke_row(cap: usize) -> (InputKey, InputPolicy) {
+    (
+        InputKey {
+            wire_method: "cp.invoke".into(),
+            wire_field_name: "req.input.<value>".into(),
+            exposure: Exposure::Wire,
+        },
+        InputPolicy::Validated { cap, basis: "fixture" },
+    )
+}
+
+fn caps_entry(module: &'static str, cases: Vec<CapCase>) -> Entry {
+    Entry {
+        module,
+        stances: vec![(Convention::InputByteCaps, Stance::Applies(Fixture::InputByteCaps(cases)))],
+    }
+}
+
+#[test]
+fn a_writer_with_its_cp_invoke_case_at_the_row_cap_is_clean() {
+    let entries = [caps_entry("mail", vec![cap_case("cp.invoke mail input value", 4096)])];
+    let findings = control_plane_cap_findings(&writers(&["mail"]), &entries, &[invoke_row(4096)]);
+    assert!(findings.is_empty(), "{findings:?}");
+}
+
+/// A `writes: true` module whose entry has no CapCase naming both `cp.invoke` and the
+/// module: a case for another writer, or one without the marker, does not count.
+#[test]
+fn a_writer_without_a_matching_cp_invoke_case_is_a_finding() {
+    let entries = [caps_entry(
+        "mail",
+        vec![cap_case("cp.invoke wallet input value", 4096), cap_case("mail input value", 4096)],
+    )];
+    let findings = control_plane_cap_findings(&writers(&["mail"]), &entries, &[invoke_row(4096)]);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings[0].contains("mail declares `writes: true`"), "{findings:?}");
+    assert!(findings[0].contains("no executable input-byte-caps CapCase"), "{findings:?}");
+}
+
+#[test]
+fn a_cp_invoke_case_whose_cap_differs_from_the_validated_row_is_a_finding() {
+    let entries = [caps_entry("mail", vec![cap_case("cp.invoke mail input value", 2048)])];
+    let findings = control_plane_cap_findings(&writers(&["mail"]), &entries, &[invoke_row(4096)]);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings[0].contains("cap 2048"), "{findings:?}");
+    assert!(findings[0].contains("Validated at 4096"), "{findings:?}");
+}
+
+#[test]
+fn writers_with_no_validated_cp_invoke_row_is_a_finding() {
+    let entries = [caps_entry("mail", vec![cap_case("cp.invoke mail input value", 4096)])];
+    let findings = control_plane_cap_findings(&writers(&["mail"]), &entries, &[]);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert!(findings[0].contains("is not Validated"), "{findings:?}");
+}
+
+/// `core.events` and `portal` have no conformance entry of their own: both are proven
+/// in the `admin` entry, under their own module name.
+#[test]
+fn core_events_and_portal_map_to_the_admin_entry() {
+    let entries = [caps_entry(
+        "admin",
+        vec![
+            cap_case("cp.invoke core.events input value", 4096),
+            cap_case("cp.invoke portal input value", 4096),
+        ],
+    )];
+    let both = writers(&["core.events", "portal"]);
+    let findings = control_plane_cap_findings(&both, &entries, &[invoke_row(4096)]);
+    assert!(findings.is_empty(), "{findings:?}");
+    let findings = control_plane_cap_findings(&both, &[], &[invoke_row(4096)]);
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    for finding in &findings {
+        assert!(finding.contains("conformance entry admin does not exist"), "{finding}");
+    }
 }
