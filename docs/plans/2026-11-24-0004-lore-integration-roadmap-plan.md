@@ -139,6 +139,7 @@ Sources:
 | gRPC for `user_url` | edge transport | QUIC JSON, not gRPC | A tonic service mounted with `ctx.mount` on lore's HTTP routes (h2c, verified above) |
 | Lore wire types | linking `lore-proto` | C build (rpmalloc) + axum 0.8 | Vendored generated code (Step 6) |
 | Portal UI | `core/admin` templates | Swarog-internal, operator-facing | The portal is zero-sharing and copies the embedded-static precedent, not the code |
+| Portal repository browsing | proxy through `modules/lore` | Every byte would pass through Swarog, and `lore` would grow a browsing layer | Rejected (owner, 2026-11-24). The portal is a direct Lore client with per-repo Tier 2 tokens |
 
 ## Order
 
@@ -195,7 +196,7 @@ split proof checks its endpoints through gateway-svc.
 - (a) `accounts` tables `oidc_clients` (public portal client, the Lore CLI
   client id, confidential service clients) and `oidc_codes`; endpoints
   `authorize`, `token` (`authorization_code`, `refresh_token`) and `revoke`.
-- (b) The portal (Step 12) and the Lore CLI refresh need them.
+- (b) The portal (Step 12) and the Lore CLI's token refresh need them.
 - (c) The audience decides the format:
   - Swarog audience → the existing opaque session plus refresh family;
   - Lore audience → an ES256 `at+jwt` with `sub` = user id,
@@ -409,7 +410,7 @@ split proof checks its endpoints through gateway-svc.
 **Step 12: Portal skeleton (zero-sharing).**
 - (a) `portal/` workspace member (BFF on axum 0.7 with embedded static pages,
   the weles precedent). It depends on `vendor/lore-wire` and nothing else
-  from the repo (owner question 4). A new archcheck kind `Portal` with a deny-all rule for
+  from the repo (owner question 4, resolved). A new archcheck kind `Portal` with a deny-all rule for
   `core/`, `modules/`, `api/`, `cmd/` and `weles/` makes zero-sharing
   enforced, not a convention.
   - Login with auth code + PKCE against Swarog.
@@ -467,9 +468,14 @@ Resolved 2026-11-24: grants live in a separate `authz` module (Step 5a).
    Google/Epic stays available on the same page. OK?
 3. **Resolved 2026-11-24: vendor.** **Vendoring Lore's generated code (Step 6) vs linking `lore-proto`.** Linking
    brings a C build (rpmalloc) and a second axum. Proposal: vendor.
-4. **The portal shares the vendored crate with Swarog.** It is third-party code,
-   not Swarog code. Proposal: allow this one shared dependency in the portal's
-   archcheck rule.
+4. **Resolved 2026-11-24: the portal talks to loreserver directly and shares
+   `vendor/lore-wire` with `modules/lore`.** It is Lore's API, not Swarog code.
+   Permissions are decided by Swarog when the token is exchanged (`accounts` →
+   `authz`) and enforced by loreserver from the token, so a direct client is as
+   safe as a proxy through `lore`. Large files and the later asset previews stream
+   straight from loreserver. The portal's archcheck rule allows exactly this one
+   repo dependency. The portal uses the Swarog API only for login, review, MRs
+   and comments.
 
 ## Not in this roadmap
 
