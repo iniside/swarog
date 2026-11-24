@@ -405,8 +405,8 @@ impl Store {
 /// pending rows `mail_outbox_due_idx` selects, a heap read per pending row because no index
 /// covers `last_error`.
 pub(crate) struct OutboxStats {
-    /// Pending with no failed attempt behind it: `last_error IS NULL`. A row claimed for its
-    /// first send is still here.
+    /// Pending with no failed attempt since it was queued or last resumed: `last_error IS
+    /// NULL`. A row claimed for its first send is still here.
     pub(crate) pending: i64,
     /// Pending after a failed attempt: `last_error IS NOT NULL`.
     pub(crate) retrying: i64,
@@ -561,7 +561,9 @@ impl Store {
     /// Returns ONE parked row to the drain. `attempts = 0` restarts the ladder — the
     /// operator fixed what parked it, so the burnt attempts describe a configuration that
     /// no longer exists. `last_error` is CLEARED: a pending row with a `last_error` is the
-    /// Retrying tab, and a resumed row has not failed again, so it reads as Pending.
+    /// Retrying tab, and a resumed row has not failed again, so it reads as Pending. The
+    /// reason it parked is dropped on purpose (owner, 2026-11-24): if it parks again, the new
+    /// `last_error` is the only one kept.
     ///
     /// The bumped `generation` is what makes resetting `attempts` safe. This statement
     /// hands a row back to the drain, so any attempt still in flight from before it parked
