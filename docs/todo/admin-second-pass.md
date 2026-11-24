@@ -157,6 +157,16 @@ modules/audit/src/admin.rs, as committed in admin-control-plane-redesign step 24
   mockup page exists for it (checklist docs/plans/2026-11-22-step18-groups-checklist.md
   G7 b). Closed by: a mockup for the group page and its port.
 
+### Mockup pages without a portal page
+
+- [ ] **Characters list and character page**
+  The mockup has `UILayout/redesign/characters.html` and `character.html` (drawn by
+  `pages-core.js`, with `charLink` and the "character" row menu at `:208`, `:221`, `:262`),
+  but the portal has no character page: `modules/characters` declares the `character` kind
+  with a label only, and inventory draws a character owner as a label. The player page no
+  longer links to them (admin-second-pass steps 8a and 6). Owner 2026-11-24: port these pages
+  after the admin-second-pass leftovers are fixed.
+
 ### Guard gaps
 
 - [ ] **Unlisted page-head action renders nowhere**
