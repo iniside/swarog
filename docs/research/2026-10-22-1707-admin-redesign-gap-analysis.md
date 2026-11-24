@@ -178,3 +178,12 @@ htmx), memoized fan-out per request, SSE patches for live panels (Timeline `live
 - **Edge trust stays as is.** Every mTLS peer is equally trusted (`core/edge/src/tls.rs:174`);
   "only the portal may call admin ops" is not enforced per method. Admin ops stay wire-only,
   so the gateway never routes them; the operator login is a plain request field.
+
+**Errata (2026-11-24, admin-control-plane-redesign step 26).**
+- §8 "Its contribution seam lives in `core`" and "Admin is promoted from one module" were
+  superseded by revision 2 of the plan: the portal itself is core (`core/admin`, with the
+  seam in `core/controlplane`), not `modules/admin`; the shipped-admin paths in the intro
+  (`api/admin/*`, `modules/admin`, `cmd/admin-svc`) describe the pre-redesign state.
+- §8 "an admin-only `AuthReq` variant" (D1) was not built: the `cp.*` ops are wire-only and
+  the operator login is a plain `operator` request field in `core/controlplane/src/lib.rs`,
+  used only as an audit label.

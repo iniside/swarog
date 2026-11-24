@@ -114,10 +114,13 @@ The operator surface instead is:
   `asyncevents_subscriptions_paused` (`core/asyncevents/src/plane_metrics.rs`),
   scoped to the process's own subscription ids;
 - `cargo run -p eventctl -- list`, which prints `paused_since` for a paused row;
+- the control-plane portal's Events page (`core/admin/src/events_provider.rs`): a paused
+  subscriptions tile and attention item, and per-subscription Pause, Resume and Retry now
+  plus Resume and Skip on the previewed poison event;
 - **Purges pending**, a conditional `DashboardAttention` item (not a KPI tile) that a
-  purging module contributes from its own schema — `characters` (order 61) does today; `wallet`
-  (62), `inventory` (63), `friends` (64), `groups` (65), `storage` (66),
-  `notifications` (67) take their orders with their admin ports — and shows only while its sweep is behind (rows with
+  purging module contributes from its own schema — `characters` (order 61), `wallet`
+  (62), `inventory` (63), `friends` (64), `groups` (65), `storage` (66) and
+  `notifications` (67) each contribute one — and shows only while its sweep is behind (rows with
   `swept_at IS NULL`, plus the oldest pending `created_at`). It reports outstanding sweep
   work, not a paused *subscription*, and there is no cross-schema admin view: a module
   contributes it as a `controlplane` contribution at `Point::DashboardAttention`
@@ -140,6 +143,6 @@ back, so a new `Genesis` consumer on such a database sees a partial history.
 ## Related
 
 - `cargo run -p eventctl -- list` — lag/retry/pause/resume/skip/retire per
-  subscription.
+  subscription; the portal's Events page covers pause, resume, retry and skip.
 - `.agents/shared/gamebackend.md`, "The point of this codebase" seam #3 (durable event bus) and
   lifecycle rule #8 (readyz/idle-in-tx summary).
