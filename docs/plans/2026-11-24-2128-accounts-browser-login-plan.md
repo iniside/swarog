@@ -228,6 +228,9 @@ install.
     same reveal, and in the same tx `kill_player_families_tx` (sessions, refresh tokens,
     browser sessions after 4a).
   - Both run on the `cp.*` face, so the split works through admin-svc unchanged.
+  - The player tab's Sessions panel also lists the player's live browser sessions
+    (created, expires; no token or digest shown), next to the refresh families
+    (owner decision 6).
   - Tests per apikeys: the reveal is shown once; field error on duplicate (other case
     too); after a reset the old refresh token fails and the browser session is gone;
     conformance input caps.
@@ -276,3 +279,8 @@ proof run once, after Step 6, as part of Step 7 (owner, 2026-11-25).
    as the next phase (server-side Google OIDC redirect flow on the hosted page).
 5. **Starter currency for studio users:** accepted (the owner's "8. tak"; read as the
    fifth question, the plan had no eighth).
+6. **Browser sessions on the player tab:** "dopisz" (after Step 4a). Step 6 adds them to
+   the Sessions panel.
+7. **Red `verifyctl` stages outside this plan** (config clippy/archcheck, inventory
+   archcheck, audit, admindiff, core/admin poison test, processctl shutdown test,
+   scheduler `SH2`/`SH2m`): "zostaw" — not this plan's work.
