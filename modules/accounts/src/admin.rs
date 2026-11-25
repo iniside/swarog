@@ -691,8 +691,8 @@ impl AccountsAdmin {
     }
 
     /// Revokes every login of the bound player that still grants access, in one
-    /// transaction (`Store::revoke_player_families_tx`). A player with no such family is
-    /// NoOp, the same set the modal counts.
+    /// transaction (`Store::revoke_player_families_tx`). A player with no such family and
+    /// no live browser session is NoOp, the same set the modal counts.
     async fn revoke_all(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
         let player = bound_player(req.entity.as_ref())?;
         let store = &self.svc.store;
@@ -710,8 +710,8 @@ impl AccountsAdmin {
         }
     }
 
-    /// The Revoke all modal, naming the player and counting the families Revoke all would
-    /// end (`Store::revocable_families_tx`, the set the action deletes).
+    /// The Revoke all modal, naming the player and counting the families and live browser
+    /// sessions Revoke all would end, the set the action deletes.
     async fn prepare_revoke_all(&self, req: &PrepareCall) -> Result<Then, Error> {
         let player = bound_player(req.entity.as_ref())?;
         let store = &self.svc.store;
@@ -721,7 +721,10 @@ impl AccountsAdmin {
             .map_err(internal)?
             .ok_or_else(|| Error::not_found(format!("accounts: no player {player}")))?;
         let mut conn = store.pool.acquire().await.map_err(internal)?;
-        let live = store.revocable_families_tx(&mut conn, player).await.map_err(internal)?.len();
+        let families = store.revocable_families_tx(&mut conn, player).await.map_err(internal)?;
+        let families = families.len();
+        let browsers = store.live_browser_sessions_tx(&mut conn, player).await.map_err(internal)?;
+        let live = families + browsers as usize;
         let handle = render_handle(&row.display_name, &row.discriminator);
         let impact = vec![("Active sessions".to_string(), text(CellKind::Text, live.to_string()))];
         Ok(Then::Confirm(revoke_all_spec(format!("Revoke all sessions of {handle}?"), impact)))

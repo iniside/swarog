@@ -2,6 +2,7 @@ use super::*;
 use accountsapi::{Auth as _, Sessions as _};
 use base64::Engine as _;
 
+mod browser_session;
 mod delete;
 mod directory;
 mod guest;

@@ -169,3 +169,40 @@ async fn foreign_schedule_name_is_a_committed_noop() {
 
     cleanup_player(&pool, &pid).await;
 }
+
+/// The browser-session leg of the prune reaction: an expired browser session is already
+/// absent to the lookup, and `accounts-sessions-prune` deletes its row; a live one stays.
+#[tokio::test(flavor = "multi_thread")]
+async fn prune_deletes_expired_browser_session_keeps_live_one() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let email = format!("prune-browser-{}@test.local", suffix());
+    let pid = svc.register(email, "pw".into(), "PruneBrowser".into()).await.unwrap().player_id;
+    let expired = svc.store.create_browser_session(&pid).await.unwrap().unwrap();
+    let live = svc.store.create_browser_session(&pid).await.unwrap().unwrap();
+    sqlx::query(
+        "UPDATE accounts.browser_sessions SET expires_at = now() - interval '1 minute' \
+          WHERE csrf_token = $1",
+    )
+    .bind(&expired.csrf_token)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let expired_read = svc.store.browser_session(&expired.token).await.unwrap();
+    let handler = PruneHandler { svc: svc.clone() };
+    deliver_prune(&pool, &handler, PRUNE_SCHEDULE_NAME).await;
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT csrf_token FROM accounts.browser_sessions WHERE player_id = $1::uuid",
+    )
+    .bind(&pid)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let live_read = svc.store.browser_session(&live.token).await.unwrap();
+    cleanup_player(&pool, &pid).await;
+
+    assert!(expired_read.is_none(), "an expired browser session is not returned");
+    assert_eq!(rows, vec![live.csrf_token.clone()], "the prune removes only the expired row");
+    assert_eq!(live_read.map(|s| s.player_id), Some(pid), "the live session still resolves");
+}

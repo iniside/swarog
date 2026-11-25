@@ -62,9 +62,9 @@ fn is_unique_violation(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23505"))
 }
 
-/// `true` for a Postgres foreign-key violation (23503) — on the delete-ticket upsert,
-/// an identity naming a player that no longer exists.
-fn is_foreign_key_violation(e: &sqlx::Error) -> bool {
+/// `true` for a Postgres foreign-key violation (23503) — on the delete-ticket upsert or
+/// a browser session insert, a player that no longer exists.
+pub(crate) fn is_foreign_key_violation(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23503"))
 }
 
@@ -1002,9 +1002,9 @@ impl Store {
         Ok(row.is_some())
     }
 
-    /// Revokes every refresh family of a player on the caller's tx: all its refresh tokens
-    /// and access sessions. `None` when there is no such player; otherwise the rows
-    /// deleted, tokens and sessions together.
+    /// Revokes every refresh family of a player on the caller's tx: all its refresh tokens,
+    /// access sessions and browser sessions. `None` when there is no such player; otherwise
+    /// the rows deleted, tokens, sessions and live browser sessions together.
     ///
     /// Lock order: the player row first ([`Store::lock_player_row_tx`]), then its token
     /// and session rows — the order every login and refresh takes them (FOR KEY SHARE on
@@ -1027,7 +1027,43 @@ impl Store {
             .bind(player_id)
             .execute(&mut *conn)
             .await?;
-        Ok(Some(tokens.rows_affected() + sessions.rows_affected()))
+        let browsers = self.delete_player_browser_sessions_tx(conn, player_id).await?;
+        Ok(Some(tokens.rows_affected() + sessions.rows_affected() + browsers))
+    }
+
+    /// Deletes every browser session of a player, expired ones included, on the caller's
+    /// tx, answering how many of them were still live.
+    pub async fn delete_player_browser_sessions_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<u64, sqlx::Error> {
+        let live: i64 = sqlx::query_scalar(
+            "WITH gone AS (DELETE FROM accounts.browser_sessions WHERE player_id = $1::uuid \
+                           RETURNING expires_at) \
+             SELECT count(*) FILTER (WHERE expires_at > now()) FROM gone",
+        )
+        .bind(player_id)
+        .fetch_one(&mut *conn)
+        .await?;
+        Ok(live as u64)
+    }
+
+    /// How many unexpired browser sessions a player holds: what Revoke all ends besides
+    /// its families.
+    pub async fn live_browser_sessions_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<u64, sqlx::Error> {
+        let live: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM accounts.browser_sessions \
+              WHERE player_id = $1::uuid AND expires_at > now()",
+        )
+        .bind(player_id)
+        .fetch_one(&mut *conn)
+        .await?;
+        Ok(live as u64)
     }
 
     /// The refresh families of a player that still grant access ([`granting_families`]):
@@ -1045,11 +1081,12 @@ impl Store {
     }
 
     /// Revokes every family of a player that still grants access
-    /// ([`Store::revocable_families_tx`]) on the caller's tx: `None` when there is no
-    /// such player, otherwise how many families it revoked. The set it counts is the set
-    /// it deletes, read after the player row lock ([`Store::lock_player_row_tx`], the
-    /// lock order of [`Store::kill_player_families_tx`]), so no login or refresh can add a
-    /// family between the two.
+    /// ([`Store::revocable_families_tx`]) and every browser session on the caller's tx:
+    /// `None` when there is no such player, otherwise how many families and live browser
+    /// sessions it revoked. The set it counts is the set it deletes, read after the player
+    /// row lock ([`Store::lock_player_row_tx`], the lock order of
+    /// [`Store::kill_player_families_tx`]), so no login or refresh can add a family between
+    /// the two.
     pub async fn revoke_player_families_tx(
         &self,
         conn: &mut PgConnection,
@@ -1062,7 +1099,8 @@ impl Store {
         for family in &families {
             self.kill_family_tx(conn, family).await?;
         }
-        Ok(Some(families.len()))
+        let browsers = self.delete_player_browser_sessions_tx(conn, player_id).await?;
+        Ok(Some(families.len() + browsers as usize))
     }
 
     /// Resolves a bearer token to its player, ignoring expired sessions. `Ok(None)`
@@ -1093,6 +1131,18 @@ impl Store {
         conn: &mut PgConnection,
     ) -> Result<u64, sqlx::Error> {
         let res = sqlx::query("DELETE FROM accounts.sessions WHERE expires_at <= now()")
+            .execute(&mut *conn)
+            .await?;
+        Ok(res.rows_affected())
+    }
+
+    /// Deletes every EXPIRED browser session on the delivery tx; an expired one is
+    /// already absent to every lookup.
+    pub async fn prune_expired_browser_sessions(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<u64, sqlx::Error> {
+        let res = sqlx::query("DELETE FROM accounts.browser_sessions WHERE expires_at <= now()")
             .execute(&mut *conn)
             .await?;
         Ok(res.rows_affected())

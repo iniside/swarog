@@ -802,6 +802,45 @@ async fn revoke_all_counts_and_revokes_only_families_that_still_grant_access() {
     assert_eq!(left, 2, "a NoOp deletes nothing");
 }
 
+/// A player whose only login is a browser session: the modal counts it and Revoke all
+/// ends it instead of answering NoOp and rolling the delete back.
+#[tokio::test]
+async fn revoke_all_counts_and_ends_a_browser_session() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let email = format!("rev6-{}@test.local", suffix());
+    let id = svc.register(email, "pw".into(), "RevBrowser".into()).await.unwrap().player_id;
+    let mut tx = pool.begin().await.unwrap();
+    svc.store.kill_player_families_tx(&mut tx, &id).await.unwrap();
+    tx.commit().await.unwrap();
+    let browser = svc.store.create_browser_session(&id).await.unwrap().unwrap();
+    let admin = AccountsAdmin::new(Arc::clone(&svc));
+    let spec = admin
+        .prepare(PrepareCall {
+            module: "accounts".to_string(),
+            action: REVOKE_ALL.to_string(),
+            entity: Some(EntityRef { kind: "player".to_string(), id: id.clone() }),
+            item: None,
+            operator: "op".to_string(),
+        })
+        .await;
+    let outcome = admin.invoke(revoke(REVOKE_ALL, Some(&id), None)).await;
+    let read = svc.store.browser_session(&browser.token).await.unwrap();
+    let left: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM accounts.browser_sessions WHERE player_id = $1::uuid")
+            .bind(&id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    cleanup_player(&pool, &id).await;
+
+    let Then::Confirm(spec) = spec.unwrap() else { panic!("revoke-all prepares a Confirm") };
+    assert_eq!(spec.impact[0].1.value, "1", "the modal counts the browser session");
+    assert!(matches!(outcome.unwrap(), InvokeOutcome::Ok { .. }));
+    assert!(read.is_none());
+    assert_eq!(left, 0, "Revoke all deletes the browser session");
+}
+
 /// Revoke all holding the player row when a login starts: the login waits, then commits
 /// after it, whole.
 #[tokio::test(flavor = "multi_thread")]

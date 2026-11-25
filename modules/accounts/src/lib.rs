@@ -37,6 +37,8 @@ mod ops;
 mod password;
 mod providers;
 mod store;
+#[cfg_attr(not(test), expect(dead_code, reason = "the hosted login routes read it"))]
+mod web;
 
 use std::sync::{Arc, OnceLock};
 
@@ -197,6 +199,17 @@ CREATE TABLE IF NOT EXISTS accounts.refresh_tokens (
 	expires_at  timestamptz NOT NULL,
 	used_at     timestamptz,
 	replaced_by text
+);
+
+-- The hosted login pages' signed-in browsers: the cookie's opaque token is stored only as
+-- its SHA-256 digest, and `player_by_session` never reads this table, so a browser cookie
+-- never authenticates an operation.
+CREATE TABLE IF NOT EXISTS accounts.browser_sessions (
+	token_digest bytea PRIMARY KEY,
+	player_id    uuid        NOT NULL REFERENCES accounts.players(id) ON DELETE CASCADE,
+	csrf_token   text        NOT NULL,
+	created_at   timestamptz NOT NULL DEFAULT now(),
+	expires_at   timestamptz NOT NULL
 );
 
 -- Epic web-OAuth in-flight redemption store (Step B1). Shared, NOT process memory,
@@ -1143,9 +1156,9 @@ impl accountsapi::Auth for Service {
 }
 
 // ============================================================================
-// Durable prune reaction — sessions, refresh tokens and delete tickets are all
-// INSERT-only with a TTL filtered on read, so accounts reacts to the seeded daily
-// `accounts-sessions-prune` schedule and deletes the expired rows of all three on the
+// Durable prune reaction — sessions, refresh tokens, delete tickets and browser sessions
+// are all INSERT-only with a TTL filtered on read, so accounts reacts to the seeded daily
+// `accounts-sessions-prune` schedule and deletes the expired rows of all four on the
 // DELIVERY tx (exactly-once with the checkpoint advance).
 // Copied from audit's prune: subscribe raw by the CONTRACT descriptor's topic const, no
 // `schedulerevents::Fired` payload-type import — the handler parses only `name`.
@@ -1203,6 +1216,11 @@ impl TxHandler for PruneHandler {
             self.svc
                 .store
                 .prune_expired_delete_tickets(conn)
+                .await
+                .map_err(BusError::transport)?;
+            self.svc
+                .store
+                .prune_expired_browser_sessions(conn)
                 .await
                 .map_err(BusError::transport)?;
             Ok(())
@@ -1332,6 +1350,14 @@ impl Module for Accounts {
             .index(
                 "accounts.refresh_expires_idx",
                 "CREATE INDEX refresh_expires_idx ON accounts.refresh_tokens(expires_at)",
+            )
+            .index(
+                "accounts.browser_sessions_player_idx",
+                "CREATE INDEX browser_sessions_player_idx ON accounts.browser_sessions(player_id)",
+            )
+            .index(
+                "accounts.browser_sessions_expires_idx",
+                "CREATE INDEX browser_sessions_expires_idx ON accounts.browser_sessions(expires_at)",
             )
             .index(
                 "accounts.oauth_states_created_idx",
