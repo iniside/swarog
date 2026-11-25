@@ -22,7 +22,7 @@ pub(crate) struct BrowserSession {
     pub csrf_token: String,
 }
 
-fn digest(token: &str) -> Vec<u8> {
+pub(crate) fn digest(token: &str) -> Vec<u8> {
     Sha256::digest(token.as_bytes()).to_vec()
 }
 
@@ -80,8 +80,13 @@ impl Store {
         if !crate::session_token_within_cap(token) {
             return Ok(false);
         }
+        self.delete_browser_session_digest(&digest(token)).await
+    }
+
+    /// Ends the session whose token hashes to `token_digest`, answering whether there was one.
+    pub async fn delete_browser_session_digest(&self, token_digest: &[u8]) -> Result<bool, sqlx::Error> {
         let res = sqlx::query("DELETE FROM accounts.browser_sessions WHERE token_digest = $1")
-            .bind(digest(token))
+            .bind(token_digest)
             .execute(&self.pool)
             .await?;
         Ok(res.rows_affected() > 0)

@@ -13,6 +13,13 @@
 <label class="stack" style="gap:4px"><span class="dim" style="font-weight:500">Password</span><input class="input" type="password" name="password" autocomplete="current-password" required></label>
 <button type="submit" class="btn primary" style="justify-content:center">Sign in</button>
 </form>
+{%- if epic %}
+<form method="post" action="/accounts/oidc/epic" class="stack" style="margin-top:12px">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="return_to" value="{{ return_to }}">
+<button type="submit" class="btn" style="justify-content:center">Continue with Epic</button>
+</form>
+{%- endif %}
 </div>
 </section>
 {%- endblock %}

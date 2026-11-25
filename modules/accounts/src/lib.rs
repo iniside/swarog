@@ -211,19 +211,27 @@ CREATE TABLE IF NOT EXISTS accounts.browser_sessions (
 	expires_at   timestamptz NOT NULL
 );
 
--- Epic web-OAuth in-flight redemption store (Step B1). Shared, NOT process memory,
--- so the /accounts/epic/callback can LB-route to ANY replica: new_state INSERTs and
+-- Epic web-OAuth in-flight redemption store. Shared, NOT process memory, so the
+-- /accounts/epic/callback can LB-route to ANY replica: new_state INSERTs and
 -- take_state is a DELETE ... RETURNING (cross-replica exactly-once single-redemption,
--- 10-min TTL as a created_at predicate). An empty session_token is a LOGIN flow; a
--- set one is a LINK flow bound to that session's player.
+-- 10-min TTL as a created_at predicate). intent decides the callback: login mints a
+-- player session, link attaches the identity to session_token's player, browser mints
+-- a browser session, ends replaces_session (the digest of the browser's previous
+-- session cookie) and returns to return_to.
 -- No player_id and deliberately NO cascade: a LINK row still in flight when its player is
 -- deleted names only that player's session token, and it is swept by the same 10-minute
 -- TTL prune as any abandoned one.
 CREATE TABLE IF NOT EXISTS accounts.oauth_states (
-	state           text PRIMARY KEY,
-	session_token   text        NOT NULL,
-	browser_binding text        NOT NULL,
-	created_at      timestamptz NOT NULL DEFAULT now()
+	state            text PRIMARY KEY,
+	intent           text        NOT NULL CHECK (intent IN ('login', 'link', 'browser')),
+	session_token    text,
+	return_to        text,
+	replaces_session bytea,
+	browser_binding  text        NOT NULL,
+	created_at       timestamptz NOT NULL DEFAULT now(),
+	CHECK ((intent = 'link') = (session_token IS NOT NULL)),
+	CHECK ((intent = 'browser') = (return_to IS NOT NULL)),
+	CHECK (intent = 'browser' OR replaces_session IS NULL)
 );"#;
 
 /// Folds any lower-level error into an `Internal` operation error.
@@ -469,54 +477,14 @@ impl Service {
         secret_hash: Option<&str>,
     ) -> Result<(accountsapi::Session, bool), Error> {
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
-        // First statement after BEGIN: every external identity writer shares it.
-        self.store
-            .lock_identity_tx(&mut tx, provider, subject)
-            .await
-            .map_err(internal)?;
-        if let Some(p) = self
-            .store
-            .player_by_identity_tx(&mut tx, provider, subject)
-            .await
-            .map_err(internal)?
-        {
-            let session = match self
-                .issue_session_tx(&mut tx, &p, provider, subject, store::new_token())
-                .await
-            {
-                Ok(session) => session,
+        let (p, created) =
+            match self.external_player_tx(&mut tx, provider, subject, display_name, secret_hash).await {
+                Ok(found) => found,
                 Err(err) => {
                     tx.rollback().await.ok();
                     return Err(err);
                 }
             };
-            tx.commit().await.map_err(internal)?;
-            return Ok((session, false));
-        }
-
-        let p = match self
-            .store
-            .insert_player_with_identity_tx(&mut tx, provider, subject, display_name, secret_hash)
-            .await
-        {
-            Ok(p) => p,
-            Err(StoreError::Taken) => {
-                tx.rollback().await.ok();
-                return Err(Error::internal("identity was taken while its writer lock was held"));
-            }
-            Err(StoreError::HandleExhausted) => {
-                tx.rollback().await.ok();
-                return Err(Error::conflict("display name has no free handle"));
-            }
-            Err(StoreError::Db(e)) => {
-                tx.rollback().await.ok();
-                return Err(internal(e));
-            }
-        };
-        if let Err(err) = self.emit_registered_tx(&mut tx, &p, provider).await {
-            tx.rollback().await.ok();
-            return Err(err);
-        }
         let session = match self
             .issue_session_tx(&mut tx, &p, provider, subject, store::new_token())
             .await
@@ -528,7 +496,69 @@ impl Service {
             }
         };
         tx.commit().await.map_err(internal)?;
-        Ok((session, true))
+        Ok((session, created))
+    }
+
+    /// `external_login` for a browser sign-in: the same find-or-create, but no player
+    /// session or refresh token. Answers the player and whether it was created.
+    pub(crate) async fn external_browser_login(
+        &self,
+        provider: &str,
+        subject: &str,
+        display_name: &str,
+    ) -> Result<(Player, bool), Error> {
+        let mut tx = self.store.pool.begin().await.map_err(internal)?;
+        let found = match self.external_player_tx(&mut tx, provider, subject, display_name, None).await {
+            Ok(found) => found,
+            Err(err) => {
+                tx.rollback().await.ok();
+                return Err(err);
+            }
+        };
+        tx.commit().await.map_err(internal)?;
+        Ok(found)
+    }
+
+    /// Locks the external identity, re-reads under that lock and creates at most one
+    /// player (with its durable `player.registered`) inside `tx`. The caller rolls back
+    /// on `Err`.
+    async fn external_player_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        provider: &str,
+        subject: &str,
+        display_name: &str,
+        secret_hash: Option<&str>,
+    ) -> Result<(Player, bool), Error> {
+        // First statement after BEGIN: every external identity writer shares it.
+        self.store
+            .lock_identity_tx(tx, provider, subject)
+            .await
+            .map_err(internal)?;
+        if let Some(p) = self
+            .store
+            .player_by_identity_tx(tx, provider, subject)
+            .await
+            .map_err(internal)?
+        {
+            return Ok((p, false));
+        }
+        let p = match self
+            .store
+            .insert_player_with_identity_tx(tx, provider, subject, display_name, secret_hash)
+            .await
+        {
+            Ok(p) => p,
+            Err(StoreError::Taken) => {
+                return Err(Error::internal("identity was taken while its writer lock was held"));
+            }
+            Err(StoreError::HandleExhausted) => {
+                return Err(Error::conflict("display name has no free handle"));
+            }
+            Err(StoreError::Db(e)) => return Err(internal(e)),
+        };
+        self.emit_registered_tx(tx, &p, provider).await?;
+        Ok((p, true))
     }
 
     /// Resolves `provider` and verifies `credential` with it — the single guard
@@ -1390,6 +1420,21 @@ impl Module for Accounts {
                  backfill would mint reservations for handles nothing ever claimed."
             );
         }
+        // `CREATE TABLE IF NOT EXISTS` keeps an oauth_states that predates `intent`, and
+        // every Epic start would then fail its INSERT.
+        let intent_column: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = 'accounts' AND table_name = 'oauth_states' \
+               AND column_name = 'intent'",
+        )
+        .fetch_one(pool)
+        .await?;
+        if intent_column == 0 {
+            anyhow::bail!(
+                "accounts: accounts.oauth_states has no intent column. Remedy: DROP TABLE \
+                 accounts.oauth_states; and reboot (it holds only in-flight sign-ins)."
+            );
+        }
         Ok(())
     }
 
@@ -1427,8 +1472,7 @@ impl Module for Accounts {
         self.web_limiter
             .set(web_limiter.clone())
             .map_err(|_| anyhow::anyhow!("accounts.init ran twice"))?;
-        let hosted = web::Web::new(svc.clone(), cookie_secure, trusted, web_limiter)?;
-        ctx.mount(web::router(Arc::new(hosted)));
+        let mut epic_flow = None;
         if let Some(epic) = &config.epic {
             tracing::info!(jwks = %epic.jwks_url, aud = %epic.client_id, "epic provider enabled");
 
@@ -1445,10 +1489,14 @@ impl Module for Accounts {
                     svc.store.pool.clone(),
                     cookie_secure,
                 )?;
-                ctx.mount(epic_oauth::router(Arc::new(flow), svc.clone()));
+                let flow = Arc::new(flow);
+                ctx.mount(epic_oauth::router(flow.clone(), svc.clone()));
+                epic_flow = Some(flow);
                 tracing::info!(redirect = %redirect, "epic OAuth enabled");
             }
         }
+        let hosted = web::Web::new(svc.clone(), cookie_secure, trusted, web_limiter, epic_flow)?;
+        ctx.mount(web::router(Arc::new(hosted)));
         if let Some(google) = &config.google {
             tracing::info!(
                 jwks = %google.jwks_url,

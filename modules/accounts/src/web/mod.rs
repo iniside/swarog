@@ -1,6 +1,7 @@
-//! The hosted browser pages under `/accounts/oidc`: the email-and-password sign-in form,
-//! the signed-in landing page and logout. A successful sign-in mints a browser session
-//! (`session.rs`), never a player bearer.
+//! The hosted browser pages under `/accounts/oidc`: the email-and-password sign-in form
+//! with "Continue with Epic" when Epic web OAuth is configured, the signed-in landing page
+//! and logout. A successful sign-in mints a browser session (`session.rs`), never a
+//! player bearer.
 
 pub(crate) mod session;
 
@@ -17,11 +18,12 @@ use axum_extra::extract::CookieJar;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
+use crate::epic_oauth::{self, EpicOAuth, Intent};
 use crate::{normalize_email, Service};
 
 pub(crate) const PREFIX: &str = "/accounts/oidc";
 pub(crate) const LANDING: &str = "/accounts/oidc/";
-const LOGIN: &str = "/accounts/oidc/login";
+pub(crate) const LOGIN: &str = "/accounts/oidc/login";
 pub(crate) const SESSION_COOKIE: &str = "swarog_session";
 pub(crate) const LOGIN_CSRF_COOKIE: &str = "swarog_login_csrf";
 const LOGIN_CSRF_MAX_AGE_SECS: u32 = 600;
@@ -29,6 +31,7 @@ pub(crate) const MAX_RETURN_TO_BYTES: usize = 2048;
 const GENERIC_LOGIN_ERROR: &str = "Invalid email or password.";
 const EXPIRED_FORM_ERROR: &str = "The sign-in form expired. Please try again.";
 const BUSY_ERROR: &str = "Sign-in is busy. Please try again in a moment.";
+const EPIC_ERROR: &str = "Sign-in with Epic failed. Please try again.";
 
 const TOKENS_CSS: &str = include_str!("../../../../UILayout/design-system/tokens.css");
 const BUNDLE_CSS: &str = include_str!("../../../../UILayout/design-system/components/bundle.css");
@@ -45,13 +48,30 @@ pub(crate) fn cookie_secure_from_env() -> bool {
     )
 }
 
-/// What the hosted pages share: the service, the templates and the per-IP login limiter.
+/// An accounts cookie scoped to the hosted pages.
+pub(crate) fn cookie(secure: bool, name: &str, value: &str, same_site: &str, max_age: u64) -> HeaderValue {
+    let secure = if secure { "; Secure" } else { "" };
+    HeaderValue::from_str(&format!(
+        "{name}={value}; HttpOnly; SameSite={same_site}; Path={PREFIX}; Max-Age={max_age}{secure}"
+    ))
+    .expect("cookie value is ASCII")
+}
+
+/// The `swarog_session` cookie carrying a browser session token.
+pub(crate) fn session_cookie(secure: bool, token: &str) -> HeaderValue {
+    let max_age = u64::from(session::BROWSER_SESSION_TTL_HOURS.unsigned_abs()) * 3600;
+    cookie(secure, SESSION_COOKIE, token, "Lax", max_age)
+}
+
+/// What the hosted pages share: the service, the templates, the per-IP login limiter and
+/// the Epic web OAuth flow when it is configured.
 pub(crate) struct Web {
     svc: Arc<Service>,
     env: minijinja::Environment<'static>,
     cookie_secure: bool,
     trusted: Vec<ipnet::IpNet>,
     limiter: Arc<httpmw::IpLimiter>,
+    epic: Option<Arc<EpicOAuth>>,
 }
 
 impl Web {
@@ -60,6 +80,7 @@ impl Web {
         cookie_secure: bool,
         trusted: Vec<ipnet::IpNet>,
         limiter: Arc<httpmw::IpLimiter>,
+        epic: Option<Arc<EpicOAuth>>,
     ) -> anyhow::Result<Web> {
         let mut env = minijinja::Environment::new();
         for (name, source) in [
@@ -69,7 +90,7 @@ impl Web {
         ] {
             env.add_template(name, source)?;
         }
-        Ok(Web { svc, env, cookie_secure, trusted, limiter })
+        Ok(Web { svc, env, cookie_secure, trusted, limiter, epic })
     }
 
     fn client_ip(&self, peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
@@ -96,18 +117,14 @@ impl Web {
     fn render_login(&self, jar: &CookieJar, status: StatusCode, error: &str, return_to: &str) -> Response {
         let existing = jar.get(LOGIN_CSRF_COOKIE).map(|c| c.value()).filter(|v| well_formed_token(v));
         let csrf = existing.map_or_else(crate::store::new_token, str::to_string);
-        let view = LoginView { error, csrf: &csrf, return_to };
+        let view = LoginView { error, csrf: &csrf, return_to, epic: self.epic.is_some() };
         let mut resp = self.render("login.html", status, view);
         resp.headers_mut().append(header::SET_COOKIE, self.login_csrf_cookie(&csrf));
         resp
     }
 
     fn cookie(&self, name: &str, value: &str, same_site: &str, max_age: u64) -> HeaderValue {
-        let secure = if self.cookie_secure { "; Secure" } else { "" };
-        HeaderValue::from_str(&format!(
-            "{name}={value}; HttpOnly; SameSite={same_site}; Path={PREFIX}; Max-Age={max_age}{secure}"
-        ))
-        .expect("cookie value is ASCII")
+        cookie(self.cookie_secure, name, value, same_site, max_age)
     }
 
     fn login_csrf_cookie(&self, token: &str) -> HeaderValue {
@@ -115,8 +132,7 @@ impl Web {
     }
 
     fn session_cookie(&self, token: &str) -> HeaderValue {
-        let max_age = u64::from(session::BROWSER_SESSION_TTL_HOURS.unsigned_abs()) * 3600;
-        self.cookie(SESSION_COOKIE, token, "Lax", max_age)
+        session_cookie(self.cookie_secure, token)
     }
 
     /// The signed-in browser behind the request's session cookie, if any.
@@ -133,6 +149,7 @@ struct LoginView<'a> {
     error: &'a str,
     csrf: &'a str,
     return_to: &'a str,
+    epic: bool,
 }
 
 #[derive(Serialize)]
@@ -143,8 +160,9 @@ struct LandingView<'a> {
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
-struct ReturnToQuery {
+struct LoginQuery {
     return_to: Option<String>,
+    epic: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -152,6 +170,13 @@ struct ReturnToQuery {
 struct LoginForm {
     email: String,
     password: String,
+    csrf: String,
+    return_to: String,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct EpicForm {
     csrf: String,
     return_to: String,
 }
@@ -169,6 +194,7 @@ pub(crate) fn router(web: Arc<Web>) -> Router {
         .route(PREFIX, get(|| async { see_other(LANDING) }))
         .route(LANDING, get(landing))
         .route(LOGIN, get(login_page).post(login_submit))
+        .route("/accounts/oidc/epic", post(epic_start))
         .route("/accounts/oidc/logout", post(logout))
         .route("/accounts/oidc/assets/tokens.css", get(|| css(TOKENS_CSS)))
         .route("/accounts/oidc/assets/bundle.css", get(|| css(BUNDLE_CSS)))
@@ -202,7 +228,7 @@ fn session_lookup_failed(e: sqlx::Error) -> Response {
     (StatusCode::INTERNAL_SERVER_ERROR, "session lookup failed").into_response()
 }
 
-fn see_other(location: &str) -> Response {
+pub(crate) fn see_other(location: &str) -> Response {
     let location = HeaderValue::from_str(location).unwrap_or_else(|_| HeaderValue::from_static(LANDING));
     (StatusCode::SEE_OTHER, [(header::LOCATION, location)]).into_response()
 }
@@ -276,12 +302,13 @@ async fn landing(State(web): State<Arc<Web>>, jar: CookieJar) -> Response {
 async fn login_page(
     State(web): State<Arc<Web>>,
     jar: CookieJar,
-    Query(q): Query<ReturnToQuery>,
+    Query(q): Query<LoginQuery>,
 ) -> Response {
     let return_to = safe_return_to(q.return_to.as_deref());
+    let error = if q.epic.as_deref() == Some("error") { EPIC_ERROR } else { "" };
     match web.signed_in(&jar).await {
         Ok(Some(_)) => see_other(return_to),
-        Ok(None) => web.render_login(&jar, StatusCode::OK, "", return_to),
+        Ok(None) => web.render_login(&jar, StatusCode::OK, error, return_to),
         Err(e) => session_lookup_failed(e),
     }
 }
@@ -340,6 +367,48 @@ async fn login_submit(
     let h = resp.headers_mut();
     h.append(header::SET_COOKIE, web.session_cookie(&minted.token));
     h.append(header::SET_COOKIE, web.cookie(LOGIN_CSRF_COOKIE, "", "Strict", 0));
+    resp
+}
+
+/// `POST /accounts/oidc/epic` — login-CSRF double submit, then a `browser` state row and a
+/// 303 to the Epic authorize URL. 404 when Epic web OAuth is not configured.
+async fn epic_start(State(web): State<Arc<Web>>, jar: CookieJar, Form(form): Form<EpicForm>) -> Response {
+    let Some(epic) = web.epic.clone() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let return_to = safe_return_to(Some(&form.return_to));
+    let cookie_csrf = jar.get(LOGIN_CSRF_COOKIE).map(|c| c.value()).unwrap_or("");
+    if cookie_csrf.is_empty() || !ct_eq(cookie_csrf.as_bytes(), form.csrf.as_bytes()) {
+        return web.render_login(&jar, StatusCode::FORBIDDEN, EXPIRED_FORM_ERROR, return_to);
+    }
+    // The callback path never receives this cookie, so the state carries the session it replaces.
+    let replaces = jar
+        .get(SESSION_COOKIE)
+        .map(|c| c.value())
+        .filter(|token| crate::session_token_within_cap(token))
+        .map(session::digest);
+    let binding = crate::store::new_token();
+    let intent = Intent::Browser { return_to: return_to.to_string(), replaces };
+    let state = match epic.new_state(intent, binding.clone()).await {
+        Ok(state) => state,
+        Err(e) => {
+            tracing::error!(err = %e, "epic browser start: state persistence failed");
+            return web.render_login(&jar, StatusCode::SERVICE_UNAVAILABLE, BUSY_ERROR, return_to);
+        }
+    };
+    let location = match epic.authorize_url_for(&state).map(|url| HeaderValue::from_str(&url)) {
+        Ok(Ok(location)) => location,
+        Ok(Err(e)) => {
+            tracing::error!(err = %e, "epic browser start: authorize url is not a header value");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+        Err(e) => {
+            tracing::error!(err = %e, "epic browser start: authorize url build failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
+    let mut resp = (StatusCode::SEE_OTHER, [(header::LOCATION, location)]).into_response();
+    resp.headers_mut().append(header::SET_COOKIE, epic_oauth::binding_set_cookie(&binding, web.cookie_secure));
     resp
 }
 

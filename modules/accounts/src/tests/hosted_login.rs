@@ -8,7 +8,7 @@ const SECURE: bool = true;
 
 async fn serve_web(svc: Arc<Service>, trusted: &str, limiter: Arc<httpmw::IpLimiter>) -> String {
     let trusted = httpmw::parse_cidrs(trusted).unwrap();
-    let hosted = web::Web::new(svc, SECURE, trusted, limiter).unwrap();
+    let hosted = web::Web::new(svc, SECURE, trusted, limiter, None).unwrap();
     let app = web::router(Arc::new(hosted));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -20,11 +20,11 @@ async fn serve_web(svc: Arc<Service>, trusted: &str, limiter: Arc<httpmw::IpLimi
     format!("http://{addr}")
 }
 
-async fn serve_default(svc: Arc<Service>) -> String {
+pub(super) async fn serve_default(svc: Arc<Service>) -> String {
     serve_web(svc, "", httpmw::IpLimiter::new("accounts_login_test", 5.0, 20)).await
 }
 
-fn client() -> reqwest::Client {
+pub(super) fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -32,7 +32,7 @@ fn client() -> reqwest::Client {
 }
 
 /// The `Set-Cookie` header that sets `name`.
-fn set_cookie(resp: &reqwest::Response, name: &str) -> String {
+pub(super) fn set_cookie(resp: &reqwest::Response, name: &str) -> String {
     resp.headers()
         .get_all("set-cookie")
         .iter()
@@ -41,16 +41,16 @@ fn set_cookie(resp: &reqwest::Response, name: &str) -> String {
         .unwrap_or_else(|| panic!("no {name} cookie set"))
 }
 
-fn cookie_value(set_cookie: &str) -> String {
+pub(super) fn cookie_value(set_cookie: &str) -> String {
     let pair = set_cookie.split(';').next().unwrap();
     pair.split_once('=').unwrap().1.to_string()
 }
 
-fn has_attr(set_cookie: &str, attr: &str) -> bool {
+pub(super) fn has_attr(set_cookie: &str, attr: &str) -> bool {
     set_cookie.split("; ").any(|part| part == attr)
 }
 
-fn location(resp: &reqwest::Response) -> String {
+pub(super) fn location(resp: &reqwest::Response) -> String {
     resp.headers().get("location").unwrap().to_str().unwrap().to_string()
 }
 

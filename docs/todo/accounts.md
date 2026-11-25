@@ -1,6 +1,6 @@
 # Accounts
 
-Last updated: 2026-10-23
+Last updated: 2026-11-25
 
 ## In progress
 
@@ -11,7 +11,7 @@ _None._
 - [ ] **Single failure-rendering policy for the Epic OAuth callback**
   ACCOUNTS-01. `handle_callback` renders a Postgres outage as a 503 body on the
   state lookup but as a `/?epic=error` redirect on the link-flow
-  `player_by_session`. Source: modules/accounts/src/epic_oauth.rs:323 (2026-07-28).
+  `player_by_session`. Source: modules/accounts/src/epic_oauth.rs:356 (2026-07-28).
 - [ ] **Facebook and console login providers**
   ACCOUNTS-03. Not present in modules/accounts/src (Grep, lower bound). Each is a
   new credential verifier, not a new op. Source: docs/roadmap/feature-tracker.md:140 @ fd797b3a

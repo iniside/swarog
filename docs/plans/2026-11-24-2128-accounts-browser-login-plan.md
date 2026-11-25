@@ -209,6 +209,12 @@ install.
   - Tests: browser intent sets `swarog_session` and issues no player session or
     refresh token; login and link intents unchanged.
 - (d) `[opus]` core-implementer.
+- Errata (2026-11-25, implementation): `oauth_states` also has `replaces_session`, the
+  digest of the browser session the form POST carried. The callback at
+  `/accounts/epic/callback` never receives the `/accounts/oidc`-scoped `swarog_session`
+  cookie, so the session a sign-in replaces is recorded at start and ended at the
+  callback. Migrate fails startup on an `oauth_states` without `intent` (remedy in the
+  message: DROP TABLE and reboot).
 
 **Step 6: Operator-created accounts and password reset.**
 - (a) `modules/accounts/src/admin.rs` (`PageHead` "Create account" on `players`; entity

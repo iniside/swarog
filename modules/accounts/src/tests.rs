@@ -5,6 +5,7 @@ use base64::Engine as _;
 mod browser_session;
 mod delete;
 mod directory;
+mod epic_browser;
 mod guest;
 mod hosted_login;
 mod last_used;
@@ -1373,7 +1374,7 @@ async fn epic_oauth_link_flow_end_to_end() {
         .unwrap();
     let binding = store::new_token();
     // LINK flow bound to that session.
-    let state = oauth.new_state(sess.token.clone(), binding.clone()).await.unwrap();
+    let state = oauth.new_state(epic_oauth::Intent::Link { session_token: sess.token.clone() }, binding.clone()).await.unwrap();
 
     // Drive the callback route through the mounted router — the real HTTP surface.
     let app = epic_oauth::router(oauth, svc.clone());
@@ -1501,7 +1502,7 @@ async fn epic_link_cross_player_collision_is_error() {
     let (client, base, oauth) = epic_link_harness(svc.clone(), &epic_acct).await;
     let binding = store::new_token();
     // LINK bound to B's session.
-    let state = oauth.new_state(b.token.clone(), binding.clone()).await.unwrap();
+    let state = oauth.new_state(epic_oauth::Intent::Link { session_token: b.token.clone() }, binding.clone()).await.unwrap();
 
     let resp = client
         .get(format!("{base}?code=abc&state={state}"))
@@ -1544,7 +1545,7 @@ async fn epic_link_same_player_is_idempotent() {
     let (client, base, oauth) = epic_link_harness(svc.clone(), &epic_acct).await;
     let binding = store::new_token();
     // LINK bound to A's own session.
-    let state = oauth.new_state(a.token.clone(), binding.clone()).await.unwrap();
+    let state = oauth.new_state(epic_oauth::Intent::Link { session_token: a.token.clone() }, binding.clone()).await.unwrap();
 
     let resp = client
         .get(format!("{base}?code=abc&state={state}"))
@@ -1596,14 +1597,14 @@ async fn oauth_state_binding_is_non_consuming_and_single_use() {
     );
 
     let binding = store::new_token();
-    let s = oauth.new_state("tok".into(), binding.clone()).await.unwrap();
+    let s = oauth.new_state(epic_oauth::Intent::Link { session_token: "tok".into() }, binding.clone()).await.unwrap();
     // A missing binding never consumes; a wrong binding never consumes.
     assert_eq!(oauth.take_state(&s, None).await.unwrap(), None);
     assert_eq!(oauth.take_state(&s, Some("wrong")).await.unwrap(), None);
     // The legitimate browser still redeems (the two misses above did not burn it).
     assert_eq!(
         oauth.take_state(&s, Some(&binding)).await.unwrap(),
-        Some("tok".into())
+        Some(epic_oauth::Intent::Link { session_token: "tok".into() })
     );
     assert_eq!(
         oauth.take_state(&s, Some(&binding)).await.unwrap(),
@@ -1636,14 +1637,14 @@ async fn epic_callback_unknown_state_is_still_400() {
         "http://localhost/token",
     );
     let binding = store::new_token();
-    let state = oauth.new_state("tok".into(), binding.clone()).await.unwrap();
+    let state = oauth.new_state(epic_oauth::Intent::Link { session_token: "tok".into() }, binding.clone()).await.unwrap();
     // Redeem it directly, once, BEFORE the callback ever sees it — the row is gone
     // by the time the HTTP request below runs the SAME `DELETE ... RETURNING`, so
     // that second run genuinely misses (single-use), rather than short-circuiting on
     // the missing-binding-cookie early return.
     assert_eq!(
         oauth.take_state(&state, Some(&binding)).await.unwrap(),
-        Some("tok".into()),
+        Some(epic_oauth::Intent::Link { session_token: "tok".into() }),
         "setup: the state must redeem once before the callback re-uses it"
     );
 
@@ -1750,13 +1751,13 @@ async fn oauth_state_redeems_exactly_once_across_replicas() {
 
     let binding = store::new_token();
     // Replica A mints the state.
-    let state = oauth_a.new_state("sess-xyz".into(), binding.clone()).await.unwrap();
+    let state = oauth_a.new_state(epic_oauth::Intent::Link { session_token: "sess-xyz".into() }, binding.clone()).await.unwrap();
 
     // Replica B (a DIFFERENT process/pool) redeems it — impossible under the old
     // in-memory map, which lived only in replica A.
     assert_eq!(
         oauth_b.take_state(&state, Some(&binding)).await.unwrap(),
-        Some("sess-xyz".into()),
+        Some(epic_oauth::Intent::Link { session_token: "sess-xyz".into() }),
         "the OTHER replica must redeem the shared-store state"
     );
     // A second redemption on EITHER replica now yields nothing (single-redemption).
@@ -1786,7 +1787,7 @@ async fn oauth_state_expired_row_is_not_redeemable() {
     );
 
     let binding = store::new_token();
-    let state = oauth.new_state("old".into(), binding.clone()).await.unwrap();
+    let state = oauth.new_state(epic_oauth::Intent::Login, binding.clone()).await.unwrap();
     expire_state(&pool, &state).await;
     assert_eq!(
         oauth.take_state(&state, Some(&binding)).await.unwrap(),
@@ -1950,11 +1951,11 @@ async fn oauth_start_reuses_hardened_binding_cookie_for_parallel_states() {
     assert_ne!(state_one, state_two);
     assert_eq!(
         oauth.take_state(&state_one, Some(&binding)).await.unwrap(),
-        Some(String::new())
+        Some(epic_oauth::Intent::Login)
     );
     assert_eq!(
         oauth.take_state(&state_two, Some(&binding)).await.unwrap(),
-        Some(String::new())
+        Some(epic_oauth::Intent::Login)
     );
 
     let secure_oauth = oauth_fixture_with(
@@ -2063,7 +2064,7 @@ async fn epic_start_valid_session_mints_link_state() {
     let state = oauth_state_from_start(&resp.json().await.unwrap());
     assert_eq!(
         oauth.take_state(&state, Some(&binding)).await.unwrap(),
-        Some(sess.token.clone()),
+        Some(epic_oauth::Intent::Link { session_token: sess.token.clone() }),
         "a valid bearer must mint a LINK state carrying the caller's session token"
     );
 
@@ -2097,8 +2098,8 @@ async fn epic_start_no_bearer_mints_login_state() {
     let state = oauth_state_from_start(&resp.json().await.unwrap());
     assert_eq!(
         oauth.take_state(&state, Some(&binding)).await.unwrap(),
-        Some(String::new()),
-        "no bearer must mint a LOGIN state with an empty session token"
+        Some(epic_oauth::Intent::Login),
+        "no bearer must mint a LOGIN state"
     );
 }
 
@@ -2126,7 +2127,7 @@ async fn rejected_oauth_callback_never_reaches_token_endpoint_or_consumes_state(
 
     let oauth = oauth_fixture(pool.clone(), "http://localhost/accounts/epic/callback", &token_url);
     let binding = store::new_token();
-    let state = oauth.new_state(String::new(), binding.clone()).await.unwrap();
+    let state = oauth.new_state(epic_oauth::Intent::Login, binding.clone()).await.unwrap();
     let base = serve_oauth_router(oauth, lazy_service()).await;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
