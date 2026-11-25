@@ -69,17 +69,17 @@ pub const MAX_PROVIDER_NAME_BYTES: usize = 64;
 /// token's, for the same reason — bounding attacker-controlled input before the lookup.
 pub const MAX_DELETE_TICKET_BYTES: usize = 128;
 
-/// The SHARED cap checks — the register/login handlers and factual conformance probes
-/// call these same pure fns, so the probe
-/// proves what the handlers actually enforce, never a const compared to itself.
-/// Byte counts (`str::len()`), not characters. Emptiness is checked separately by
-/// each handler (a different rejection, not a cap).
 /// The one spelling of a password identity's email: trimmed and ASCII-lowercased, so
 /// `A@x.io` and `a@x.io` are one account. Every password path calls it before the cap.
 pub(crate) fn normalize_email(email: &str) -> String {
     email.trim().to_ascii_lowercase()
 }
 
+/// The SHARED cap checks — the register/login handlers and factual conformance probes
+/// call these same pure fns, so the probe
+/// proves what the handlers actually enforce, never a const compared to itself.
+/// Byte counts (`str::len()`), not characters. Emptiness is checked separately by
+/// each handler (a different rejection, not a cap).
 pub(crate) fn email_within_cap(email: &str) -> bool {
     email.len() <= MAX_EMAIL_BYTES
 }

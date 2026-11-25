@@ -1130,7 +1130,7 @@ async fn wired_for_dual_delivery(
 /// Appends a durable `player.registered` in its own committed transaction — the shape
 /// accounts uses inside its registration store tx.
 async fn emit_registered(ctx: &Context, pool: &PgPool, player_id: &str) {
-    emit_registered_as(ctx, pool, player_id, "dev").await;
+    emit_registered_as(ctx, pool, player_id, accountsevents::providers::PASSWORD).await;
 }
 
 /// [`emit_registered`] with an explicit `provider`, for the Step 11 guest-skip /

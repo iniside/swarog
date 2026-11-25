@@ -74,7 +74,7 @@ fn inner_with(pool: PgPool, cfg: Arc<dyn Config>) -> Arc<Inner> {
 }
 
 /// An `Inner` with the dev-grant gate forced on/off over a LAZY pool (mirrors
-/// accounts' `tests/dev_auth_gate.rs::gated_service`). The gate rejects `grant`
+/// accounts' `src/tests/registration_gate.rs::gated_service`). The gate rejects `grant`
 /// BEFORE any DB access, so the reject-path tests need no live DB.
 fn gated_inner(dev_grant: bool) -> Arc<Inner> {
     Arc::new(Inner {

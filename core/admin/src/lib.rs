@@ -1062,7 +1062,7 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 /// `true` only when `ADMIN_OPEN` is EXPLICITLY set truthy (`1`/`true`/`on`,
 /// case-insensitive). Unset is `false` — an unauthenticated admin portal is a
 /// trust decision, so this follows the explicit-only convention (apikeys'
-/// `dev_seed_explicitly_on`, gateway's `dev_auth_explicitly_on`), NOT a default-open.
+/// `dev_seed_explicitly_on`, gateway's `dev_verifier_on`, gated by `GATEWAY_DEV_VERIFIER`), NOT a default-open.
 fn admin_open_explicitly_on() -> bool {
     matches!(
         std::env::var("ADMIN_OPEN"),
