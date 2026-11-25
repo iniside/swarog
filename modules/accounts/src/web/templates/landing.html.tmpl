@@ -1,0 +1,16 @@
+{%- extends "base.html" -%}
+{%- block title %}Signed in{% endblock -%}
+{%- block content %}
+<section class="panel">
+<div class="panel-head"><span class="panel-title">Signed in</span></div>
+<div class="panel-body">
+<div class="stack">
+<div><span class="dim">Signed in as</span> <strong>{{ handle }}</strong></div>
+<form method="post" action="/accounts/oidc/logout">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button type="submit" class="btn" style="justify-content:center">Sign out</button>
+</form>
+</div>
+</div>
+</section>
+{%- endblock %}

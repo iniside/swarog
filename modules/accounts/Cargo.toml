@@ -39,6 +39,11 @@ serde_json = { workspace = true }
 # The Epic OAuth browser flow mounts two HTTP-native routes on the shared router.
 axum = { workspace = true }
 axum-extra = { workspace = true }
+# The hosted sign-in pages under /accounts/oidc: embedded templates, and the per-IP login
+# limiter with trusted-proxy client-IP resolution (TRUSTED_PROXY_CIDRS).
+minijinja = { workspace = true }
+httpmw = { workspace = true }
+ipnet = { workspace = true }
 # JWKS fetch + OAuth code exchange (rustls, json).
 reqwest = { workspace = true }
 # Identity stack: argon2id hashing (Go-compatible PHC strings), OIDC verification,

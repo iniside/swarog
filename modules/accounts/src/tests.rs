@@ -6,6 +6,7 @@ mod browser_session;
 mod delete;
 mod directory;
 mod guest;
+mod hosted_login;
 mod last_used;
 mod password_email;
 mod prune;
@@ -1360,6 +1361,7 @@ async fn epic_oauth_link_flow_end_to_end() {
             oauth_config("http://localhost/accounts/epic/callback", &token_url),
             verifier,
             pool.clone(),
+            false,
         )
         .unwrap(),
     );
@@ -1452,6 +1454,7 @@ async fn epic_link_harness(
             oauth_config("http://localhost/accounts/epic/callback", &token_url),
             verifier,
             svc.store.pool.clone(),
+            false,
         )
         .unwrap(),
     );
@@ -1799,6 +1802,15 @@ async fn oauth_state_expired_row_is_not_redeemable() {
 }
 
 fn oauth_fixture(pool: PgPool, redirect_uri: &str, token_url: &str) -> Arc<epic_oauth::EpicOAuth> {
+    oauth_fixture_with(pool, redirect_uri, token_url, false)
+}
+
+fn oauth_fixture_with(
+    pool: PgPool,
+    redirect_uri: &str,
+    token_url: &str,
+    cookie_secure: bool,
+) -> Arc<epic_oauth::EpicOAuth> {
     let verifier = Arc::new(
         OidcVerifier::new(
             "http://localhost/jwks",
@@ -1813,6 +1825,7 @@ fn oauth_fixture(pool: PgPool, redirect_uri: &str, token_url: &str) -> Arc<epic_
             oauth_config(redirect_uri, token_url),
             verifier,
             pool,
+            cookie_secure,
         )
         .unwrap(),
     )
@@ -1944,10 +1957,11 @@ async fn oauth_start_reuses_hardened_binding_cookie_for_parallel_states() {
         Some(String::new())
     );
 
-    let secure_oauth = oauth_fixture(
+    let secure_oauth = oauth_fixture_with(
         pool.clone(),
-        "https://game.example/accounts/epic/callback",
+        "http://localhost/accounts/epic/callback",
         "http://localhost/token",
+        true,
     );
     let secure_base = serve_oauth_router(secure_oauth, lazy_service()).await;
     let secure = client

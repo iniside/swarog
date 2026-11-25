@@ -37,7 +37,6 @@ mod ops;
 mod password;
 mod providers;
 mod store;
-#[cfg_attr(not(test), expect(dead_code, reason = "the hosted login routes read it"))]
 mod web;
 
 use std::sync::{Arc, OnceLock};
@@ -1242,6 +1241,8 @@ impl TxHandler for PruneHandler {
 /// QUIC, mTLS edge), so the trust model cannot diverge.
 pub struct Accounts {
     svc: OnceLock<Arc<Service>>,
+    web_limiter: OnceLock<Arc<httpmw::IpLimiter>>,
+    web_limiter_reaper: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Default for Accounts {
@@ -1254,6 +1255,8 @@ impl Accounts {
     pub fn new() -> Accounts {
         Accounts {
             svc: OnceLock::new(),
+            web_limiter: OnceLock::new(),
+            web_limiter_reaper: std::sync::Mutex::new(None),
         }
     }
 
@@ -1412,6 +1415,20 @@ impl Module for Accounts {
         // can reject a bad endpoint; before this it silently enabled a provider that
         // answered 503 on every token forever.
         let config = ProviderConfig::from_env()?;
+        let cookie_secure = web::cookie_secure_from_env();
+        if !cookie_secure {
+            tracing::warn!(
+                "accounts cookies are NOT Secure (ACCOUNTS_COOKIE_SECURE=0) — dev/proof opt-out, never production"
+            );
+        }
+        let trusted = httpmw::parse_cidrs(&std::env::var("TRUSTED_PROXY_CIDRS").unwrap_or_default())
+            .map_err(|e| anyhow::anyhow!("accounts: parse TRUSTED_PROXY_CIDRS: {e}"))?;
+        let web_limiter = httpmw::IpLimiter::new("accounts_login", 5.0, 20);
+        self.web_limiter
+            .set(web_limiter.clone())
+            .map_err(|_| anyhow::anyhow!("accounts.init ran twice"))?;
+        let hosted = web::Web::new(svc.clone(), cookie_secure, trusted, web_limiter)?;
+        ctx.mount(web::router(Arc::new(hosted)));
         if let Some(epic) = &config.epic {
             tracing::info!(jwks = %epic.jwks_url, aud = %epic.client_id, "epic provider enabled");
 
@@ -1426,6 +1443,7 @@ impl Module for Accounts {
                     oauth.clone(),
                     epic.verifier.clone(),
                     svc.store.pool.clone(),
+                    cookie_secure,
                 )?;
                 ctx.mount(epic_oauth::router(Arc::new(flow), svc.clone()));
                 tracing::info!(redirect = %redirect, "epic OAuth enabled");
@@ -1509,7 +1527,35 @@ impl Module for Accounts {
             std::sync::LazyLock::force(&DUMMY_HASH);
         })
         .await?;
+        let limiter = self
+            .web_limiter
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("accounts.init must run before start"))?;
+        let mut reaper = self
+            .web_limiter_reaper
+            .lock()
+            .map_err(|_| anyhow::anyhow!("accounts limiter reaper lock poisoned"))?;
+        if reaper.is_none() {
+            *reaper = Some(limiter.spawn_eviction_task());
+        }
         Ok(())
+    }
+
+    async fn stop(&self, _ctx: &Context) -> anyhow::Result<()> {
+        let reaper = self
+            .web_limiter_reaper
+            .lock()
+            .map_err(|_| anyhow::anyhow!("accounts limiter reaper lock poisoned"))?
+            .take();
+        let Some(reaper) = reaper else {
+            return Ok(());
+        };
+        reaper.abort();
+        match reaper.await {
+            Ok(()) => Ok(()),
+            Err(error) if error.is_cancelled() => Ok(()),
+            Err(error) => Err(anyhow::anyhow!("accounts limiter reaper failed: {error}")),
+        }
     }
 }
 

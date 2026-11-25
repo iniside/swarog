@@ -53,15 +53,16 @@ pub(crate) struct EpicOAuth {
 }
 
 impl EpicOAuth {
-    /// Takes an ALREADY-VALIDATED configuration: every URL rule (and the cookie's
-    /// `Secure` flag derived from the redirect scheme) belongs to
+    /// Takes an ALREADY-VALIDATED configuration: every URL rule belongs to
     /// `providers::EpicOAuthConfig::new`, so there is exactly one spelling of it and
-    /// a value cannot be accepted here after being rejected there.
+    /// a value cannot be accepted here after being rejected there. `cookie_secure` is the
+    /// accounts-wide `ACCOUNTS_COOKIE_SECURE` rule.
     pub fn new(
         client_id: String,
         oauth: EpicOAuthConfig,
         verifier: Arc<OidcVerifier>,
         pool: PgPool,
+        cookie_secure: bool,
     ) -> anyhow::Result<EpicOAuth> {
         Ok(EpicOAuth {
             client_id,
@@ -73,7 +74,7 @@ impl EpicOAuth {
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
                 .build()?,
-            cookie_secure: oauth.cookie_secure,
+            cookie_secure,
             pool,
         })
     }

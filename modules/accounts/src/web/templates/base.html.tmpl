@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{% endblock %} · Swarog</title>
+<link rel="stylesheet" href="/accounts/oidc/assets/tokens.css">
+<link rel="stylesheet" href="/accounts/oidc/assets/bundle.css">
+</head>
+<body>
+<div style="min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:14vh 16px 0">
+<div style="width:360px;max-width:100%">
+<div class="row" style="gap:10px;margin-bottom:14px"><div class="brand-mark">S</div><div class="brand-name">Swarog</div></div>
+{% block content %}{% endblock %}
+</div>
+</div>
+</body>
+</html>

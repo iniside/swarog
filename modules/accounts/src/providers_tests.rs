@@ -69,7 +69,7 @@ fn defaulted_oauth_urls_are_the_documented_epic_endpoints() {
 }
 
 #[test]
-fn loopback_redirect_uri_accepted_with_insecure_cookie() {
+fn loopback_redirect_uri_accepted() {
     let cfg = ProviderConfig::from_vars(&vars(&[
         ("EPIC_CLIENT_ID", "client-1"),
         ("EPIC_CLIENT_SECRET", "shh"),
@@ -77,11 +77,11 @@ fn loopback_redirect_uri_accepted_with_insecure_cookie() {
     ]))
     .unwrap();
     let oauth = cfg.epic.unwrap().oauth.expect("client secret set => oauth present");
-    assert!(!oauth.cookie_secure, "loopback http must not set Secure");
+    assert_eq!(oauth.redirect_uri, "http://localhost:8080/accounts/epic/callback");
 }
 
 #[test]
-fn https_redirect_uri_accepted_with_secure_cookie() {
+fn https_redirect_uri_accepted() {
     let cfg = ProviderConfig::from_vars(&vars(&[
         ("EPIC_CLIENT_ID", "client-1"),
         ("EPIC_CLIENT_SECRET", "shh"),
@@ -89,7 +89,7 @@ fn https_redirect_uri_accepted_with_secure_cookie() {
     ]))
     .unwrap();
     let oauth = cfg.epic.unwrap().oauth.expect("client secret set => oauth present");
-    assert!(oauth.cookie_secure, "https must set Secure");
+    assert_eq!(oauth.redirect_uri, "https://game.example/accounts/epic/callback");
 }
 
 #[test]

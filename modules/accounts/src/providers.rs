@@ -150,9 +150,6 @@ pub(crate) struct EpicOAuthConfig {
     pub(crate) redirect_uri: String,
     pub(crate) authorize_url: String,
     pub(crate) token_url: String,
-    /// Derived from the redirect URI's scheme at parse time: HTTPS sets `Secure` on
-    /// the binding cookie, the loopback-HTTP dev carve-out does not.
-    pub(crate) cookie_secure: bool,
 }
 
 impl EpicOAuthConfig {
@@ -166,7 +163,7 @@ impl EpicOAuthConfig {
         authorize_url: String,
         token_url: String,
     ) -> anyhow::Result<EpicOAuthConfig> {
-        let cookie_secure = check_redirect_uri("EPIC_REDIRECT_URI", &redirect_uri)?;
+        check_redirect_uri("EPIC_REDIRECT_URI", &redirect_uri)?;
         check_endpoint("EPIC_AUTHORIZE_URL", &authorize_url)?;
         check_endpoint("EPIC_TOKEN_URL", &token_url)?;
         Ok(EpicOAuthConfig {
@@ -174,7 +171,6 @@ impl EpicOAuthConfig {
             redirect_uri,
             authorize_url,
             token_url,
-            cookie_secure,
         })
     }
 }
@@ -448,40 +444,38 @@ pub(crate) fn check_absolute_url(key: &str, raw: &str) -> anyhow::Result<url::Ur
 
 /// The transport rule for a URL a browser or this process will actually go to: the
 /// absolute-URL floor plus HTTPS, with plain HTTP allowed only against loopback (the
-/// local-dev carve-out). Returns whether the scheme is HTTPS, which is what the OAuth
-/// binding cookie's `Secure` flag keys off.
-pub(crate) fn check_endpoint(key: &str, raw: &str) -> anyhow::Result<bool> {
-    Ok(checked_endpoint(key, raw)?.1)
+/// local-dev carve-out).
+pub(crate) fn check_endpoint(key: &str, raw: &str) -> anyhow::Result<()> {
+    checked_endpoint(key, raw).map(|_| ())
 }
 
-fn checked_endpoint(key: &str, raw: &str) -> anyhow::Result<(url::Url, bool)> {
+fn checked_endpoint(key: &str, raw: &str) -> anyhow::Result<url::Url> {
     let url = check_absolute_url(key, raw)?;
-    let secure = match url.scheme() {
-        "https" => true,
-        "http" if is_loopback(&url) => false,
+    match url.scheme() {
+        "https" => {}
+        "http" if is_loopback(&url) => {}
         "http" => {
             anyhow::bail!("invalid {key}: HTTP is allowed only for localhost or a loopback IP")
         }
         other => {
             anyhow::bail!("invalid {key}: scheme must be HTTPS or loopback HTTP, got {other:?}")
         }
-    };
-    Ok((url, secure))
+    }
+    Ok(url)
 }
 
 /// The OAuth redirect URI: the endpoint rule plus the two constraints specific to a
 /// callback the IdP redirects a browser to — it must be exactly the route this module
-/// mounts, and a fragment would be dropped by the redirect anyway. Returns the
-/// binding cookie's `Secure` flag.
-fn check_redirect_uri(key: &str, raw: &str) -> anyhow::Result<bool> {
-    let (url, secure) = checked_endpoint(key, raw)?;
+/// mounts, and a fragment would be dropped by the redirect anyway.
+fn check_redirect_uri(key: &str, raw: &str) -> anyhow::Result<()> {
+    let url = checked_endpoint(key, raw)?;
     if url.path() != "/accounts/epic/callback" {
         anyhow::bail!("invalid {key}: path must be /accounts/epic/callback");
     }
     if url.fragment().is_some() {
         anyhow::bail!("invalid {key}: fragments are not allowed");
     }
-    Ok(secure)
+    Ok(())
 }
 
 /// Whether `url`'s host is loopback — the one authority for the plain-HTTP carve-out.
