@@ -470,7 +470,7 @@ fn toast(html: &str) -> String {
 const SECRET_MARK: &str = "data-copy-source=\"secret\"";
 
 /// The show-once secret in the reveal modal (`<span data-copy-source="secret">`), none when not drawn.
-fn secret_of(html: &str) -> Option<String> {
+pub(super) fn secret_of(html: &str) -> Option<String> {
     let open = format!("<span {SECRET_MARK}>");
     let open = open.as_str();
     let start = html.find(open)? + open.len();

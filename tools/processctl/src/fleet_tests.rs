@@ -74,6 +74,22 @@ fn inherited_application_overrides_are_explicit_and_cannot_rewire_topology() {
     assert_eq!(monolith.env.get("EDGE_CA_KEY").map(String::as_str), Some("run/edge-ca.key"));
 }
 
+/// The Proof fleet's accounts-svc trusts the gateway-svc host, so the split proof's two
+/// `X-Forwarded-For` clients (splitproof [BR1]/[BR2]) are two sign-in buckets; without it every
+/// request gateway-svc proxies to accounts-svc is one client. Built on an empty snapshot so no
+/// ambient override stands in for the fleet's own value.
+#[test]
+fn proof_fleet_accounts_trusts_the_gateway_host() {
+    let environment = EnvironmentSnapshot::from_values([]);
+    let fleet = game_backend_fleet_with_environment(&inputs(), FleetFlavor::Proof, &environment);
+    let accounts = fleet.service("accounts-svc").unwrap();
+    assert_eq!(accounts.env.get("TRUSTED_PROXY_CIDRS").map(String::as_str), Some("127.0.0.1/32"));
+    // The hosted pages' cookies ride plain http in the proof.
+    assert_eq!(accounts.env.get("ACCOUNTS_COOKIE_SECURE").map(String::as_str), Some("0"));
+    // [BR2] bursts the JSON Epic start, which accounts mounts only with the confidential client.
+    assert!(accounts.env.contains_key("EPIC_CLIENT_SECRET"));
+}
+
 #[cfg(windows)]
 #[test]
 fn inherited_windows_baseline_lookup_is_case_insensitive() {

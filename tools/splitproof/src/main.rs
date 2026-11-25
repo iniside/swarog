@@ -32,6 +32,7 @@ use crate::idp::Idp;
 use crate::pushws::{Frame, PushClient};
 
 mod accounts_admin_checks;
+mod accounts_browser_checks;
 mod apikeys_admin_checks;
 mod audit_admin_checks;
 mod characters_admin_checks;
@@ -5841,6 +5842,9 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     wallet_ledger_checks::assertions(ctx, pool, p, &g, &cfg, "").await?;
     // Boxed: `run`'s future sits on the main thread's stack under `block_on`.
     Box::pin(accounts_admin_checks::assertions(ctx, pool, p, &g, &cfg, "")).await?;
+    // The hosted sign-in through gateway-svc -> accounts-svc and the per-IP sign-in bucket; its
+    // bursts run last in the pass (see the module doc).
+    Box::pin(accounts_browser_checks::assertions(ctx, pool, p, &g, &cfg, "")).await?;
 
     // --- Parties over the multiplexed socket: every invoke is Remote-dispatched from
     // gateway-svc to party-svc, whose post-commit pushes cross the backplane back to the
