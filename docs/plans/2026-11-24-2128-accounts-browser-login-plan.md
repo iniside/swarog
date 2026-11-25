@@ -218,9 +218,8 @@ install.
 
 **Step 6: Operator-created accounts and password reset.**
 - (a) `modules/accounts/src/admin.rs` (`PageHead` "Create account" on `players`; entity
-  action "Reset password"), `store.rs`, `admin_tests.rs`, `conformance.rs`,
-  `tools/admindiff/accept/`: `players.txt` (reason text naming "(dev)" at `:27`), the
-  user menus `players.menu.user.txt`, `player.menu.user.txt`, `player.*.menu.user.txt`.
+  action "Reset password"), `store.rs`, `admin_tests.rs`, `conformance.rs`. No
+  `tools/admindiff/` edits (owner decision 9).
 - (b) Roadmap owner question 2: operator-created accounts come first. Without a reset,
   a forgotten password has no recovery until 1b.
 - (c)
@@ -295,3 +294,6 @@ proof run once, after Step 6, as part of Step 7 (owner, 2026-11-25).
    synced". After this plan, the hosted login page (Steps 4b and 5) gets a mockup under
    `UILayout/` that roughly matches the shipped page. Step 8 records it in
    `docs/todo/accounts.md`.
+9. **admindiff:** "admindiff claude to ty zostaw w spokoju, nie dziala i nie spodziewam
+   sie ze bedzie dzialac w najblizszej przyszlosci". No step edits `tools/admindiff/`;
+   a red admindiff stage in Step 7's verify is not this plan's work.
