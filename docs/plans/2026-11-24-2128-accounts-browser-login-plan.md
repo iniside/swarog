@@ -1,6 +1,6 @@
 # Accounts: browser login for studio users (lore roadmap step 1)
 
-Status: waiting for approval
+Status: approved 2026-11-25
 
 ## Context
 
@@ -253,7 +253,7 @@ install.
   `docs/reference/hetzner-deploy-checklist.md:39`, `docs/reference/weles-fleet-parity.md:129`,
   `docs/roadmap/feature-tracker.md:144`, `.agents/skills/architecture-review/SKILL.md:86`,
   `.agents/skills/split-topology-debugger/SKILL.md:32,84`, `docs/todo/accounts.md`
-  (1b; Google on the page if owner question 4 defers it).
+  (1b; the Google redirect flow on the hosted page as the next phase, owner decision 4).
 - (b) Closes the step; archives (`docs/{plans,reviews,research,design,status}`) are not
   rewritten.
 - (c) Ends with `rg ACCOUNTS_DEV_AUTH docs/reference docs/roadmap .claude .agents` empty.
@@ -262,20 +262,16 @@ install.
 Verification per step follows the `safe-verification` skill (one rollout at a time);
 Steps 3 and 7 end with the split proof, Steps 1, 4a, 4b, 5, 6 with `verifyctl --fast`.
 
-## Owner questions
+### Owner decisions (2026-11-25)
 
-1. **Self-registration until 1b.** Proposal: login is always on; `/accounts/register`
-   stays off in production behind `ACCOUNTS_OPEN_REGISTRATION` (dev fleets, demoseed
-   and the C# stage set it) until 1b adds verified registration. OK?
-2. **No mockup for the login page, the create form, or the reset action.** Proposal:
-   the login page copies `core/admin`'s login look; create and reset use the generic
-   form modal and entity menu as apikeys does. Or a mockup first?
-3. **Operator password reset in Step 6.** Not in the roadmap; proposed because otherwise
-   a forgotten password cannot be recovered before 1b. OK?
-4. **Google on the login page.** The roadmap puts configured federated providers on
-   the page, but Google today only takes a client-side id token; there is no server
-   redirect flow. Options: (A) defer Google to a TODO and ship Epic only; (B) add a
-   server-side Google OIDC redirect flow as Step 5b in this phase.
-5. **Starter currency for studio users.** Operator-created and Epic-browser accounts
-   emit `player.registered` like any player, so where the wallet starter grant is
-   configured they get it. Proposal: accept (a studio user is a player). OK?
+1. **Self-registration until 1b:** accepted ("ok"). `/accounts/register` stays behind
+   `ACCOUNTS_OPEN_REGISTRATION` until 1b.
+2. **Mockup:** "niech bedzie generyczny pozniej zrobimy mockup". The login page copies
+   `core/admin`'s login look; create and reset use the generic form modal and entity
+   menu. A mockup comes later.
+3. **Operator password reset:** "to dopiszmy" — in Step 6 as written.
+4. **Google on the login page:** option B, "zrobimy ale po zakonczeniu tego planu, jako
+   osobny krok albo kroki". Not in this plan; Step 8 records it in `docs/todo/accounts.md`
+   as the next phase (server-side Google OIDC redirect flow on the hosted page).
+5. **Starter currency for studio users:** accepted (the owner's "8. tak"; read as the
+   fifth question, the plan had no eighth).
