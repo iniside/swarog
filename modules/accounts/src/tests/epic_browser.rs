@@ -377,8 +377,7 @@ async fn the_json_epic_start_is_rate_limited_with_the_login_bucket() {
     assert_eq!(form.status(), 429, "the hosted form shares the bucket the start emptied");
 }
 
-/// A hosted form POST that empties the bucket limits the JSON Epic start, which answers
-/// 429 before it touches the session store or the state table.
+/// A hosted form POST that empties the bucket limits the JSON Epic start to a 429.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_hosted_form_post_drains_the_json_epic_start_bucket() {
     let svc = lazy_service();
