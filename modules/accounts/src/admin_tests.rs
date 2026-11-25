@@ -13,8 +13,8 @@ use sqlx::PgPool;
 use testdb::test_pool;
 
 use super::{
-    fake_client, fake_ip, mask, thousands, AccountsAdmin, MAX_NEEDLE_BYTES, PAGE_SIZE, REVOKE_ALL,
-    REVOKE_SESSION,
+    fake_client, fake_ip, mask, thousands, AccountsAdmin, CREATE_ACCOUNT, FIELD_DISPLAY_NAME,
+    FIELD_EMAIL, MAX_NEEDLE_BYTES, PAGE_SIZE, RESET_PASSWORD, REVOKE_ALL, REVOKE_SESSION,
 };
 use crate::tests::{cleanup_player, suffix, wired};
 
@@ -349,10 +349,27 @@ fn manifest_declares_only_the_actions_the_portal_can_refuse() {
     let m = super::manifest();
     let mut ids: Vec<&str> = m.actions.iter().map(|a| a.id.as_str()).collect();
     ids.sort_unstable();
-    assert_eq!(ids, ["delete-account", "revoke-all", "revoke-session", "suspend", "suspend-header"]);
-    assert!(m.pages.iter().all(|p| p.head_actions.is_empty()), "no page-head action remains");
+    assert_eq!(
+        ids,
+        [
+            "create-account",
+            "delete-account",
+            "reset-password",
+            "revoke-all",
+            "revoke-session",
+            "suspend",
+            "suspend-header"
+        ]
+    );
+    assert_eq!(m.pages[0].head_actions, [CREATE_ACCOUNT], "Create account is the page's only head action");
     assert!(m.writes, "the session revocations write");
     let action = |id: &str| m.actions.iter().find(|a| a.id == id).unwrap();
+    let create = action(CREATE_ACCOUNT);
+    assert!(create.implemented && create.prepare && matches!(create.then, Then::Form(_)));
+    assert!(matches!(create.point, controlplane::ActionPoint::PageHead(ref p) if p == "players"));
+    let reset = action(RESET_PASSWORD);
+    assert!(reset.implemented && reset.prepare && reset.danger && matches!(reset.then, Then::Confirm(_)));
+    assert!(matches!(reset.point, controlplane::ActionPoint::RowAction(ref k) if k == "player"));
     let all = action(REVOKE_ALL);
     assert!(all.implemented && all.danger && all.prepare, "Revoke all is a prepared danger Confirm");
     assert!(matches!(all.then, Then::Confirm(_)));
@@ -376,7 +393,7 @@ async fn a_removed_action_is_not_found_and_a_declared_one_is_forbidden() {
         item: None,
         request_id: None,
     };
-    for gone in ["export-csv", "create-account", "edit-profile", "link-identity", "unlink-identity"] {
+    for gone in ["export-csv", "edit-profile", "link-identity", "unlink-identity"] {
         assert_eq!(admin.invoke(call(gone)).await.unwrap_err().status, Status::NotFound, "{gone}");
     }
     assert_eq!(admin.invoke(call("suspend")).await.unwrap_err().status, Status::Forbidden);
@@ -882,4 +899,210 @@ fn thousands_groups_digits_and_mask_hides_a_short_subject() {
     assert_eq!(thousands(999), "999");
     assert_eq!(thousands(-3), "0");
     assert_eq!(mask("short"), "…", "a subject of eight characters or fewer shows nothing");
+}
+
+fn create_call(email: &str, display: &str) -> InvokeCall {
+    InvokeCall {
+        input: BTreeMap::from([
+            (FIELD_EMAIL.to_string(), email.to_string()),
+            (FIELD_DISPLAY_NAME.to_string(), display.to_string()),
+        ]),
+        ..revoke(CREATE_ACCOUNT, None, None)
+    }
+}
+
+fn prepare_call(action: &str, player: Option<&str>) -> PrepareCall {
+    PrepareCall {
+        module: "accounts".to_string(),
+        action: action.to_string(),
+        entity: player.map(|id| EntityRef { kind: "player".to_string(), id: id.to_string() }),
+        item: None,
+        operator: "op".to_string(),
+    }
+}
+
+/// The password a reveal shows once, from an `Ok` outcome with no message and no redirect.
+fn revealed(outcome: InvokeOutcome) -> (String, String) {
+    let InvokeOutcome::Ok { message, reveal: Some(reveal), redirect: None } = outcome else {
+        panic!("a password action answers a reveal: {outcome:?}");
+    };
+    assert_eq!(message, "", "the reveal modal is the whole answer");
+    assert_eq!(reveal.value.len(), 20, "a 20-character password");
+    assert!(reveal.value.bytes().all(|b| b.is_ascii_alphanumeric()), "an alphanumeric password");
+    (reveal.label, reveal.value)
+}
+
+#[tokio::test]
+async fn create_account_reveals_a_password_that_signs_in_and_a_taken_email_is_a_field_error() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let admin = AccountsAdmin::new(Arc::clone(&svc));
+    let lower = format!("opmade-{}@test.local", suffix()).to_ascii_lowercase();
+    let mixed = format!("  {}  ", lower.to_ascii_uppercase());
+    let form = admin.prepare(prepare_call(CREATE_ACCOUNT, None)).await;
+    let created = admin.invoke(create_call(&mixed, "OpMade")).await.unwrap();
+    let (label, password) = revealed(created);
+    let stored: (String, String) = sqlx::query_as(
+        "SELECT player_id::text, secret_hash FROM accounts.identities WHERE provider = 'password' AND subject = $1",
+    )
+    .bind(&lower)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let id = stored.0.clone();
+    let sessions_after_create: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM accounts.sessions WHERE player_id = $1::uuid")
+            .bind(&id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let registered = asyncevents::testing::events_count(&pool, "player.registered", "player_id", &id)
+        .await
+        .unwrap();
+    let login = svc.login(lower.clone(), password.clone()).await;
+    let same = admin.invoke(create_call(&lower, "OpMadeAgain")).await;
+    let other_case = admin.invoke(create_call(&lower.to_ascii_uppercase(), "OpMadeAgain")).await;
+    let blank = admin.invoke(create_call("  ", "OpMade")).await;
+    let no_at = admin.invoke(create_call("not-an-address", "OpMade")).await;
+    let no_name = admin.invoke(create_call(&lower, " ")).await;
+    let players: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM accounts.identities WHERE provider = 'password' AND subject = $1",
+    )
+    .bind(&lower)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    cleanup_player(&pool, &id).await;
+
+    let Then::Form(form) = form.unwrap() else { panic!("create-account prepares a Form") };
+    let keys: Vec<&str> = form.fields.iter().map(|f| f.key.as_str()).collect();
+    assert_eq!(keys, [FIELD_EMAIL, FIELD_DISPLAY_NAME], "no password field: it is generated");
+    assert_eq!(label, format!("Account created — {lower}"), "the email is normalised");
+    assert!(stored.1.starts_with("$argon2id$"), "only the argon2 hash is stored");
+    assert!(!stored.1.contains(&password));
+    assert_eq!(sessions_after_create, 0, "Create account mints no session");
+    assert_eq!(registered, 1, "one player.registered rides the create's tx");
+    assert_eq!(login.unwrap().player_id, id, "the revealed password signs in");
+    let email_error = |outcome: Result<InvokeOutcome, opsapi::Error>, key: &str| match outcome.unwrap() {
+        InvokeOutcome::FieldErrors(errors) => errors.contains_key(key),
+        other => panic!("a refused create is a field error: {other:?}"),
+    };
+    assert!(email_error(same, FIELD_EMAIL), "a taken email is a field error with no reveal");
+    assert!(email_error(other_case, FIELD_EMAIL), "the same email in other case is taken");
+    assert!(email_error(blank, FIELD_EMAIL));
+    assert!(email_error(no_at, FIELD_EMAIL));
+    assert!(email_error(no_name, FIELD_DISPLAY_NAME));
+    assert_eq!(players, 1, "a refused create writes nothing");
+}
+
+#[tokio::test]
+async fn reset_password_ends_every_login_and_only_the_new_password_signs_in() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let email = format!("Reset-{}@test.local", suffix());
+    let lower = email.to_ascii_lowercase();
+    let first = svc.register(email, "old-pw".into(), "ResetMe".into()).await.unwrap();
+    let id = first.player_id.clone();
+    let browser = svc.store.create_browser_session(&id).await.unwrap().unwrap();
+    let admin = AccountsAdmin::new(Arc::clone(&svc));
+    let spec = admin.prepare(prepare_call(RESET_PASSWORD, Some(&id))).await;
+    let reset = admin.invoke(revoke(RESET_PASSWORD, Some(&id), None)).await.unwrap();
+    let (label, password) = revealed(reset);
+    let refreshed = svc.refresh(first.refresh_token.clone()).await;
+    let bearer = svc.store.player_by_session(&first.token).await.unwrap();
+    let browser_left = svc.store.browser_session(&browser.token).await.unwrap();
+    let old_login = svc.login(lower.clone(), "old-pw".into()).await;
+    let new_login = svc.login(lower.clone(), password.clone()).await;
+    let again = admin.invoke(revoke(RESET_PASSWORD, Some(&id), None)).await.unwrap();
+    let (_, second) = revealed(again);
+    cleanup_player(&pool, &id).await;
+
+    let Then::Confirm(spec) = spec.unwrap() else { panic!("reset-password prepares a Confirm") };
+    assert!(spec.title.starts_with("Reset the password of ResetMe#"), "{}", spec.title);
+    assert_eq!(spec.impact[0].1.value, lower, "the modal names the sign-in email");
+    assert_eq!(label, format!("Password reset — {lower}"));
+    assert_eq!(refreshed.unwrap_err().status, Status::Unauthorized, "the old refresh token fails");
+    assert!(bearer.is_none(), "the old bearer session is gone");
+    assert!(browser_left.is_none(), "the browser session is gone");
+    assert_eq!(old_login.unwrap_err().status, Status::Unauthorized, "the old password fails");
+    assert_eq!(new_login.unwrap().player_id, id, "the revealed password signs in");
+    assert_ne!(second, password, "every reset generates a new password");
+}
+
+#[tokio::test]
+async fn reset_password_refuses_a_player_without_a_password_and_a_missing_player() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let mut tx = pool.begin().await.unwrap();
+    let subject = format!("epic-only-{}", suffix());
+    let epic = svc
+        .store
+        .insert_player_with_identity_tx(&mut tx, "epic", &subject, "EpicOnly", None)
+        .await
+        .unwrap_or_else(|_| panic!("an epic-only player"));
+    tx.commit().await.unwrap();
+    let admin = AccountsAdmin::new(Arc::clone(&svc));
+    let spec = admin.prepare(prepare_call(RESET_PASSWORD, Some(&epic.id))).await;
+    let reset = admin.invoke(revoke(RESET_PASSWORD, Some(&epic.id), None)).await;
+    let hash: Option<String> =
+        sqlx::query_scalar("SELECT secret_hash FROM accounts.identities WHERE provider = 'epic' AND subject = $1")
+            .bind(&subject)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let missing = admin.invoke(revoke(RESET_PASSWORD, Some(NO_PLAYER), None)).await;
+    let missing_spec = admin.prepare(prepare_call(RESET_PASSWORD, Some(NO_PLAYER))).await;
+    let unbound = admin.invoke(revoke(RESET_PASSWORD, None, None)).await;
+    cleanup_player(&pool, &epic.id).await;
+
+    assert_eq!(spec.unwrap_err().status, Status::Conflict, "no password to reset: refused before the modal");
+    assert_eq!(reset.unwrap_err().status, Status::Conflict);
+    assert!(hash.is_none(), "a refused reset writes no hash onto another identity");
+    assert_eq!(missing.unwrap_err().status, Status::NotFound);
+    assert_eq!(missing_spec.unwrap_err().status, Status::NotFound);
+    assert_eq!(unbound.unwrap_err().status, Status::Invalid);
+}
+
+/// Owner decision 6: the Sessions panel lists live browser sessions beside the refresh
+/// families, with nothing to act on and no token shown.
+#[tokio::test]
+async fn sessions_panel_lists_live_browser_sessions_without_their_token() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let email = format!("brw-{}@test.local", suffix());
+    let id = svc.register(email, "pw".into(), "BrowserRow".into()).await.unwrap().player_id;
+    let browser = svc.store.create_browser_session(&id).await.unwrap().unwrap();
+    let expired = svc.store.create_browser_session(&id).await.unwrap().unwrap();
+    sqlx::query("UPDATE accounts.browser_sessions SET expires_at = now() - interval '1 minute' WHERE token_digest = $1")
+        .bind(crate::web::session::digest(&expired.token))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let admin = AccountsAdmin::new(Arc::clone(&svc));
+    let body = admin.panel(player_query("sessions", &id)).await.unwrap();
+    cleanup_player(&pool, &id).await;
+
+    assert_eq!(body.meta.as_deref(), Some("2"), "one family and one live browser session");
+    let t = table(body);
+    assert_eq!(t.rows.len(), 2, "the expired browser session is not listed");
+    let row = &t.rows[1];
+    assert_eq!(row.cells[0].value, "Browser sign-in");
+    assert!(row.cells[3].value.starts_with("in "), "{}", row.cells[3].value);
+    assert!(row.item.is_none() && row.actions.is_empty(), "nothing acts on one browser session");
+    for cell in &row.cells {
+        assert!(!cell.value.contains(&browser.token) && !cell.value.contains(&browser.csrf_token));
+    }
+}
+
+/// The conformance probes of Create account's caps answer at and over each cap through
+/// `invoke`: at the cap the value passes every check and reaches the (dead) store.
+#[test]
+fn create_account_caps_refuse_one_byte_over_and_pass_at_the_cap() {
+    use crate::conformance::{
+        conformance_admin_create_display_name_rejected as display,
+        conformance_admin_create_email_rejected as email,
+    };
+    assert!(!email(crate::MAX_EMAIL_BYTES) && email(crate::MAX_EMAIL_BYTES + 1));
+    let cap = accountsapi::MAX_DISPLAY_NAME_BYTES;
+    assert!(!display(cap) && display(cap + 1));
 }

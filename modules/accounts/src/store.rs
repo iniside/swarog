@@ -95,7 +95,7 @@ fn new_discriminator() -> String {
 /// braced spelling), never the reverse. The batch lookup filters with this before
 /// binding: ONE malformed element fails the whole statement (22P02), which would turn
 /// a caller's stale id into an error instead of an omission.
-fn is_canonical_uuid(s: &str) -> bool {
+pub(crate) fn is_canonical_uuid(s: &str) -> bool {
     s.len() == 36
         && s.bytes().enumerate().all(|(i, b)| match i {
             8 | 13 | 18 | 23 => b == b'-',
@@ -644,6 +644,40 @@ impl Store {
             Some((id, display_name, Some(hash))) => Some((Player { id, display_name }, hash)),
             _ => None,
         })
+    }
+
+    /// Replaces the stored hash of every `password` identity of a player on the caller's
+    /// tx, answering their emails (sorted); empty when the player signs in with no password.
+    pub async fn set_password_hash_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        secret_hash: &str,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        let mut emails: Vec<String> = sqlx::query_scalar(
+            "UPDATE accounts.identities SET secret_hash = $3 \
+              WHERE provider = $1 AND player_id = $2::uuid \
+             RETURNING subject",
+        )
+        .bind(crate::providers::PASSWORD)
+        .bind(player_id)
+        .bind(secret_hash)
+        .fetch_all(&mut *conn)
+        .await?;
+        emails.sort_unstable();
+        Ok(emails)
+    }
+
+    /// The emails of a player's `password` identities, sorted; empty when it has none.
+    pub async fn password_emails(&self, player_id: &str) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT subject FROM accounts.identities \
+              WHERE provider = $1 AND player_id = $2::uuid ORDER BY subject",
+        )
+        .bind(crate::providers::PASSWORD)
+        .bind(player_id)
+        .fetch_all(&self.pool)
+        .await
     }
 
     /// Whether `subject` names a guest identity whose stored digest is exactly

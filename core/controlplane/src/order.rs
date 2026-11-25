@@ -79,6 +79,7 @@ pub mod player_header_action {
 
 /// `ActionPoint::RowAction` on the `player` kind: one group per module.
 pub mod player_row_action {
+    pub const ACCOUNTS_RESET_PASSWORD: i32 = 10;
     pub const ACCOUNTS_SUSPEND: i32 = 20;
     pub const ACCOUNTS_DELETE: i32 = 30;
     pub const WALLET: i32 = 40;

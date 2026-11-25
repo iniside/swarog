@@ -5,7 +5,7 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::store::{is_foreign_key_violation, is_invalid_uuid, new_token, Store};
+use crate::store::{is_canonical_uuid, is_foreign_key_violation, is_invalid_uuid, new_token, Store};
 
 /// How long a signed-in browser stays signed in.
 pub(crate) const BROWSER_SESSION_TTL_HOURS: i32 = 12;
@@ -14,6 +14,13 @@ pub(crate) const BROWSER_SESSION_TTL_HOURS: i32 = 12;
 pub(crate) struct NewBrowserSession {
     pub token: String,
     pub csrf_token: String,
+}
+
+/// A live session as the operator's Sessions panel shows it: never its token or digest.
+pub(crate) struct BrowserSessionRow {
+    /// `YYYY-MM-DD HH:MI` UTC, the refresh families' spelling.
+    pub started: String,
+    pub expires_in_secs: i64,
 }
 
 /// A live session read back by its cookie token.
@@ -73,6 +80,35 @@ impl Store {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(|(player_id, csrf_token)| BrowserSession { player_id, csrf_token }))
+    }
+
+    /// The newest `limit` live browser sessions of a player, plus how many it holds.
+    pub async fn live_browser_session_rows(
+        &self,
+        player_id: &str,
+        limit: i64,
+    ) -> Result<(Vec<BrowserSessionRow>, i64), sqlx::Error> {
+        if !is_canonical_uuid(player_id) {
+            return Ok((Vec::new(), 0));
+        }
+        let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+            "SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), \
+                    floor(EXTRACT(EPOCH FROM (expires_at - now())))::int8, \
+                    count(*) OVER () \
+               FROM accounts.browser_sessions \
+              WHERE player_id = $1::uuid AND expires_at > now() \
+              ORDER BY created_at DESC, token_digest LIMIT $2",
+        )
+        .bind(player_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        let live = rows.first().map_or(0, |row| row.2);
+        let sessions = rows
+            .into_iter()
+            .map(|(started, expires_in_secs, _)| BrowserSessionRow { started, expires_in_secs })
+            .collect();
+        Ok((sessions, live))
     }
 
     /// Ends the session `token` names, answering whether there was one.

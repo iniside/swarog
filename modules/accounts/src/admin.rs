@@ -1,6 +1,7 @@
 //! The `accounts` control-plane provider: the Users & players page, the `player` entity
 //! (header, facts, the Profile & identities tab), the player search, the active-players
-//! tile, the nav counter and the operator session revocations.
+//! tile, the nav counter, the operator session revocations, and the operator's Create
+//! account and Reset password, which reveal a generated password once.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -8,18 +9,23 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use controlplane::{
     fake_hash, ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ConfirmSpec, ConfirmTone,
-    ContributionDecl, DataTable, Emphasis, EntityHeader, EntityKindDecl, EntityRef, FilterDef,
-    FilterKind, InvokeCall, InvokeOutcome, KpiTile, Layout, Link, Manifest, NavEntry, Noun,
-    PageDecl, PageInfo, Palette, PanelBody, PanelQuery, Point, PrepareCall, Primitive,
-    PropertyList, Provider, ReasonReq, Role, Row, SearchDecl, SearchHit, SearchQuery, SortDir,
-    Then, DEFAULT_PANEL_DEADLINE_MS, DEFAULT_SEARCH_DEADLINE_MS,
+    ContributionDecl, DataTable, Emphasis, EntityHeader, EntityKindDecl, EntityRef, Field,
+    FieldKind, FilterDef, FilterKind, FormSpec, InvokeCall, InvokeOutcome, KpiTile, Layout, Link,
+    Manifest, NavEntry, Noun, PageDecl, PageInfo, Palette, PanelBody, PanelQuery, Point,
+    PrepareCall, Primitive, PropertyList, Provider, ReasonReq, Role, Row, SearchDecl, SearchHit,
+    SearchQuery, SecretReveal, SortDir, Then, DEFAULT_PANEL_DEADLINE_MS,
+    DEFAULT_SEARCH_DEADLINE_MS,
 };
 use controlplane::order;
 use opsapi::Error;
 
 use crate::providers::{EPIC, GOOGLE, GUEST, PASSWORD};
 use crate::store::{render_handle, FamilyRow, IdentityRow, PlayerListRow, PlayerListing};
-use crate::Service;
+use crate::web::session::BrowserSessionRow;
+use crate::{
+    display_name_within_cap, email_within_cap, normalize_email, PasswordRefusal, PasswordReset,
+    Service, MAX_EMAIL_BYTES,
+};
 
 const MODULE: &str = "accounts";
 const PAGE: &str = "players";
@@ -42,6 +48,15 @@ const DELETE_ACCOUNT: &str = "delete-account";
 const SUSPEND_HEADER: &str = "suspend-header";
 pub(crate) const REVOKE_ALL: &str = "revoke-all";
 pub(crate) const REVOKE_SESSION: &str = "revoke-session";
+pub(crate) const CREATE_ACCOUNT: &str = "create-account";
+pub(crate) const RESET_PASSWORD: &str = "reset-password";
+
+/// Create account's form fields.
+pub(crate) const FIELD_EMAIL: &str = "email";
+pub(crate) const FIELD_DISPLAY_NAME: &str = "display_name";
+
+/// Where an operator-created account signs in, named in the reveal.
+const SIGN_IN_PATH: &str = "/accounts/oidc/login";
 
 /// The players table's filter keys in `PanelQuery::params`.
 const FILTER_KIND: &str = "kind";
@@ -110,6 +125,52 @@ fn input_within_cap(input: &BTreeMap<String, String>) -> bool {
 
 fn done(message: &str) -> InvokeOutcome {
     InvokeOutcome::Ok { message: message.to_string(), reveal: None, redirect: None }
+}
+
+fn field_error(key: &str, msg: impl Into<String>) -> InvokeOutcome {
+    InvokeOutcome::FieldErrors(BTreeMap::from([(key.to_string(), msg.into())]))
+}
+
+/// A password shown once in the portal's reveal modal.
+fn password_reveal(label: String, password: String, extra: String) -> InvokeOutcome {
+    InvokeOutcome::Ok {
+        message: String::new(),
+        reveal: Some(SecretReveal { label, value: password, hint: None, expires_at: None, extra: Some(extra) }),
+        redirect: None,
+    }
+}
+
+fn form_field(key: &str, label: &str, help: &str, placeholder: &str, mono: bool) -> Field {
+    Field {
+        key: key.to_string(),
+        label: label.to_string(),
+        kind: FieldKind::String,
+        required: true,
+        help: Some(help.to_string()),
+        default: None,
+        readonly: false,
+        mono,
+        placeholder: Some(placeholder.to_string()),
+    }
+}
+
+/// Create account's form: the sign-in email and the display name; the password is generated.
+pub(crate) fn create_form() -> FormSpec {
+    FormSpec {
+        fields: vec![
+            form_field(FIELD_EMAIL, "Email", "The sign-in name; letter case is ignored.", "name@studio.example", true),
+            form_field(FIELD_DISPLAY_NAME, "Display name", "Shown with a #1234 discriminator.", "Ada", false),
+        ],
+        hidden: BTreeMap::new(),
+        submit_label: "Create account".to_string(),
+        note: Some("A random password is generated and shown once after creation.".to_string()),
+        revision: None,
+        title: Some("Create account".to_string()),
+        modes: Vec::new(),
+        reason: ReasonReq::None,
+        reason_label: None,
+        reason_hint: None,
+    }
 }
 
 /// `"<created_at µs>.<id>"` of the last row shown.
@@ -348,6 +409,22 @@ fn revoke_all_spec(title: String, impact: Vec<(String, Cell)>) -> ConfirmSpec {
     }
 }
 
+/// `reset-password`'s modal; `prepare` names the player and the emails it signs in with.
+fn reset_password_spec(title: String, impact: Vec<(String, Cell)>) -> ConfirmSpec {
+    ConfirmSpec {
+        title,
+        body: "A new random password is generated and shown once. The player is signed out on \
+               every device and in the browser."
+            .to_string(),
+        tone: ConfirmTone::Danger,
+        impact,
+        reason: ReasonReq::None,
+        reason_hint: None,
+        type_to_confirm: None,
+        confirm_label: "Reset password".to_string(),
+    }
+}
+
 /// An action `invoke` runs; a Confirm asks `prepare` for its modal.
 fn implemented(
     id: &str,
@@ -388,7 +465,7 @@ fn manifest() -> Manifest {
             subtitle: "Staff and players share one account space; Lore access is a role on the \
                        account."
                 .to_string(),
-            head_actions: Vec::new(),
+            head_actions: vec![CREATE_ACCOUNT.to_string()],
             tiles: Vec::new(),
             layout: Layout::Stack(vec![PLAYERS.to_string()]),
             params: [FILTER_KIND, FILTER_STATUS, FILTER_PROVIDER].map(str::to_string).to_vec(),
@@ -433,6 +510,30 @@ fn manifest() -> Manifest {
             contribution(LABEL, Point::EntityLabel { kind: KIND.to_string() }, 0, "Player", "", None),
         ],
         actions: vec![
+            ActionDecl {
+                icon: "plus".to_string(),
+                prepare: true,
+                ..implemented(
+                    CREATE_ACCOUNT,
+                    ActionPoint::PageHead(PAGE.to_string()),
+                    "Create account",
+                    false,
+                    Emphasis::Primary,
+                    Then::Form(create_form()),
+                )
+            },
+            ActionDecl {
+                icon: "key".to_string(),
+                order: order::player_row_action::ACCOUNTS_RESET_PASSWORD,
+                ..implemented(
+                    RESET_PASSWORD,
+                    row(),
+                    "Reset password…",
+                    true,
+                    plain,
+                    Then::Confirm(reset_password_spec("Reset password?".to_string(), Vec::new())),
+                )
+            },
             // NEW: no suspension exists.
             not_implemented(
                 SUSPEND,
@@ -657,9 +758,15 @@ impl AccountsAdmin {
             column("started", "Started", CellKind::Text),
             column("expires", "Expires", CellKind::Text),
         ];
-        let rows = families.iter().map(session_row).collect();
+        let (browsers, live_browsers) = self
+            .svc
+            .store
+            .live_browser_session_rows(id, SESSIONS_SHOWN)
+            .await
+            .map_err(internal)?;
+        let rows = families.iter().map(session_row).chain(browsers.iter().map(browser_row)).collect();
         Ok(PanelBody {
-            meta: Some(live.to_string()),
+            meta: Some((live + live_browsers).to_string()),
             ..PanelBody::new(Primitive::DataTable(detail_table(columns, rows)))
         })
     }
@@ -731,6 +838,77 @@ impl AccountsAdmin {
         Ok(Then::Confirm(revoke_all_spec(format!("Revoke all sessions of {handle}?"), impact)))
     }
 
+    /// Create account: a player with a `password` identity and a generated password, shown
+    /// once ([`Service::create_password_account`]). An email taken in any letter case is a
+    /// field error on the email.
+    async fn create_account(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let email = normalize_email(req.input.get(FIELD_EMAIL).map(String::as_str).unwrap_or_default());
+        if email.is_empty() {
+            return Ok(field_error(FIELD_EMAIL, "required"));
+        }
+        if !email_within_cap(&email) {
+            return Ok(field_error(FIELD_EMAIL, format!("at most {MAX_EMAIL_BYTES} bytes")));
+        }
+        if !email.contains('@') {
+            return Ok(field_error(FIELD_EMAIL, "not an email address"));
+        }
+        let display = req.input.get(FIELD_DISPLAY_NAME).map(|d| d.trim()).unwrap_or_default();
+        if display.is_empty() {
+            return Ok(field_error(FIELD_DISPLAY_NAME, "required"));
+        }
+        if !display_name_within_cap(display) {
+            let cap = accountsapi::MAX_DISPLAY_NAME_BYTES;
+            return Ok(field_error(FIELD_DISPLAY_NAME, format!("at most {cap} bytes")));
+        }
+        match self.svc.create_password_account(&email, display).await? {
+            Ok((_, password)) => Ok(password_reveal(
+                format!("Account created — {email}"),
+                password,
+                format!("The player signs in with this email and password at {SIGN_IN_PATH}."),
+            )),
+            Err(PasswordRefusal::EmailTaken) => Ok(field_error(FIELD_EMAIL, "an account with this email exists")),
+            Err(PasswordRefusal::NoFreeHandle) => {
+                Ok(field_error(FIELD_DISPLAY_NAME, "this name has no free handle left"))
+            }
+        }
+    }
+
+    /// Reset password: a new generated password on the bound player's `password`
+    /// identity, shown once, and every login of the player ended in the same tx
+    /// ([`Service::reset_password`]). A player with no password sign-in is a Conflict.
+    async fn reset_password(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let player = bound_player(req.entity.as_ref())?;
+        match self.svc.reset_password(player).await? {
+            PasswordReset::NoPlayer => Err(Error::not_found(format!("accounts: no player {player}"))),
+            PasswordReset::NoPassword => Err(Error::conflict("accounts: the player has no password sign-in")),
+            PasswordReset::Reset { emails, password } => Ok(password_reveal(
+                format!("Password reset — {}", emails.join(", ")),
+                password,
+                "The old password no longer works and every session of the player has ended."
+                    .to_string(),
+            )),
+        }
+    }
+
+    /// The Reset password modal, naming the player and the emails the new password signs
+    /// in with; a player with no password sign-in is refused before the modal opens.
+    async fn prepare_reset_password(&self, req: &PrepareCall) -> Result<Then, Error> {
+        let player = bound_player(req.entity.as_ref())?;
+        let store = &self.svc.store;
+        let row = store
+            .player_row(player)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| Error::not_found(format!("accounts: no player {player}")))?;
+        let emails = store.password_emails(player).await.map_err(internal)?;
+        if emails.is_empty() {
+            return Err(Error::conflict("accounts: the player has no password sign-in"));
+        }
+        let handle = render_handle(&row.display_name, &row.discriminator);
+        let impact = vec![("Email".to_string(), text(CellKind::Mono, emails.join(", ")))];
+        Ok(Then::Confirm(reset_password_spec(format!("Reset the password of {handle}?"), impact)))
+    }
+
     /// Each requested player's handle, keyed by id; an id naming no player is left out.
     async fn labels(&self, req: &PanelQuery) -> Result<Primitive, Error> {
         let players = self.svc.store.players_by_id(&req.refs).await.map_err(internal)?;
@@ -791,6 +969,23 @@ fn session_row(family: &FamilyRow) -> Row {
         highlight: false,
         item: Some(family.family_id.clone()),
         actions: vec![REVOKE_SESSION.to_string()],
+    }
+}
+
+/// A browser session of the hosted sign-in pages: no token or digest, nothing to act on
+/// (Revoke all ends it).
+fn browser_row(session: &BrowserSessionRow) -> Row {
+    Row {
+        entity: None,
+        cells: vec![
+            text(CellKind::Text, "Browser sign-in"),
+            text(CellKind::Text, "—"),
+            text(CellKind::Text, session.started.clone()),
+            text(CellKind::Text, expires_in(session.expires_in_secs)),
+        ],
+        highlight: false,
+        item: None,
+        actions: Vec::new(),
     }
 }
 
@@ -858,6 +1053,8 @@ impl Provider for AccountsAdmin {
         match req.action.as_str() {
             REVOKE_SESSION => self.revoke_session(&req).await,
             REVOKE_ALL => self.revoke_all(&req).await,
+            CREATE_ACCOUNT => self.create_account(&req).await,
+            RESET_PASSWORD => self.reset_password(&req).await,
             SUSPEND | DELETE_ACCOUNT | SUSPEND_HEADER => {
                 Err(Error::forbidden("not implemented yet"))
             }
@@ -868,6 +1065,8 @@ impl Provider for AccountsAdmin {
     async fn prepare(&self, req: PrepareCall) -> Result<Then, Error> {
         match req.action.as_str() {
             REVOKE_ALL => self.prepare_revoke_all(&req).await,
+            CREATE_ACCOUNT => Ok(Then::Form(create_form())),
+            RESET_PASSWORD => self.prepare_reset_password(&req).await,
             other => Err(Error::not_found(format!("{MODULE} prepares no action {other:?}"))),
         }
     }

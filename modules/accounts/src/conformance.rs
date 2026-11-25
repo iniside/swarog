@@ -12,7 +12,7 @@ use opsapi::Identity;
 use sqlx::PgPool;
 use tokio::sync::Semaphore;
 
-use crate::admin::{AccountsAdmin, REVOKE_SESSION};
+use crate::admin::{AccountsAdmin, CREATE_ACCOUNT, FIELD_DISPLAY_NAME, FIELD_EMAIL, REVOKE_SESSION};
 use crate::password::ArgonVerifier;
 use crate::providers::{Providers, Resolution, EPIC, GOOGLE, GUEST};
 use crate::store::Store;
@@ -349,6 +349,52 @@ pub fn conformance_admin_player_rejected(len: usize) -> bool {
 #[doc(hidden)]
 pub fn conformance_admin_family_rejected(len: usize) -> bool {
     revoke_refused(BTreeMap::new(), uuid_shaped(UUID_SHAPE_BYTES), uuid_shaped(len))
+}
+
+/// Drives `create-account` through `AccountsAdmin::invoke` over the dead pool; `true` when
+/// `field` is refused as a field error. A value that passes every check is hashed and
+/// reaches the dead store, which answers `Internal`.
+fn create_field_refused(field: &str, email: String, display: String) -> bool {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread runtime");
+    let admin = {
+        let _guard = rt.enter();
+        AccountsAdmin::new(Arc::new(service_on(dead_pool())))
+    };
+    let call = InvokeCall {
+        module: "accounts".to_string(),
+        action: CREATE_ACCOUNT.to_string(),
+        entity: None,
+        input: BTreeMap::from([
+            (FIELD_EMAIL.to_string(), email),
+            (FIELD_DISPLAY_NAME.to_string(), display),
+        ]),
+        expected_revision: None,
+        reason: None,
+        operator: "conformance".to_string(),
+        item: None,
+        request_id: None,
+    };
+    matches!(
+        rt.block_on(admin.invoke(call)),
+        Ok(controlplane::InvokeOutcome::FieldErrors(errors)) if errors.contains_key(field)
+    )
+}
+
+/// The email cap of the admin's Create account, executed through `AccountsAdmin::invoke`:
+/// a `len`-byte address (`a…a@x`), so only its length decides.
+#[doc(hidden)]
+pub fn conformance_admin_create_email_rejected(len: usize) -> bool {
+    let email = format!("{}@x", "a".repeat(len.saturating_sub(2)));
+    create_field_refused(FIELD_EMAIL, email, "Probe".to_string())
+}
+
+/// The display-name cap of the admin's Create account, on the same authority.
+#[doc(hidden)]
+pub fn conformance_admin_create_display_name_rejected(len: usize) -> bool {
+    create_field_refused(FIELD_DISPLAY_NAME, "probe@conformance.local".to_string(), "a".repeat(len))
 }
 
 /// Whether `accountsapi::Auth::delete_account` rejects a ticket of `len` bytes, driven

@@ -366,6 +366,22 @@ fn accounts() -> Entry {
                         writer: None,
                         probe: Arc::new(accounts::conformance::conformance_admin_family_rejected),
                     },
+                    CapCase {
+                        name: "accounts admin create email",
+                        cap: 320,
+                        exact: false,
+                        writer: None,
+                        probe: Arc::new(accounts::conformance::conformance_admin_create_email_rejected),
+                    },
+                    CapCase {
+                        name: "accounts admin create display name",
+                        cap: 128,
+                        exact: false,
+                        writer: None,
+                        probe: Arc::new(
+                            accounts::conformance::conformance_admin_create_display_name_rejected,
+                        ),
+                    },
                 ])),
             ),
             (

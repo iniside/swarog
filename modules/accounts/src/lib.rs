@@ -76,6 +76,33 @@ pub(crate) fn normalize_email(email: &str) -> String {
     email.trim().to_ascii_lowercase()
 }
 
+/// Why a password account was not created.
+pub(crate) enum PasswordRefusal {
+    /// The normalised email already names a `password` identity.
+    EmailTaken,
+    /// Every handle of the display name is taken.
+    NoFreeHandle,
+}
+
+impl PasswordRefusal {
+    /// The self-registration op's answer: both are 409.
+    fn conflict(&self) -> Error {
+        match self {
+            PasswordRefusal::EmailTaken => Error::conflict("email already registered"),
+            PasswordRefusal::NoFreeHandle => Error::conflict("display name has no free handle"),
+        }
+    }
+}
+
+/// What [`Service::reset_password`] did.
+pub(crate) enum PasswordReset {
+    NoPlayer,
+    /// The player signs in with no password; nothing changed.
+    NoPassword,
+    /// The new password, shown once, and the emails it signs in with.
+    Reset { emails: Vec<String>, password: String },
+}
+
 /// The SHARED cap checks — the register/login handlers and factual conformance probes
 /// call these same pure fns, so the probe
 /// proves what the handlers actually enforce, never a const compared to itself.
@@ -414,6 +441,101 @@ impl Service {
         Ok(p)
     }
 
+    /// Hashes `password` with argon2id on a blocking thread behind the argon permit, so
+    /// the 64 MiB hash never runs on an async worker. The permit MOVES INTO the closure:
+    /// spawn_blocking is not cancelled when its JoinHandle drops, so a permit held in the
+    /// async frame would be released on client disconnect while the detached hash keeps
+    /// running (RAM-cap defeat; admin 5844831 precedent).
+    async fn hash_on_permit(&self, password: String) -> Result<String, Error> {
+        let Ok(argon) = self.argon_permits.clone().acquire_owned().await else {
+            return Err(Error::internal("argon2 semaphore closed"));
+        };
+        tokio::task::spawn_blocking(move || {
+            let _permit = argon;
+            hash_password(&password)
+        })
+        .await
+        .map_err(|e| Error::internal(format!("password hash task failed: {e}")))?
+        .map_err(internal)
+    }
+
+    /// Inserts a player with its `password` identity `email` (already normalised) and
+    /// appends `player.registered` on the caller's tx: the core self-registration and the
+    /// operator's Create account share. A refusal leaves the tx for the caller to roll back.
+    async fn insert_password_player_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        email: &str,
+        display: &str,
+        hash: &str,
+    ) -> Result<Result<Player, PasswordRefusal>, Error> {
+        let p = match self
+            .store
+            .insert_player_with_identity_tx(tx, providers::PASSWORD, email, display, Some(hash))
+            .await
+        {
+            Ok(p) => p,
+            Err(StoreError::Taken) => return Ok(Err(PasswordRefusal::EmailTaken)),
+            Err(StoreError::HandleExhausted) => return Ok(Err(PasswordRefusal::NoFreeHandle)),
+            Err(StoreError::Db(e)) => {
+                tracing::error!(err = %e, "register failed");
+                return Err(internal(e));
+            }
+        };
+        self.emit_registered_tx(tx, &p, providers::PASSWORD).await?;
+        Ok(Ok(p))
+    }
+
+    /// The operator's Create account: a player with a `password` identity `email` (already
+    /// normalised) and a fresh random password, inserted with its `player.registered` in
+    /// one tx and no session. Answers the player and the password, which nothing stores
+    /// readably.
+    pub(crate) async fn create_password_account(
+        &self,
+        email: &str,
+        display: &str,
+    ) -> Result<Result<(Player, String), PasswordRefusal>, Error> {
+        let password = password::new_password();
+        let hash = self.hash_on_permit(password.clone()).await?;
+        let mut tx = self.store.pool.begin().await.map_err(internal)?;
+        match self.insert_password_player_tx(&mut tx, email, display, &hash).await {
+            Ok(Ok(p)) => {
+                tx.commit().await.map_err(internal)?;
+                Ok(Ok((p, password)))
+            }
+            Ok(Err(refusal)) => {
+                tx.rollback().await.map_err(internal)?;
+                Ok(Err(refusal))
+            }
+            Err(err) => {
+                tx.rollback().await.ok();
+                Err(err)
+            }
+        }
+    }
+
+    /// The operator's Reset password: a fresh random password on every `password` identity
+    /// of the player and, in the same tx, the end of all its logins
+    /// ([`Store::kill_player_families_tx`]: refresh tokens, access sessions, browser
+    /// sessions), so a signed-in holder of the old password is signed out with it.
+    pub(crate) async fn reset_password(&self, player_id: &str) -> Result<PasswordReset, Error> {
+        let password = password::new_password();
+        let hash = self.hash_on_permit(password.clone()).await?;
+        let mut tx = self.store.pool.begin().await.map_err(internal)?;
+        // Takes the player row first, the lock order of every login and refresh.
+        if self.store.kill_player_families_tx(&mut tx, player_id).await.map_err(internal)?.is_none() {
+            tx.rollback().await.map_err(internal)?;
+            return Ok(PasswordReset::NoPlayer);
+        }
+        let emails = self.store.set_password_hash_tx(&mut tx, player_id, &hash).await.map_err(internal)?;
+        if emails.is_empty() {
+            tx.rollback().await.map_err(internal)?;
+            return Ok(PasswordReset::NoPassword);
+        }
+        tx.commit().await.map_err(internal)?;
+        Ok(PasswordReset::Reset { emails, password })
+    }
+
     async fn register_hashed_with_token(
         &self,
         email: &str,
@@ -422,36 +544,17 @@ impl Service {
         token: String,
     ) -> Result<accountsapi::Session, Error> {
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
-        let p = match self
-            .store
-            .insert_player_with_identity_tx(
-                &mut tx,
-                providers::PASSWORD,
-                email,
-                display,
-                Some(hash),
-            )
-            .await
-        {
-            Ok(p) => p,
-            Err(StoreError::Taken) => {
+        let p = match self.insert_password_player_tx(&mut tx, email, display, hash).await {
+            Ok(Ok(p)) => p,
+            Ok(Err(refusal)) => {
                 tx.rollback().await.map_err(internal)?;
-                return Err(Error::conflict("email already registered"));
+                return Err(refusal.conflict());
             }
-            Err(StoreError::HandleExhausted) => {
-                tx.rollback().await.map_err(internal)?;
-                return Err(Error::conflict("display name has no free handle"));
-            }
-            Err(StoreError::Db(e)) => {
+            Err(err) => {
                 tx.rollback().await.ok();
-                tracing::error!(err = %e, "register failed");
-                return Err(internal(e));
+                return Err(err);
             }
         };
-        if let Err(err) = self.emit_registered_tx(&mut tx, &p, providers::PASSWORD).await {
-            tx.rollback().await.ok();
-            return Err(err);
-        }
         let session = match self
             .issue_session_tx(&mut tx, &p, providers::PASSWORD, email, token)
             .await
@@ -954,23 +1057,7 @@ impl accountsapi::Auth for Service {
             return Err(Error::invalid("display name too long"));
         }
 
-        let Ok(argon) = self.argon_permits.clone().acquire_owned().await else {
-            return Err(Error::internal("argon2 semaphore closed"));
-        };
-        // The 64 MiB hash runs on a blocking thread, never the async worker; the
-        // permit MOVES INTO the closure — spawn_blocking is not cancelled when its
-        // JoinHandle drops, so a permit held in this async frame would be released
-        // on client disconnect while the detached hash keeps running (RAM-cap
-        // defeat; admin 5844831 precedent).
-        let pw = password;
-        let hash = tokio::task::spawn_blocking(move || {
-            let _permit = argon;
-            hash_password(&pw)
-        })
-        .await
-        .map_err(|e| Error::internal(format!("password hash task failed: {e}")))?
-        .map_err(internal)?;
-
+        let hash = self.hash_on_permit(password).await?;
         self.register_hashed_with_token(&email, &display, &hash, store::new_token())
             .await
     }
