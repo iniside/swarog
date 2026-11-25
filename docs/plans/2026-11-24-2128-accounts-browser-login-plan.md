@@ -297,3 +297,6 @@ proof run once, after Step 6, as part of Step 7 (owner, 2026-11-25).
 9. **admindiff:** "admindiff claude to ty zostaw w spokoju, nie dziala i nie spodziewam
    sie ze bedzie dzialac w najblizszej przyszlosci". No step edits `tools/admindiff/`;
    a red admindiff stage in Step 7's verify is not this plan's work.
+10. **Rate limit on the JSON Epic start:** "to dodaj limit". `POST /accounts/epic/start`
+    gets the same per-IP limiter (one bucket) as the hosted form POSTs; a review-fix
+    after Step 6, in the accounts crate only.
