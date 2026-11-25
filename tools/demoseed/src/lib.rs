@@ -115,7 +115,7 @@ USAGE:
                      how long an event-fed read polls before it is an error (default 10)
   --clients <n>      throwaway client scenarios to run after the seed (default 8, at least 1)
 
-Requires a fleet started with the dev flags (devctl up sets APIKEYS_DEV_SEED, ACCOUNTS_DEV_AUTH,
+Requires a fleet started with the dev flags (devctl up sets APIKEYS_DEV_SEED, ACCOUNTS_OPEN_REGISTRATION,
 INVENTORY_DEV_GRANT, WALLET_DEV_SEED). Re-running converges: only missing rows are created, and
 every seeded kind is read back. Then each client scenario creates its own guest players and a
 registered account, drives the session, party and destructive ops on them, and deletes them.

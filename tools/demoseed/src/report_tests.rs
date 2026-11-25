@@ -94,7 +94,7 @@ fn render_fails_on_an_uncovered_op_without_errors() {
 fn render_hints_at_the_dev_flag_behind_a_404() {
     let mut report = Report::default();
     report.errors.push(error("accounts.register", Got::Status(404)));
-    assert!(report.render("http://h:1", &[]).text.contains("without ACCOUNTS_DEV_AUTH"));
+    assert!(report.render("http://h:1", &[]).text.contains("without ACCOUNTS_OPEN_REGISTRATION"));
 }
 
 #[test]

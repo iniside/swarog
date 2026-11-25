@@ -4415,7 +4415,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
         .await?;
     p.check("[A4] garbage token -> 401", a4.status().as_u16() == 401, a4.status());
 
-    // [A5] a dev-<uuid> token -> 401 (gateway-svc never sets ACCOUNTS_DEV_AUTH, so the
+    // [A5] a dev-<uuid> token -> 401 (gateway-svc never sets GATEWAY_DEV_VERIFIER, so the
     // real accounts verifier rejects it — dev auth is not a bearer bypass at the front).
     let a5 = ctx
         .http

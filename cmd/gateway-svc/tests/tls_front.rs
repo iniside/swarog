@@ -189,7 +189,7 @@ fn spawn_gateway(
         .env("PORT", format!("127.0.0.1:{}", free_tcp_port()))
         .env("EDGE_ADDR", format!("127.0.0.1:{}", free_udp_port()))
         .env("PLAYER_EDGE_ADDR", format!("127.0.0.1:{quic_port}"))
-        .env("ACCOUNTS_DEV_AUTH", "1")
+        .env("GATEWAY_DEV_VERIFIER", "1")
         .env("APIKEYS_DEV_ALLOW", "1");
     for (key, path) in tls_env {
         cmd.env(key, path);

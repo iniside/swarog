@@ -106,7 +106,8 @@ const DEFAULT_DSN: &str =
 /// constructs lazily, no I/O); the dummy value never dials anything in these
 /// two phases.
 const GATES: &[(&str, &str)] = &[
-    ("ACCOUNTS_DEV_AUTH", "1"),
+    ("ACCOUNTS_OPEN_REGISTRATION", "1"),
+    ("GATEWAY_DEV_VERIFIER", "1"),
     ("INVENTORY_DEV_GRANT", "1"),
     ("EPIC_CLIENT_ID", "routecheck-dummy-epic-client-id"),
     ("APIKEYS_DEV_SEED", "1"),

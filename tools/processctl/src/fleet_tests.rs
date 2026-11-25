@@ -50,7 +50,7 @@ fn apple_toolchain_selection_is_not_discovered_when_absent() {
 #[test]
 fn inherited_application_overrides_are_explicit_and_cannot_rewire_topology() {
     let environment = EnvironmentSnapshot::from_values([
-        ("ACCOUNTS_DEV_AUTH".into(), "0".into()),
+        ("ACCOUNTS_OPEN_REGISTRATION".into(), "0".into()),
         ("PORT".into(), ":9999".into()),
         ("EDGE_ADDR".into(), ":9998".into()),
         ("EDGE_CA_KEY".into(), "attacker-key".into()),
@@ -60,7 +60,10 @@ fn inherited_application_overrides_are_explicit_and_cannot_rewire_topology() {
         &inputs(), FleetFlavor::Development, &environment,
     );
     let accounts = fleet.service("accounts-svc").unwrap();
-    assert_eq!(accounts.env.get("ACCOUNTS_DEV_AUTH").map(String::as_str), Some("0"));
+    assert_eq!(accounts.env.get("ACCOUNTS_OPEN_REGISTRATION").map(String::as_str), Some("0"));
+    // accounts-svc serves the browser cookie on plain http and trusts the gateway-svc host, as admin-svc does.
+    assert_eq!(accounts.env.get("ACCOUNTS_COOKIE_SECURE").map(String::as_str), Some("0"));
+    assert_eq!(accounts.env.get("TRUSTED_PROXY_CIDRS").map(String::as_str), Some("127.0.0.1/32"));
     assert_eq!(accounts.env.get("PORT").map(String::as_str), Some(":8084"));
     assert_eq!(accounts.env.get("EDGE_ADDR").map(String::as_str), Some(":9003"));
     assert_eq!(accounts.env.get("EDGE_CA_KEY").map(String::as_str), Some("run/edge-ca.key"));

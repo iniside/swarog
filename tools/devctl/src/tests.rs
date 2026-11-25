@@ -188,7 +188,7 @@ fn topology_specs_are_isolated_and_unknown_overrides_fail_closed() {
     let environment = EnvironmentSnapshot::from_values([
         ("HTTP_PROXY".into(), "http://proxy".into()),
         ("CARGO_HOME".into(), "cargo-home".into()),
-        ("ACCOUNTS_DEV_AUTH".into(), "0".into()),
+        ("ACCOUNTS_OPEN_REGISTRATION".into(), "0".into()),
         ("PORT".into(), ":9999".into()),
     ]);
     let monolith = service_specs(
@@ -207,7 +207,7 @@ fn topology_specs_are_isolated_and_unknown_overrides_fail_closed() {
         Some(":8080")
     );
     assert_eq!(
-        monolith[0].env.get("ACCOUNTS_DEV_AUTH").map(String::as_str),
+        monolith[0].env.get("ACCOUNTS_OPEN_REGISTRATION").map(String::as_str),
         Some("0")
     );
 
@@ -228,7 +228,7 @@ fn topology_specs_are_isolated_and_unknown_overrides_fail_closed() {
             .find(|s| s.name == "accounts-svc")
             .unwrap()
             .env
-            .get("ACCOUNTS_DEV_AUTH")
+            .get("ACCOUNTS_OPEN_REGISTRATION")
             .map(String::as_str),
         Some("0")
     );

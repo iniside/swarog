@@ -221,7 +221,8 @@ fn boot(
         ctx.database_url().unwrap_or(DEFAULT_DSN).into(),
     );
     environment.insert("APIKEYS_DEV_SEED".into(), "1".into());
-    environment.insert("ACCOUNTS_DEV_AUTH".into(), "1".into());
+    environment.insert("ACCOUNTS_OPEN_REGISTRATION".into(), "1".into());
+    environment.insert("ACCOUNTS_COOKIE_SECURE".into(), "0".into());
     environment.insert("INVENTORY_DEV_GRANT".into(), "1".into());
     for (key, value) in extra {
         environment.insert((*key).into(), value.clone());

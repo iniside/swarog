@@ -246,7 +246,7 @@ impl Report {
 /// The dev flag a 404 from a dev-gated route points at.
 fn hint(error: &CallError) -> Option<&'static str> {
     match (error.op, &error.got) {
-        ("accounts.register", Got::Status(404)) => Some("a 404 means the fleet runs without ACCOUNTS_DEV_AUTH"),
+        ("accounts.register", Got::Status(404)) => Some("a 404 means the fleet runs without ACCOUNTS_OPEN_REGISTRATION"),
         ("inventory.grant", Got::Status(404)) => Some("a 404 means the fleet runs without INVENTORY_DEV_GRANT"),
         _ => None,
     }

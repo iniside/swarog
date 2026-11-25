@@ -12,7 +12,7 @@
 //! its factory provides the `accounts.sessions` edge client the gateway's verifier
 //! resolves at init — real bearer verification against accounts-svc, no `dev-`
 //! tokens (absent the capability the gateway fails startup unless
-//! `ACCOUNTS_DEV_AUTH=1` is explicitly set). The `apikeys` stub is likewise MANDATORY
+//! `GATEWAY_DEV_VERIFIER=1` is explicitly set). The `apikeys` stub is likewise MANDATORY
 //! (Step 3, api key policy): its factory provides the `apikeys.keys` edge client the
 //! gateway's key verifier resolves at init — real key verification against
 //! apikeys-svc, absent the capability the gateway fails startup unless

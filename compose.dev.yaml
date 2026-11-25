@@ -22,7 +22,8 @@ services:
     environment:
       - DATABASE_URL=postgres://gamebackend:gamebackend@postgres:5432/gamebackend?sslmode=disable
       - APIKEYS_DEV_SEED=1
-      - ACCOUNTS_DEV_AUTH=1
+      - ACCOUNTS_OPEN_REGISTRATION=1
+      - ACCOUNTS_COOKIE_SECURE=0
       - INVENTORY_DEV_GRANT=1
       - WALLET_DEV_SEED=1
       - ADMIN_COOKIE_SECURE=0

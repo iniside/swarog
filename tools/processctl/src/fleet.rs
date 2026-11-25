@@ -23,7 +23,7 @@ pub const SERVICE_ENV_ALLOWLIST: &[&str] = &[
 /// `runtime_environment` is allowlist-filtered, so a value absent from this list is a
 /// value `EPIC_*`/`GOOGLE_*` in the operator's shell can never reach accounts with.
 const ACCOUNTS_OVERRIDEABLE_ENV: &[&str] = &[
-    "ACCOUNTS_DEV_AUTH",
+    "ACCOUNTS_OPEN_REGISTRATION", "ACCOUNTS_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS",
     "EPIC_CLIENT_ID", "EPIC_JWKS_URL", "EPIC_ISSUER_PREFIX", "EPIC_CLIENT_SECRET",
     "EPIC_REDIRECT_URI", "EPIC_AUTHORIZE_URL", "EPIC_TOKEN_URL",
     "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL",
@@ -43,35 +43,36 @@ const MAIL_OVERRIDEABLE_ENV: &[&str; 10] = &[
 /// other than mail's — one process hosts accounts, so the provider keys are read from
 /// the same env map. [`MONOLITH_OVERRIDEABLE_ENV`] appends [`MAIL_OVERRIDEABLE_ENV`] to
 /// this at compile time, so the mail keys themselves are written out exactly once.
-const MONOLITH_BASE_ENV: &[&str; 17] = &[
-    "APIKEYS_DEV_SEED", "ACCOUNTS_DEV_AUTH", "INVENTORY_DEV_GRANT", "WALLET_DEV_SEED",
+const MONOLITH_BASE_ENV: &[&str; 18] = &[
+    "APIKEYS_DEV_SEED", "ACCOUNTS_OPEN_REGISTRATION", "ACCOUNTS_COOKIE_SECURE",
+    "INVENTORY_DEV_GRANT", "WALLET_DEV_SEED",
     "ADMIN_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS", "NOTIFICATIONS_RETENTION_DAYS",
     "EPIC_CLIENT_ID", "EPIC_JWKS_URL", "EPIC_ISSUER_PREFIX", "EPIC_CLIENT_SECRET",
     "EPIC_REDIRECT_URI", "EPIC_AUTHORIZE_URL", "EPIC_TOKEN_URL",
     "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL", "ADMIN_DEPLOYMENT_NAME",
 ];
 
-/// Concatenates [`MONOLITH_BASE_ENV`] (17 keys) and [`MAIL_OVERRIDEABLE_ENV`] (10 keys)
+/// Concatenates [`MONOLITH_BASE_ENV`] (18 keys) and [`MAIL_OVERRIDEABLE_ENV`] (10 keys)
 /// at compile time into [`MONOLITH_OVERRIDEABLE_ENV_ARR`] — const generics cannot
 /// express `N + M` as an array length on stable Rust (no `generic_const_exprs`), so this
 /// is monomorphic to the two callers' concrete sizes rather than generic; a length
 /// mismatch at either input is a compile error here, never a silent truncation.
-const fn concat_env_17_10(a: &[&'static str; 17], b: &[&'static str; 10]) -> [&'static str; 27] {
-    let mut out = [""; 27];
+const fn concat_env_18_10(a: &[&'static str; 18], b: &[&'static str; 10]) -> [&'static str; 28] {
+    let mut out = [""; 28];
     let mut i = 0;
-    while i < 17 {
+    while i < 18 {
         out[i] = a[i];
         i += 1;
     }
     let mut j = 0;
     while j < 10 {
-        out[17 + j] = b[j];
+        out[18 + j] = b[j];
         j += 1;
     }
     out
 }
 
-const MONOLITH_OVERRIDEABLE_ENV_ARR: [&str; 27] = concat_env_17_10(MONOLITH_BASE_ENV, MAIL_OVERRIDEABLE_ENV);
+const MONOLITH_OVERRIDEABLE_ENV_ARR: [&str; 28] = concat_env_18_10(MONOLITH_BASE_ENV, MAIL_OVERRIDEABLE_ENV);
 const MONOLITH_OVERRIDEABLE_ENV: &[&str] = &MONOLITH_OVERRIDEABLE_ENV_ARR;
 
 /// Provider keys the `Proof` overlay CLEARS before pinning its own. `google` is the
@@ -908,7 +909,11 @@ pub fn game_backend_fleet_with_environment(
     notifications.overrideable_env = &["NOTIFICATIONS_RETENTION_DAYS"];
     mail.overrideable_env = MAIL_OVERRIDEABLE_ENV;
 
-    accounts.env.insert("ACCOUNTS_DEV_AUTH".into(), "1".into());
+    accounts.env.insert("ACCOUNTS_OPEN_REGISTRATION".into(), "1".into());
+    accounts.env.insert("ACCOUNTS_COOKIE_SECURE".into(), "0".into());
+    accounts
+        .env
+        .insert("TRUSTED_PROXY_CIDRS".into(), "127.0.0.1/32".into());
     apikeys.env.insert("APIKEYS_DEV_SEED".into(), "1".into());
     inventory.env.insert("INVENTORY_DEV_GRANT".into(), "1".into());
     wallet.env.insert("WALLET_DEV_SEED".into(), "1".into());
@@ -940,7 +945,7 @@ pub fn game_backend_fleet_with_environment(
             for key in PROOF_UNCONFIGURED_PROVIDER_ENV {
                 accounts.env.remove(*key);
             }
-            accounts.env.insert("ACCOUNTS_DEV_AUTH".into(), "1".into());
+            accounts.env.insert("ACCOUNTS_OPEN_REGISTRATION".into(), "1".into());
             accounts
                 .env
                 .insert("EPIC_CLIENT_ID".into(), PROOF_OIDC_CLIENT_ID.into());
@@ -993,7 +998,8 @@ pub fn game_backend_monolith(
         ("EDGE_CA_CERT", inputs.edge_ca_cert.display().to_string()),
         ("EDGE_CA_KEY", inputs.edge_ca_key.display().to_string()),
         ("APIKEYS_DEV_SEED", "1".into()),
-        ("ACCOUNTS_DEV_AUTH", "1".into()),
+        ("ACCOUNTS_OPEN_REGISTRATION", "1".into()),
+        ("ACCOUNTS_COOKIE_SECURE", "0".into()),
         ("INVENTORY_DEV_GRANT", "1".into()),
         ("WALLET_DEV_SEED", "1".into()),
         ("TLS_MODE", "off".into()),
@@ -1018,7 +1024,7 @@ pub fn game_backend_monolith(
         for key in PROOF_CLEARED_MAIL_SMTP_ENV {
             env.remove(*key);
         }
-        env.insert("ACCOUNTS_DEV_AUTH".into(), "1".into());
+        env.insert("ACCOUNTS_OPEN_REGISTRATION".into(), "1".into());
         env.insert("EPIC_CLIENT_ID".into(), PROOF_OIDC_CLIENT_ID.into());
         env.insert("EPIC_JWKS_URL".into(), PROOF_OIDC_JWKS_URL.into());
         env.insert("EPIC_ISSUER_PREFIX".into(), PROOF_OIDC_ISSUER.into());
