@@ -98,6 +98,8 @@ fn return_to_outside_the_rule_is_the_landing_page() {
         "/admin",
         "/accounts/oidc/../../admin",
         "/accounts/oidc/%2E%2e/admin",
+        "/accounts/oidc/..#",
+        "/accounts/oidc/%2e%2e#",
         "/accounts/oidc/x\r\nSet-Cookie:a=b",
         "",
         long.as_str(),
@@ -167,6 +169,9 @@ async fn sign_in_landing_and_logout() {
     }
     let csp = headers.get("content-security-policy").unwrap().to_str().unwrap();
     assert!(csp.contains("frame-ancestors 'none'") && !csp.contains("script-src"), "{csp}");
+    // form-action would also bind the redirects after the POST, so the 303 to authorize
+    // and the client's cross-origin redirect_uri would be blocked.
+    assert!(!csp.contains("form-action"), "{csp}");
     assert_eq!(headers.get("cache-control").unwrap(), "no-store");
 
     assert_eq!(status, 303);
@@ -184,6 +189,60 @@ async fn sign_in_landing_and_logout() {
     assert_eq!(logout_status, 303);
     assert!(has_attr(&cleared, "Max-Age=0"), "{cleared}");
     assert!(after_logout.is_none(), "logout deletes the session");
+}
+
+/// A form rendered for a browser that already holds a login-CSRF token sets that token
+/// again, so the cookie's ten minutes run from the form the browser shows.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reused_login_csrf_token_is_set_again() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let base = serve_default(svc).await;
+    let csrf = login_csrf(&base).await;
+
+    let again = client()
+        .get(format!("{base}/accounts/oidc/login"))
+        .header("Cookie", format!("{}={csrf}", web::LOGIN_CSRF_COOKIE))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(again.status(), 200);
+    let reset = set_cookie(&again, web::LOGIN_CSRF_COOKIE);
+    assert_eq!(cookie_value(&reset), csrf, "the browser's token is reused");
+    for attr in ["HttpOnly", "SameSite=Strict", "Path=/accounts/oidc", "Max-Age=600", "Secure"] {
+        assert!(has_attr(&reset, attr), "{attr}: {reset}");
+    }
+}
+
+/// Signing in again from a browser that holds a session ends that session.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_sign_in_ends_the_browsers_old_session() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let (email, pid) = registered(&svc, "again").await;
+    let base = serve_default(svc.clone()).await;
+
+    let csrf = login_csrf(&base).await;
+    let first = post_login(&base, &csrf, &email, "pw", "").await;
+    let old = cookie_value(&set_cookie(&first, web::SESSION_COOKIE));
+    let csrf = login_csrf(&base).await;
+    let second = client()
+        .post(format!("{base}/accounts/oidc/login"))
+        .header("Cookie", format!("{}={csrf}; {}={old}", web::LOGIN_CSRF_COOKIE, web::SESSION_COOKIE))
+        .form(&[("email", email.as_str()), ("password", "pw"), ("csrf", &csrf), ("return_to", "")])
+        .send()
+        .await
+        .unwrap();
+    let second_status = second.status();
+    let new = cookie_value(&set_cookie(&second, web::SESSION_COOKIE));
+    let old_after = svc.store.browser_session(&old).await.unwrap();
+    let new_after = svc.store.browser_session(&new).await.unwrap();
+    cleanup_player(&pool, &pid).await;
+
+    assert_eq!(second_status, 303);
+    assert_ne!(new, old);
+    assert!(old_after.is_none(), "the replaced session no longer resolves");
+    assert!(new_after.is_some(), "the new session resolves");
 }
 
 /// A wrong password and an unknown email get the same 401 page; a POST without the

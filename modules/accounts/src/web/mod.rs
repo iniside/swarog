@@ -91,18 +91,14 @@ impl Web {
     }
 
     /// The sign-in form with a login-CSRF token: the browser's current one when it is
-    /// well formed, so two open tabs share it, else a fresh one set on the response.
+    /// well formed, so two open tabs share it, else a fresh one. Either way the cookie is
+    /// set on the response, so its `Max-Age` runs from the form the browser now shows.
     fn render_login(&self, jar: &CookieJar, status: StatusCode, error: &str, return_to: &str) -> Response {
         let existing = jar.get(LOGIN_CSRF_COOKIE).map(|c| c.value()).filter(|v| well_formed_token(v));
-        let (csrf, set) = match existing {
-            Some(v) => (v.to_string(), false),
-            None => (crate::store::new_token(), true),
-        };
+        let csrf = existing.map_or_else(crate::store::new_token, str::to_string);
         let view = LoginView { error, csrf: &csrf, return_to };
         let mut resp = self.render("login.html", status, view);
-        if set {
-            resp.headers_mut().append(header::SET_COOKIE, self.login_csrf_cookie(&csrf));
-        }
+        resp.headers_mut().append(header::SET_COOKIE, self.login_csrf_cookie(&csrf));
         resp
     }
 
@@ -187,7 +183,7 @@ async fn security_headers(req: Request, next: Next) -> Response {
     h.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; form-action 'self'",
+            "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
         ),
     );
     h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
@@ -212,9 +208,9 @@ fn see_other(location: &str) -> Response {
 }
 
 /// Where a sign-in may send the browser: a path under `/accounts/oidc/` with its query
-/// kept, at most [`MAX_RETURN_TO_BYTES`], printable ASCII, with no `//`, no backslash and
-/// no dot segment (a browser would resolve one out of the prefix). Anything else is the
-/// landing page.
+/// kept, at most [`MAX_RETURN_TO_BYTES`], printable ASCII, with no `//`, no backslash, no
+/// `#` and no dot segment (a browser would resolve one out of the prefix, and drops a
+/// fragment before resolving). Anything else is the landing page.
 pub(crate) fn safe_return_to(raw: Option<&str>) -> &str {
     let Some(raw) = raw else { return LANDING };
     let path = raw.split_once('?').map_or(raw, |(path, _)| path);
@@ -223,6 +219,7 @@ pub(crate) fn safe_return_to(raw: Option<&str>) -> &str {
         && raw.bytes().all(|b| b.is_ascii_graphic())
         && !raw.contains("//")
         && !raw.contains('\\')
+        && !raw.contains('#')
         && !path.split('/').any(is_dot_segment);
     if ok {
         raw
@@ -322,6 +319,13 @@ async fn login_submit(
             return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
         }
     };
+    // A browser already signed in gets a new session; the one it held ends here, not at expiry.
+    if let Some(old) = jar.get(SESSION_COOKIE) {
+        if let Err(e) = web.svc.store.delete_browser_session(old.value()).await {
+            tracing::error!(err = %e, "replaced browser session delete failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
+        }
+    }
     let minted = match web.svc.store.create_browser_session(&player.id).await {
         Ok(Some(minted)) => minted,
         Ok(None) => {
