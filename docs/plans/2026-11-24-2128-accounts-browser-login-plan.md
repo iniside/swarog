@@ -256,7 +256,8 @@ install.
   `docs/reference/hetzner-deploy-checklist.md:39`, `docs/reference/weles-fleet-parity.md:129`,
   `docs/roadmap/feature-tracker.md:144`, `.agents/skills/architecture-review/SKILL.md:86`,
   `.agents/skills/split-topology-debugger/SKILL.md:32,84`, `docs/todo/accounts.md`
-  (1b; the Google redirect flow on the hosted page as the next phase, owner decision 4).
+  (1b; the Google redirect flow on the hosted page as the next phase, owner decision 4;
+  a `UILayout/` mockup of the hosted login page, owner decision 8).
 - (b) Closes the step; archives (`docs/{plans,reviews,research,design,status}`) are not
   rewritten.
 - (c) Ends with `rg ACCOUNTS_DEV_AUTH docs/reference docs/roadmap .claude .agents` empty.
@@ -284,3 +285,7 @@ proof run once, after Step 6, as part of Step 7 (owner, 2026-11-25).
 7. **Red `verifyctl` stages outside this plan** (config clippy/archcheck, inventory
    archcheck, audit, admindiff, core/admin poison test, processctl shutdown test,
    scheduler `SH2`/`SH2m`): "zostaw" — not this plan's work.
+8. **Login page mockup:** "po planie dodaj te strone do mockupy zeby bylo mniej wiecej
+   synced". After this plan, the hosted login page (Steps 4b and 5) gets a mockup under
+   `UILayout/` that roughly matches the shipped page. Step 8 records it in
+   `docs/todo/accounts.md`.
