@@ -672,9 +672,11 @@ async fn revoke_all_prepare_names_the_player_and_counts_live_sessions() {
 
     let Then::Confirm(spec) = spec.unwrap() else { panic!("revoke-all prepares a Confirm") };
     assert_eq!(spec.title, format!("Revoke all sessions of {}?", handle.unwrap()));
-    assert_eq!(spec.impact.len(), 1);
+    assert_eq!(spec.impact.len(), 2);
     assert_eq!(spec.impact[0].0, "Active sessions");
     assert_eq!(spec.impact[0].1.value, "2");
+    assert_eq!(spec.impact[1].0, "Browser sessions");
+    assert_eq!(spec.impact[1].1.value, "0");
     assert_eq!(rows, 4, "prepare writes nothing");
     assert_eq!(missing.unwrap_err().status, Status::NotFound);
 }
@@ -835,7 +837,8 @@ async fn revoke_all_counts_and_ends_a_browser_session() {
     cleanup_player(&pool, &id).await;
 
     let Then::Confirm(spec) = spec.unwrap() else { panic!("revoke-all prepares a Confirm") };
-    assert_eq!(spec.impact[0].1.value, "1", "the modal counts the browser session");
+    assert_eq!(spec.impact[0].1.value, "0", "no family grants access");
+    assert_eq!(spec.impact[1].1.value, "1", "the modal counts the browser session");
     assert!(matches!(outcome.unwrap(), InvokeOutcome::Ok { .. }));
     assert!(read.is_none());
     assert_eq!(left, 0, "Revoke all deletes the browser session");

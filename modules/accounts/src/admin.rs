@@ -722,11 +722,12 @@ impl AccountsAdmin {
             .ok_or_else(|| Error::not_found(format!("accounts: no player {player}")))?;
         let mut conn = store.pool.acquire().await.map_err(internal)?;
         let families = store.revocable_families_tx(&mut conn, player).await.map_err(internal)?;
-        let families = families.len();
         let browsers = store.live_browser_sessions_tx(&mut conn, player).await.map_err(internal)?;
-        let live = families + browsers as usize;
         let handle = render_handle(&row.display_name, &row.discriminator);
-        let impact = vec![("Active sessions".to_string(), text(CellKind::Text, live.to_string()))];
+        let impact = vec![
+            ("Active sessions".to_string(), text(CellKind::Text, families.len().to_string())),
+            ("Browser sessions".to_string(), text(CellKind::Text, browsers.to_string())),
+        ];
         Ok(Then::Confirm(revoke_all_spec(format!("Revoke all sessions of {handle}?"), impact)))
     }
 

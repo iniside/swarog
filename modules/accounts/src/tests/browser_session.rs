@@ -110,6 +110,28 @@ async fn deleting_the_player_removes_its_browser_sessions_and_refuses_new_ones()
     assert!(malformed.is_none(), "an unparseable id is no player");
 }
 
+/// The schema's own cascade, without the revocation `delete_player_tx` runs first.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_raw_player_delete_cascades_to_its_browser_sessions() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = svc
+        .register(format!("browser-cascade-{}@test.local", suffix()), "pw".into(), "BrCasc".into())
+        .await
+        .unwrap()
+        .player_id;
+    svc.store.create_browser_session(&pid).await.unwrap().unwrap();
+    sqlx::query("DELETE FROM accounts.players WHERE id = $1::uuid")
+        .bind(&pid)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let left = browser_rows(&pool, &pid).await;
+    cleanup_player(&pool, &pid).await;
+
+    assert_eq!(left, 0);
+}
+
 /// A browser session insert racing the player's deletion: the insert's foreign key check
 /// waits on the deleting transaction's row lock, then fails, so no session outlives the
 /// player.

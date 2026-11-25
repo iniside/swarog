@@ -1356,8 +1356,8 @@ impl Store {
     }
 
     /// The newest `limit` refresh families of a player that still grant access, plus how
-    /// many do: the set [`Store::revocable_families_tx`] counts and Revoke all deletes
-    /// ([`granting_families`]). A revoked family has no rows left.
+    /// many do: the set [`Store::revocable_families_tx`] counts and the families Revoke all
+    /// deletes ([`granting_families`]). A revoked family has no rows left.
     pub async fn live_families(
         &self,
         player_id: &str,
