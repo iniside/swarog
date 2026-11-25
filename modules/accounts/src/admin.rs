@@ -69,7 +69,8 @@ const ACCOUNT_KIND: &str = "player";
 const ACCOUNT_STATUS: &str = "active";
 
 const PAGE_SIZE: usize = 25;
-/// The most live sessions the Active sessions panel lists; its meta counts them all.
+/// The most live sessions, refresh families and browser sessions together, the Active
+/// sessions panel lists; its meta counts them all.
 const SESSIONS_SHOWN: i64 = 50;
 /// The longest table search the provider runs; a longer one is refused before any statement.
 const MAX_NEEDLE_BYTES: usize = 256;
@@ -764,7 +765,7 @@ impl AccountsAdmin {
             .live_browser_session_rows(id, SESSIONS_SHOWN)
             .await
             .map_err(internal)?;
-        let rows = families.iter().map(session_row).chain(browsers.iter().map(browser_row)).collect();
+        let rows = session_rows(&families, &browsers);
         Ok(PanelBody {
             meta: Some((live + live_browsers).to_string()),
             ..PanelBody::new(Primitive::DataTable(detail_table(columns, rows)))
@@ -970,6 +971,20 @@ fn session_row(family: &FamilyRow) -> Row {
         item: Some(family.family_id.clone()),
         actions: vec![REVOKE_SESSION.to_string()],
     }
+}
+
+/// The Sessions panel's rows: refresh families and browser sessions merged newest start
+/// first, at most [`SESSIONS_SHOWN`] in all. Each input is already the newest
+/// [`SESSIONS_SHOWN`] of its kind, so the merge's head is the newest of both.
+fn session_rows(families: &[FamilyRow], browsers: &[BrowserSessionRow]) -> Vec<Row> {
+    let mut rows: Vec<(i64, Row)> = families
+        .iter()
+        .map(|family| (family.started_us, session_row(family)))
+        .chain(browsers.iter().map(|session| (session.started_us, browser_row(session))))
+        .collect();
+    rows.sort_by_key(|row| std::cmp::Reverse(row.0));
+    rows.truncate(SESSIONS_SHOWN as usize);
+    rows.into_iter().map(|(_, row)| row).collect()
 }
 
 /// A browser session of the hosted sign-in pages: no token or digest, nothing to act on

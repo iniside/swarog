@@ -13,9 +13,12 @@ use sqlx::PgPool;
 use testdb::test_pool;
 
 use super::{
-    fake_client, fake_ip, mask, thousands, AccountsAdmin, CREATE_ACCOUNT, FIELD_DISPLAY_NAME,
-    FIELD_EMAIL, MAX_NEEDLE_BYTES, PAGE_SIZE, RESET_PASSWORD, REVOKE_ALL, REVOKE_SESSION,
+    fake_client, fake_ip, mask, session_rows, thousands, AccountsAdmin, CREATE_ACCOUNT,
+    FIELD_DISPLAY_NAME, FIELD_EMAIL, MAX_NEEDLE_BYTES, PAGE_SIZE, RESET_PASSWORD, REVOKE_ALL,
+    REVOKE_SESSION, SESSIONS_SHOWN,
 };
+use crate::store::FamilyRow;
+use crate::web::session::BrowserSessionRow;
 use crate::tests::{cleanup_player, suffix, wired};
 
 /// A canonical uuid no registration mints: registrations are v4, this is v0.
@@ -1029,6 +1032,38 @@ async fn reset_password_ends_every_login_and_only_the_new_password_signs_in() {
     assert_ne!(second, password, "every reset generates a new password");
 }
 
+/// A password checked against the old hash just before a reset commits mints nothing
+/// after it, through either mint. Ordered by hand: verify, reset, then mint.
+#[tokio::test]
+async fn a_password_verified_before_a_reset_mints_no_session_after_it() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let email = format!("stale-{}@test.local", suffix());
+    let lower = email.to_ascii_lowercase();
+    let id = svc.register(email, "old-pw".into(), "Stale".into()).await.unwrap().player_id;
+    let verified = svc.verify_password(&lower, "old-pw".into()).await.unwrap();
+    let admin = AccountsAdmin::new(Arc::clone(&svc));
+    admin.invoke(revoke(RESET_PASSWORD, Some(&id), None)).await.unwrap();
+    let bearer = svc.issue_password_session(&verified).await;
+    let browser = svc.issue_password_browser_session(&verified).await;
+    let rows: (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM accounts.refresh_tokens WHERE player_id = $1::uuid), \
+                (SELECT count(*) FROM accounts.sessions WHERE player_id = $1::uuid), \
+                (SELECT count(*) FROM accounts.browser_sessions WHERE player_id = $1::uuid)",
+    )
+    .bind(&id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let fresh = svc.verify_password(&lower, "old-pw".into()).await;
+    cleanup_player(&pool, &id).await;
+
+    assert_eq!(bearer.unwrap_err().status, Status::Unauthorized, "the bearer mint is refused");
+    assert_eq!(browser.err().map(|e| e.status), Some(Status::Unauthorized), "the browser mint is refused");
+    assert_eq!(rows, (0, 0, 0), "no family, access session or browser session is left");
+    assert_eq!(fresh.err().map(|e| e.status), Some(Status::Unauthorized), "the old password fails anew");
+}
+
 #[tokio::test]
 async fn reset_password_refuses_a_player_without_a_password_and_a_missing_player() {
     let Some(pool) = test_pool().await else { return };
@@ -1040,10 +1075,22 @@ async fn reset_password_refuses_a_player_without_a_password_and_a_missing_player
         .insert_player_with_identity_tx(&mut tx, "epic", &subject, "EpicOnly", None)
         .await
         .unwrap_or_else(|_| panic!("an epic-only player"));
+    let session = svc
+        .issue_session_tx(&mut tx, &epic, "epic", &subject, None, crate::store::new_token())
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
+    let browser = svc.store.create_browser_session(&epic.id).await.unwrap().unwrap();
     let admin = AccountsAdmin::new(Arc::clone(&svc));
     let spec = admin.prepare(prepare_call(RESET_PASSWORD, Some(&epic.id))).await;
     let reset = admin.invoke(revoke(RESET_PASSWORD, Some(&epic.id), None)).await;
+    let bearer = svc.store.player_by_session(&session.token).await.unwrap();
+    let browser_left = svc.store.browser_session(&browser.token).await.unwrap();
+    let refresh_left: i64 = sqlx::query_scalar("SELECT count(*) FROM accounts.refresh_tokens WHERE token = $1")
+        .bind(&session.refresh_token)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     let hash: Option<String> =
         sqlx::query_scalar("SELECT secret_hash FROM accounts.identities WHERE provider = 'epic' AND subject = $1")
             .bind(&subject)
@@ -1058,6 +1105,9 @@ async fn reset_password_refuses_a_player_without_a_password_and_a_missing_player
     assert_eq!(spec.unwrap_err().status, Status::Conflict, "no password to reset: refused before the modal");
     assert_eq!(reset.unwrap_err().status, Status::Conflict);
     assert!(hash.is_none(), "a refused reset writes no hash onto another identity");
+    assert!(bearer.is_some(), "a refused reset keeps the access session");
+    assert_eq!(refresh_left, 1, "a refused reset keeps the refresh family");
+    assert!(browser_left.is_some(), "a refused reset keeps the browser session");
     assert_eq!(missing.unwrap_err().status, Status::NotFound);
     assert_eq!(missing_spec.unwrap_err().status, Status::NotFound);
     assert_eq!(unbound.unwrap_err().status, Status::Invalid);
@@ -1085,13 +1135,39 @@ async fn sessions_panel_lists_live_browser_sessions_without_their_token() {
     assert_eq!(body.meta.as_deref(), Some("2"), "one family and one live browser session");
     let t = table(body);
     assert_eq!(t.rows.len(), 2, "the expired browser session is not listed");
-    let row = &t.rows[1];
+    let row = &t.rows[0];
     assert_eq!(row.cells[0].value, "Browser sign-in");
     assert!(row.cells[3].value.starts_with("in "), "{}", row.cells[3].value);
     assert!(row.item.is_none() && row.actions.is_empty(), "nothing acts on one browser session");
     for cell in &row.cells {
         assert!(!cell.value.contains(&browser.token) && !cell.value.contains(&browser.csrf_token));
     }
+}
+
+/// Families and browser sessions share one newest-first list capped at SESSIONS_SHOWN.
+#[test]
+fn sessions_panel_merges_both_kinds_newest_first_under_one_cap() {
+    let shown = SESSIONS_SHOWN as usize;
+    // Families start on even microseconds, browser sessions on odd ones, interleaved.
+    let families: Vec<FamilyRow> = (0..shown as i64)
+        .map(|i| FamilyRow {
+            family_id: format!("family-{i}"),
+            started: String::new(),
+            started_us: 2 * i,
+            expires_in_secs: 60,
+        })
+        .collect();
+    let browsers: Vec<BrowserSessionRow> = (0..shown as i64)
+        .map(|i| BrowserSessionRow { started: String::new(), started_us: 2 * i + 1, expires_in_secs: 60 })
+        .collect();
+    let rows = session_rows(&families, &browsers);
+
+    assert_eq!(rows.len(), shown, "one cap over both kinds");
+    assert_eq!(rows[0].cells[0].value, "Browser sign-in", "the newest start comes first");
+    let newest_family = format!("family-{}", shown - 1);
+    assert_eq!(rows[1].item.as_deref(), Some(newest_family.as_str()));
+    let oldest_kept = format!("family-{}", shown / 2);
+    assert_eq!(rows[shown - 1].item.as_deref(), Some(oldest_kept.as_str()), "the oldest half is cut");
 }
 
 /// The conformance probes of Create account's caps answer at and over each cap through

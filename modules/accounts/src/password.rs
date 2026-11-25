@@ -26,9 +26,7 @@ fn hasher() -> Argon2<'static> {
     )
 }
 
-/// Hashes `pw` with a fresh 16-byte salt into the PHC string above.
-/// The length of an operator-issued password: 20 characters of `[A-Za-z0-9]` from the OS
-/// RNG, about 119 bits.
+/// An operator-issued password's length: 20 `[A-Za-z0-9]` characters from the OS RNG, ~119 bits.
 pub(crate) const ISSUED_PASSWORD_CHARS: usize = 20;
 
 /// A fresh random password for an operator-created account or a reset.
@@ -41,6 +39,7 @@ pub(crate) fn new_password() -> String {
         .collect()
 }
 
+/// Hashes `pw` with a fresh 16-byte salt into the PHC string above.
 pub(crate) fn hash_password(pw: &str) -> anyhow::Result<String> {
     let salt = SaltString::generate(&mut OsRng);
     let hash = hasher()

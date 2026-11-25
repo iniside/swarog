@@ -55,6 +55,7 @@ use crate::providers::{
     CredentialVerifier, ProviderConfig, Providers, Resolution, VerifiedSubject, VerifyError, GUEST,
 };
 use crate::store::{LinkOutcome, Player, Store, StoreError};
+use crate::web::session::NewBrowserSession;
 
 /// Input caps enforced before any expensive verifier, Argon2, RPC, or database work.
 /// Email follows RFC 5321's total-address maximum; password is capped at 1 KiB
@@ -266,6 +267,27 @@ fn internal<E: std::fmt::Display>(e: E) -> Error {
     Error::internal(e.to_string())
 }
 
+/// A mint the identity stamp refused: with a verified hash, that hash was replaced (an
+/// operator reset) after it was checked, answered like a wrong password; without one,
+/// the identity is gone, which no login path leaves behind.
+fn stamp_refused(secret_hash: Option<&str>) -> Error {
+    if secret_hash.is_some() {
+        Error::unauthorized("invalid credentials")
+    } else {
+        Error::internal("no identity to mint a session through")
+    }
+}
+
+/// A password [`Service::verify_password`] accepted: the player, the normalised email
+/// of its `password` identity and the stored hash the password matched. Minting through
+/// it checks, in the minting transaction, that the identity still stores that hash, so
+/// a sign-in verified just before an operator reset cannot mint after it.
+pub(crate) struct VerifiedPassword {
+    pub(crate) player: Player,
+    email: String,
+    hash: String,
+}
+
 /// A store failure on the delete path: an id the `::uuid` cast could not parse gets the
 /// same `NotFound` an unknown ticket gets — never a 500, and never a 403, which would
 /// confirm the ticket exists.
@@ -326,7 +348,9 @@ impl Service {
 
     /// Mints one login: a new refresh FAMILY and the first access token inside it, on
     /// the caller's transaction, and stamps the identity `(provider, subject)` it was
-    /// minted through as last used. All three commit with whatever else that
+    /// minted through as last used. With `secret_hash` (a password sign-in) the identity
+    /// must still store the hash that was verified, else nothing is minted and the answer
+    /// is the wrong-password 401. All three commit with whatever else that
     /// transaction carries (the player row, the `player.registered` append); a refresh
     /// rotates inside a family and never comes here, so it never stamps.
     ///
@@ -341,6 +365,7 @@ impl Service {
         p: &Player,
         provider: &str,
         subject: &str,
+        secret_hash: Option<&str>,
         token: String,
     ) -> Result<accountsapi::Session, Error> {
         let refresh_token = store::new_token();
@@ -353,10 +378,14 @@ impl Service {
             .insert_session_tx(conn, &p.id, &token, &family_id)
             .await
             .map_err(internal)?;
-        self.store
-            .stamp_identity_used_tx(conn, provider, subject, &p.id)
+        let stamped = self
+            .store
+            .stamp_identity_used_tx(conn, provider, subject, &p.id, secret_hash)
             .await
             .map_err(internal)?;
+        if !stamped {
+            return Err(stamp_refused(secret_hash));
+        }
         Ok(accountsapi::Session {
             player_id: p.id.clone(),
             token,
@@ -365,20 +394,63 @@ impl Service {
         })
     }
 
-    /// Mints a fresh bearer token for `p` through its `password` identity `email` in its own
-    /// thin transaction. Password login uses this path; registration/external login use
-    /// their outer tx.
+    /// Mints a fresh bearer token through the password identity `verified` matched, in its
+    /// own thin transaction, only while that identity still stores the verified hash.
+    /// Password login uses this path; registration/external login use their outer tx.
     async fn issue_password_session(
         &self,
-        p: &Player,
-        email: &str,
+        verified: &VerifiedPassword,
     ) -> Result<accountsapi::Session, Error> {
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
         let session = self
-            .issue_session_tx(&mut tx, p, providers::PASSWORD, email, store::new_token())
+            .issue_session_tx(
+                &mut tx,
+                &verified.player,
+                providers::PASSWORD,
+                &verified.email,
+                Some(&verified.hash),
+                store::new_token(),
+            )
             .await?;
         tx.commit().await.map_err(internal)?;
         Ok(session)
+    }
+
+    /// Mints the hosted pages' browser session through the password identity `verified`
+    /// matched, stamping it used, only while that identity still stores the verified hash
+    /// (the bearer mint's check, [`Store::stamp_identity_used_tx`]). A refusal, or a player
+    /// deleted meanwhile, is the wrong-password 401. Lock order as
+    /// [`Service::issue_session_tx`]: the insert's foreign key takes the player row
+    /// before the stamp takes the identity.
+    pub(crate) async fn issue_password_browser_session(
+        &self,
+        verified: &VerifiedPassword,
+    ) -> Result<NewBrowserSession, Error> {
+        let mut tx = self.store.pool.begin().await.map_err(internal)?;
+        let Some(minted) = self
+            .store
+            .create_browser_session_tx(&mut tx, &verified.player.id)
+            .await
+            .map_err(internal)?
+        else {
+            return Err(Error::unauthorized("invalid credentials"));
+        };
+        let stamped = self
+            .store
+            .stamp_identity_used_tx(
+                &mut tx,
+                providers::PASSWORD,
+                &verified.email,
+                &verified.player.id,
+                Some(&verified.hash),
+            )
+            .await
+            .map_err(internal)?;
+        if !stamped {
+            return Err(stamp_refused(Some(&verified.hash)));
+        }
+        tx.commit().await.map_err(internal)?;
+        Ok(minted)
     }
 
     /// Checks `password` against the password identity of `email`, which the caller has
@@ -393,7 +465,7 @@ impl Service {
         &self,
         email: &str,
         password: String,
-    ) -> Result<Player, Error> {
+    ) -> Result<VerifiedPassword, Error> {
         // Admission bound: shed (never queue) beyond 32 concurrent logins. The slot
         // stays in this async frame — releasing it on cancel is correct, the request
         // is gone.
@@ -437,8 +509,12 @@ impl Service {
         if !(verified && known_user && valid_input) {
             return Err(Error::unauthorized("invalid credentials"));
         }
-        let (p, _) = identity.expect("known_user implies identity");
-        Ok(p)
+        let (player, hash) = identity.expect("known_user implies identity");
+        Ok(VerifiedPassword {
+            player,
+            email: email.to_string(),
+            hash,
+        })
     }
 
     /// Hashes `password` with argon2id on a blocking thread behind the argon permit, so
@@ -556,7 +632,7 @@ impl Service {
             }
         };
         let session = match self
-            .issue_session_tx(&mut tx, &p, providers::PASSWORD, email, token)
+            .issue_session_tx(&mut tx, &p, providers::PASSWORD, email, None, token)
             .await
         {
             Ok(session) => session,
@@ -589,7 +665,7 @@ impl Service {
                 }
             };
         let session = match self
-            .issue_session_tx(&mut tx, &p, provider, subject, store::new_token())
+            .issue_session_tx(&mut tx, &p, provider, subject, None, store::new_token())
             .await
         {
             Ok(session) => session,
@@ -1071,8 +1147,8 @@ impl accountsapi::Auth for Service {
     /// (which already rate-limits by source IP).
     async fn login(&self, email: String, password: String) -> Result<accountsapi::Session, Error> {
         let email = normalize_email(&email);
-        let p = self.verify_password(&email, password).await?;
-        self.issue_password_session(&p, &email).await
+        let verified = self.verify_password(&email, password).await?;
+        self.issue_password_session(&verified).await
     }
 
     /// Federated login (AuthNone): resolves `provider`, verifies `credential` with

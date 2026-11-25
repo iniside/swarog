@@ -5,6 +5,8 @@
 
 use sha2::{Digest, Sha256};
 
+use sqlx::PgConnection;
+
 use crate::store::{is_canonical_uuid, is_foreign_key_violation, is_invalid_uuid, new_token, Store};
 
 /// How long a signed-in browser stays signed in.
@@ -20,6 +22,8 @@ pub(crate) struct NewBrowserSession {
 pub(crate) struct BrowserSessionRow {
     /// `YYYY-MM-DD HH:MI` UTC, the refresh families' spelling.
     pub started: String,
+    /// The same instant in microseconds since the epoch: the Sessions panel's sort key.
+    pub started_us: i64,
     pub expires_in_secs: i64,
 }
 
@@ -41,6 +45,17 @@ impl Store {
         &self,
         player_id: &str,
     ) -> Result<Option<NewBrowserSession>, sqlx::Error> {
+        let mut conn = self.pool.acquire().await?;
+        self.create_browser_session_tx(&mut conn, player_id).await
+    }
+
+    /// [`Store::create_browser_session`] on the caller's connection, so a password sign-in
+    /// commits it with the identity check ([`crate::Service::issue_password_browser_session`]).
+    pub async fn create_browser_session_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<Option<NewBrowserSession>, sqlx::Error> {
         let session = NewBrowserSession {
             token: new_token(),
             csrf_token: new_token(),
@@ -54,7 +69,7 @@ impl Store {
         .bind(player_id)
         .bind(&session.csrf_token)
         .bind(BROWSER_SESSION_TTL_HOURS)
-        .execute(&self.pool)
+        .execute(&mut *conn)
         .await;
         match res {
             Ok(done) if done.rows_affected() == 1 => Ok(Some(session)),
@@ -91,8 +106,9 @@ impl Store {
         if !is_canonical_uuid(player_id) {
             return Ok((Vec::new(), 0));
         }
-        let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+        let rows: Vec<(String, i64, i64, i64)> = sqlx::query_as(
             "SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), \
+                    (EXTRACT(EPOCH FROM created_at) * 1000000)::int8, \
                     floor(EXTRACT(EPOCH FROM (expires_at - now())))::int8, \
                     count(*) OVER () \
                FROM accounts.browser_sessions \
@@ -103,10 +119,14 @@ impl Store {
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
-        let live = rows.first().map_or(0, |row| row.2);
+        let live = rows.first().map_or(0, |row| row.3);
         let sessions = rows
             .into_iter()
-            .map(|(started, expires_in_secs, _)| BrowserSessionRow { started, expires_in_secs })
+            .map(|(started, started_us, expires_in_secs, _)| BrowserSessionRow {
+                started,
+                started_us,
+                expires_in_secs,
+            })
             .collect();
         Ok((sessions, live))
     }

@@ -339,6 +339,8 @@ pub(crate) struct FamilyRow {
     pub family_id: String,
     /// The family's first issue, `YYYY-MM-DD HH24:MI` UTC.
     pub started: String,
+    /// The same instant in microseconds since the epoch: the Sessions panel's sort key.
+    pub started_us: i64,
     /// Seconds until the last of the family's tokens expires, on the database clock.
     pub expires_in_secs: i64,
 }
@@ -831,28 +833,30 @@ impl Store {
     }
 
     /// Stamps identity `(provider, subject)` of `player_id` as used now, on the caller's
-    /// tx. No such identity of that player is an error: a session is never minted through
-    /// an identity that does not exist.
+    /// tx, answering whether it did. With `secret_hash` the identity must still store that
+    /// hash: a password verified against a hash an operator reset has since replaced
+    /// stamps nothing, and the caller mints nothing. The UPDATE re-checks the row it
+    /// waited on, so a reset committing first is always seen.
     pub async fn stamp_identity_used_tx(
         &self,
         conn: &mut PgConnection,
         provider: &str,
         subject: &str,
         player_id: &str,
-    ) -> Result<(), sqlx::Error> {
+        secret_hash: Option<&str>,
+    ) -> Result<bool, sqlx::Error> {
         let done = sqlx::query(
             "UPDATE accounts.identities SET last_used_at = now() \
-              WHERE provider = $1 AND subject = $2 AND player_id = $3::uuid",
+              WHERE provider = $1 AND subject = $2 AND player_id = $3::uuid \
+                AND ($4::text IS NULL OR secret_hash = $4)",
         )
         .bind(provider)
         .bind(subject)
         .bind(player_id)
+        .bind(secret_hash)
         .execute(&mut *conn)
         .await?;
-        if done.rows_affected() != 1 {
-            return Err(sqlx::Error::RowNotFound);
-        }
-        Ok(())
+        Ok(done.rows_affected() == 1)
     }
 
     /// Starts a NEW refresh family on the caller's tx: the row Postgres mints the
@@ -1401,10 +1405,11 @@ impl Store {
         if !is_canonical_uuid(player_id) {
             return Ok((Vec::new(), 0));
         }
-        let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
+        let rows: Vec<(String, String, i64, i64, i64)> = sqlx::query_as(
             granting_families!(
                 "family_id::text, \
                  to_char(min(since) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), \
+                 (EXTRACT(EPOCH FROM min(since)) * 1000000)::int8, \
                  floor(EXTRACT(EPOCH FROM (max(expires_at) - now())))::int8, \
                  count(*) OVER ()",
                 "ORDER BY min(since) DESC, family_id LIMIT $2"
@@ -1414,12 +1419,13 @@ impl Store {
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
-        let live = rows.first().map_or(0, |row| row.3);
+        let live = rows.first().map_or(0, |row| row.4);
         let families = rows
             .into_iter()
-            .map(|(family_id, started, expires_in_secs, _)| FamilyRow {
+            .map(|(family_id, started, started_us, expires_in_secs, _)| FamilyRow {
                 family_id,
                 started,
+                started_us,
                 expires_in_secs,
             })
             .collect();

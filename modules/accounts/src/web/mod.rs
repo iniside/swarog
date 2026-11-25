@@ -357,8 +357,8 @@ async fn login_submit(
         return web.render_login(&jar, StatusCode::FORBIDDEN, EXPIRED_FORM_ERROR, return_to);
     }
     let email = normalize_email(&form.email);
-    let player = match web.svc.verify_password(&email, form.password).await {
-        Ok(player) => player,
+    let verified = match web.svc.verify_password(&email, form.password).await {
+        Ok(verified) => verified,
         Err(e) if e.status == opsapi::Status::Unauthorized => {
             return web.render_login(&jar, StatusCode::UNAUTHORIZED, GENERIC_LOGIN_ERROR, return_to);
         }
@@ -377,9 +377,9 @@ async fn login_submit(
             return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
         }
     }
-    let minted = match web.svc.store.create_browser_session(&player.id).await {
-        Ok(Some(minted)) => minted,
-        Ok(None) => {
+    let minted = match web.svc.issue_password_browser_session(&verified).await {
+        Ok(minted) => minted,
+        Err(e) if e.status == opsapi::Status::Unauthorized => {
             return web.render_login(&jar, StatusCode::UNAUTHORIZED, GENERIC_LOGIN_ERROR, return_to);
         }
         Err(e) => {
