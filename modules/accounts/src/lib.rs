@@ -1559,6 +1559,7 @@ impl Module for Accounts {
         self.web_limiter
             .set(web_limiter.clone())
             .map_err(|_| anyhow::anyhow!("accounts.init ran twice"))?;
+        let login_limiter = web::LoginLimiter::new(web_limiter, trusted);
         let mut epic_flow = None;
         if let Some(epic) = &config.epic {
             tracing::info!(jwks = %epic.jwks_url, aud = %epic.client_id, "epic provider enabled");
@@ -1577,12 +1578,12 @@ impl Module for Accounts {
                     cookie_secure,
                 )?;
                 let flow = Arc::new(flow);
-                ctx.mount(epic_oauth::router(flow.clone(), svc.clone()));
+                ctx.mount(epic_oauth::router(flow.clone(), svc.clone(), login_limiter.clone()));
                 epic_flow = Some(flow);
                 tracing::info!(redirect = %redirect, "epic OAuth enabled");
             }
         }
-        let hosted = web::Web::new(svc.clone(), cookie_secure, trusted, web_limiter, epic_flow)?;
+        let hosted = web::Web::new(svc.clone(), cookie_secure, login_limiter, epic_flow)?;
         ctx.mount(web::router(Arc::new(hosted)));
         if let Some(google) = &config.google {
             tracing::info!(

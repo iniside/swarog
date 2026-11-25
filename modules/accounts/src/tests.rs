@@ -1377,11 +1377,11 @@ async fn epic_oauth_link_flow_end_to_end() {
     let state = oauth.new_state(epic_oauth::Intent::Link { session_token: sess.token.clone() }, binding.clone()).await.unwrap();
 
     // Drive the callback route through the mounted router — the real HTTP surface.
-    let app = epic_oauth::router(oauth, svc.clone());
+    let app = epic_oauth::router(oauth, svc.clone(), roomy_login_limiter());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+        axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap();
     });
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -1460,11 +1460,11 @@ async fn epic_link_harness(
         .unwrap(),
     );
 
-    let app = epic_oauth::router(oauth.clone(), svc);
+    let app = epic_oauth::router(oauth.clone(), svc, roomy_login_limiter());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+        axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap();
     });
     let base = format!("http://{addr}/accounts/epic/callback");
 
@@ -1845,11 +1845,17 @@ fn oauth_config(redirect_uri: &str, token_url: &str) -> EpicOAuthConfig {
     .unwrap()
 }
 
+/// A sign-in bucket no test request drains, for tests that are not about the limiter.
+fn roomy_login_limiter() -> Arc<crate::web::LoginLimiter> {
+    crate::web::LoginLimiter::new(httpmw::IpLimiter::new("accounts_login_test", 5.0, 20), Vec::new())
+}
+
 async fn serve_oauth_router(oauth: Arc<epic_oauth::EpicOAuth>, svc: Arc<Service>) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let app = epic_oauth::router(oauth, svc, roomy_login_limiter());
     tokio::spawn(async move {
-        axum::serve(listener, epic_oauth::router(oauth, svc)).await.unwrap();
+        axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap();
     });
     format!("http://{addr}")
 }

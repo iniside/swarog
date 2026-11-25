@@ -57,9 +57,14 @@ async fn mock_epic(pool: &PgPool, subject: &str) -> Arc<EpicOAuth> {
 
 /// The hosted pages with Epic and the Epic routes on one listener, as `init` mounts them.
 async fn serve(svc: Arc<Service>, oauth: Arc<EpicOAuth>) -> String {
-    let limiter = httpmw::IpLimiter::new("accounts_epic_browser_test", 5.0, 20);
-    let hosted = web::Web::new(svc.clone(), false, Vec::new(), limiter, Some(oauth.clone())).unwrap();
-    let app = web::router(Arc::new(hosted)).merge(epic_oauth::router(oauth, svc));
+    serve_limited(svc, oauth, httpmw::IpLimiter::new("accounts_epic_browser_test", 5.0, 20)).await
+}
+
+/// `serve` with the given sign-in bucket, shared by both mounts as in `init`.
+async fn serve_limited(svc: Arc<Service>, oauth: Arc<EpicOAuth>, limiter: Arc<httpmw::IpLimiter>) -> String {
+    let limiter = web::LoginLimiter::new(limiter, Vec::new());
+    let hosted = web::Web::new(svc.clone(), false, limiter.clone(), Some(oauth.clone())).unwrap();
+    let app = web::router(Arc::new(hosted)).merge(epic_oauth::router(oauth, svc, limiter));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -339,4 +344,62 @@ async fn a_failed_browser_callback_returns_to_the_sign_in_page_with_an_error() {
     assert_eq!(resp.status(), 303);
     assert_eq!(to, "/accounts/oidc/login?epic=error&return_to=%2Faccounts%2Foidc%2F%3Fa%3Db");
     assert!(page.contains("Sign-in with Epic failed."), "{page}");
+}
+
+/// One token: the first request is admitted, the next is refused.
+fn one_token_bucket() -> Arc<httpmw::IpLimiter> {
+    httpmw::IpLimiter::new("accounts_epic_browser_test", 0.001, 1)
+}
+
+/// The JSON Epic start draws from the sign-in bucket: an admitted start empties it, so the
+/// next start and the hosted form both get 429.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_json_epic_start_is_rate_limited_with_the_login_bucket() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let oauth = mock_epic(&pool, &format!("epic-limited-{}", suffix())).await;
+    let base = serve_limited(svc, oauth, one_token_bucket()).await;
+    let start = || client().post(format!("{base}/accounts/epic/start")).send();
+
+    let first = start().await.unwrap();
+    let second = start().await.unwrap();
+    let retry_after = second.headers().get("retry-after").map(|v| v.to_str().unwrap().to_string());
+    let form = client()
+        .post(format!("{base}/accounts/oidc/login"))
+        .form(&[("email", "a@x.io"), ("password", "pw"), ("csrf", "")])
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(first.status(), 200, "the first start is admitted");
+    assert_eq!(second.status(), 429, "the bucket is empty");
+    assert_eq!(retry_after.as_deref(), Some("1"));
+    assert_eq!(form.status(), 429, "the hosted form shares the bucket the start emptied");
+}
+
+/// A hosted form POST that empties the bucket limits the JSON Epic start, which answers
+/// 429 before it touches the session store or the state table.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hosted_form_post_drains_the_json_epic_start_bucket() {
+    let svc = lazy_service();
+    let oauth = flow(&svc.store.pool, "http://127.0.0.1:9/jwks", "http://127.0.0.1:9/token");
+    let base = serve_limited(svc, oauth, one_token_bucket()).await;
+
+    let form = client()
+        .post(format!("{base}/accounts/oidc/login"))
+        .form(&[("email", "a@x.io"), ("password", "pw"), ("csrf", "")])
+        .send()
+        .await
+        .unwrap();
+    let start = client()
+        .post(format!("{base}/accounts/epic/start"))
+        .header("Authorization", "Bearer some-session")
+        .send()
+        .await
+        .unwrap();
+    let retry_after = start.headers().get("retry-after").map(|v| v.to_str().unwrap().to_string());
+
+    assert_eq!(form.status(), 403, "admitted, then refused for the missing login-CSRF");
+    assert_eq!(start.status(), 429, "the start shares the bucket the form emptied");
+    assert_eq!(retry_after.as_deref(), Some("1"));
 }

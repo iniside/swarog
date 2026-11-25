@@ -63,14 +63,37 @@ pub(crate) fn session_cookie(secure: bool, token: &str) -> HeaderValue {
     cookie(secure, SESSION_COOKIE, token, "Lax", max_age)
 }
 
+/// The one per-IP sign-in bucket: the hosted form POSTs and the JSON Epic start check it
+/// first, keyed by the client address behind `TRUSTED_PROXY_CIDRS`.
+pub(crate) struct LoginLimiter {
+    limiter: Arc<httpmw::IpLimiter>,
+    trusted: Vec<ipnet::IpNet>,
+}
+
+impl LoginLimiter {
+    pub(crate) fn new(limiter: Arc<httpmw::IpLimiter>, trusted: Vec<ipnet::IpNet>) -> Arc<LoginLimiter> {
+        Arc::new(LoginLimiter { limiter, trusted })
+    }
+
+    fn client_ip(&self, peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
+        let xff = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
+        let xri = headers.get("x-real-ip").and_then(|v| v.to_str().ok());
+        httpmw::client_ip(peer.ip(), xff, xri, &self.trusted)
+    }
+
+    /// Takes a token from the request's client bucket; `false` is answered with 429.
+    pub(crate) fn allow(&self, peer: SocketAddr, headers: &HeaderMap) -> bool {
+        self.limiter.allow(self.client_ip(peer, headers))
+    }
+}
+
 /// What the hosted pages share: the service, the templates, the per-IP login limiter and
 /// the Epic web OAuth flow when it is configured.
 pub(crate) struct Web {
     svc: Arc<Service>,
     env: minijinja::Environment<'static>,
     cookie_secure: bool,
-    trusted: Vec<ipnet::IpNet>,
-    limiter: Arc<httpmw::IpLimiter>,
+    limiter: Arc<LoginLimiter>,
     epic: Option<Arc<EpicOAuth>>,
 }
 
@@ -78,8 +101,7 @@ impl Web {
     pub(crate) fn new(
         svc: Arc<Service>,
         cookie_secure: bool,
-        trusted: Vec<ipnet::IpNet>,
-        limiter: Arc<httpmw::IpLimiter>,
+        limiter: Arc<LoginLimiter>,
         epic: Option<Arc<EpicOAuth>>,
     ) -> anyhow::Result<Web> {
         let mut env = minijinja::Environment::new();
@@ -90,18 +112,12 @@ impl Web {
         ] {
             env.add_template(name, source)?;
         }
-        Ok(Web { svc, env, cookie_secure, trusted, limiter, epic })
-    }
-
-    fn client_ip(&self, peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
-        let xff = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
-        let xri = headers.get("x-real-ip").and_then(|v| v.to_str().ok());
-        httpmw::client_ip(peer.ip(), xff, xri, &self.trusted)
+        Ok(Web { svc, env, cookie_secure, limiter, epic })
     }
 
     /// The per-IP sign-in limiter both form POSTs check first: `Some` is the 429 form.
     fn limited(&self, peer: SocketAddr, headers: &HeaderMap, jar: &CookieJar, return_to: &str) -> Option<Response> {
-        if self.limiter.allow(self.client_ip(peer, headers)) {
+        if self.limiter.allow(peer, headers) {
             return None;
         }
         let mut resp = self.render_login(jar, StatusCode::TOO_MANY_REQUESTS, BUSY_ERROR, return_to);

@@ -15,10 +15,11 @@
 //! alike (the gateway HTTP passthrough for the split front lands in Step 7).
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::Query;
+use axum::extract::{ConnectInfo, Query};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -255,17 +256,25 @@ pub(crate) fn binding_set_cookie(binding: &str, secure: bool) -> axum::http::Hea
 }
 
 /// The two HTTP-native routes, as an axum sub-router the module `ctx.mount`s:
-/// `POST /accounts/epic/start` and `GET /accounts/epic/callback`.
-pub(crate) fn router(oauth: Arc<EpicOAuth>, svc: Arc<Service>) -> Router {
+/// `POST /accounts/epic/start` and `GET /accounts/epic/callback`. The start draws from
+/// `limiter`, the hosted sign-in form's bucket.
+pub(crate) fn router(oauth: Arc<EpicOAuth>, svc: Arc<Service>, limiter: Arc<web::LoginLimiter>) -> Router {
     let start_oauth = oauth.clone();
     let start_svc = svc.clone();
     Router::new()
         .route(
             "/accounts/epic/start",
-            post(move |jar: CookieJar, headers: HeaderMap| {
+            post(move |ConnectInfo(peer): ConnectInfo<SocketAddr>, jar: CookieJar, headers: HeaderMap| {
                 let oauth = start_oauth.clone();
                 let svc = start_svc.clone();
-                async move { handle_start(oauth, svc, jar, headers).await }
+                let limiter = limiter.clone();
+                async move {
+                    if !limiter.allow(peer, &headers) {
+                        return (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, "1")], "too many requests")
+                            .into_response();
+                    }
+                    handle_start(oauth, svc, jar, headers).await
+                }
             }),
         )
         .route(
