@@ -245,8 +245,8 @@ async fn a_second_sign_in_ends_the_browsers_old_session() {
     assert!(new_after.is_some(), "the new session resolves");
 }
 
-/// A wrong password and an unknown email get the same 401 page; a POST without the
-/// login-CSRF cookie is 403 and mints nothing.
+/// A wrong password and an unknown email get the same 401 page, and the wrong password ends
+/// no session the browser held; a POST without the login-CSRF cookie is 403 and mints nothing.
 #[tokio::test(flavor = "multi_thread")]
 async fn bad_credentials_are_one_generic_error_and_csrf_is_required() {
     let Some(pool) = test_pool().await else { return };
@@ -255,8 +255,16 @@ async fn bad_credentials_are_one_generic_error_and_csrf_is_required() {
     let base = serve_default(svc.clone()).await;
     let csrf = login_csrf(&base).await;
 
-    let wrong = post_login(&base, &csrf, &email, "not-it", "").await;
+    let held = svc.store.create_browser_session(&pid).await.unwrap().unwrap().token;
+    let wrong = client()
+        .post(format!("{base}/accounts/oidc/login"))
+        .header("Cookie", format!("{}={csrf}; {}={held}", web::LOGIN_CSRF_COOKIE, web::SESSION_COOKIE))
+        .form(&[("email", email.as_str()), ("password", "not-it"), ("csrf", csrf.as_str()), ("return_to", "")])
+        .send()
+        .await
+        .unwrap();
     let wrong_status = wrong.status();
+    let held_after = svc.store.browser_session(&held).await.unwrap().is_some();
     let wrong_body = wrong.text().await.unwrap();
     let unknown = post_login(&base, &csrf, "nobody-hosted@test.local", "pw", "").await;
     let unknown_status = unknown.status();
@@ -285,6 +293,7 @@ async fn bad_credentials_are_one_generic_error_and_csrf_is_required() {
     assert_eq!(wrong_status, 401);
     assert_eq!(unknown_status, 401);
     assert_eq!(wrong_body, unknown_body, "no email oracle in the page");
+    assert!(held_after, "a wrong password leaves the browser's session signed in");
     assert!(wrong_body.contains("Invalid email or password."), "{wrong_body}");
     assert_eq!(forged_status, 403, "no login-CSRF cookie");
     assert!(!forged_minted);
@@ -336,4 +345,24 @@ async fn clients_behind_a_trusted_proxy_have_separate_limiter_buckets() {
     assert_eq!(first_a, 403, "admitted, then refused for the missing login-CSRF");
     assert_eq!(second_a, 429, "client A's bucket is empty");
     assert_eq!(first_b, 403, "client B has its own bucket");
+}
+
+/// The Epic form POST checks the same per-IP limiter before anything else.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_epic_form_post_is_rate_limited() {
+    let svc = lazy_service();
+    let base = serve_web(svc, "", httpmw::IpLimiter::new("accounts_login_test", 0.001, 1)).await;
+    let post = || {
+        client()
+            .post(format!("{base}/accounts/oidc/epic"))
+            .form(&[("csrf", ""), ("return_to", "")])
+            .send()
+    };
+    let first = post().await.unwrap();
+    let second = post().await.unwrap();
+    let retry_after = second.headers().get("retry-after").map(|v| v.to_str().unwrap().to_string());
+
+    assert_eq!(first.status(), 404, "admitted, then refused: Epic is not configured here");
+    assert_eq!(second.status(), 429, "the bucket is empty");
+    assert_eq!(retry_after.as_deref(), Some("1"));
 }

@@ -99,6 +99,16 @@ impl Web {
         httpmw::client_ip(peer.ip(), xff, xri, &self.trusted)
     }
 
+    /// The per-IP sign-in limiter both form POSTs check first: `Some` is the 429 form.
+    fn limited(&self, peer: SocketAddr, headers: &HeaderMap, jar: &CookieJar, return_to: &str) -> Option<Response> {
+        if self.limiter.allow(self.client_ip(peer, headers)) {
+            return None;
+        }
+        let mut resp = self.render_login(jar, StatusCode::TOO_MANY_REQUESTS, BUSY_ERROR, return_to);
+        resp.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        Some(resp)
+    }
+
     fn render(&self, name: &str, status: StatusCode, view: impl Serialize) -> Response {
         match self.env.get_template(name).and_then(|t| t.render(view)) {
             Ok(html) => {
@@ -323,10 +333,8 @@ async fn login_submit(
     Form(form): Form<LoginForm>,
 ) -> Response {
     let return_to = safe_return_to(Some(&form.return_to));
-    if !web.limiter.allow(web.client_ip(peer, &headers)) {
-        let mut resp = web.render_login(&jar, StatusCode::TOO_MANY_REQUESTS, BUSY_ERROR, return_to);
-        resp.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
-        return resp;
+    if let Some(busy) = web.limited(peer, &headers, &jar, return_to) {
+        return busy;
     }
     let cookie_csrf = jar.get(LOGIN_CSRF_COOKIE).map(|c| c.value()).unwrap_or("");
     if cookie_csrf.is_empty() || !ct_eq(cookie_csrf.as_bytes(), form.csrf.as_bytes()) {
@@ -370,13 +378,22 @@ async fn login_submit(
     resp
 }
 
-/// `POST /accounts/oidc/epic` — login-CSRF double submit, then a `browser` state row and a
-/// 303 to the Epic authorize URL. 404 when Epic web OAuth is not configured.
-async fn epic_start(State(web): State<Arc<Web>>, jar: CookieJar, Form(form): Form<EpicForm>) -> Response {
+/// `POST /accounts/oidc/epic` — per-IP limiter, login-CSRF double submit, then a `browser`
+/// state row and a 303 to the Epic authorize URL. 404 when Epic web OAuth is not configured.
+async fn epic_start(
+    State(web): State<Arc<Web>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    jar: CookieJar,
+    Form(form): Form<EpicForm>,
+) -> Response {
+    let return_to = safe_return_to(Some(&form.return_to));
+    if let Some(busy) = web.limited(peer, &headers, &jar, return_to) {
+        return busy;
+    }
     let Some(epic) = web.epic.clone() else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let return_to = safe_return_to(Some(&form.return_to));
     let cookie_csrf = jar.get(LOGIN_CSRF_COOKIE).map(|c| c.value()).unwrap_or("");
     if cookie_csrf.is_empty() || !ct_eq(cookie_csrf.as_bytes(), form.csrf.as_bytes()) {
         return web.render_login(&jar, StatusCode::FORBIDDEN, EXPIRED_FORM_ERROR, return_to);
@@ -387,7 +404,7 @@ async fn epic_start(State(web): State<Arc<Web>>, jar: CookieJar, Form(form): For
         .map(|c| c.value())
         .filter(|token| crate::session_token_within_cap(token))
         .map(session::digest);
-    let binding = crate::store::new_token();
+    let binding = epic_oauth::browser_binding(&jar);
     let intent = Intent::Browser { return_to: return_to.to_string(), replaces };
     let state = match epic.new_state(intent, binding.clone()).await {
         Ok(state) => state,

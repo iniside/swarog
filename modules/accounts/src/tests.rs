@@ -1919,7 +1919,7 @@ async fn oauth_start_reuses_hardened_binding_cookie_for_parallel_states() {
     for attr in [
         "HttpOnly",
         "SameSite=Lax",
-        "Path=/accounts/epic",
+        "Path=/accounts",
         "Max-Age=600",
     ] {
         assert!(first_cookie.split("; ").any(|part| part == attr), "{first_cookie}");

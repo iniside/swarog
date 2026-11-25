@@ -36,6 +36,9 @@ use crate::{web, Service};
 const STATE_TTL_SQL: &str = "10 minutes";
 const BINDING_COOKIE: &str = "epic_oauth_binding";
 const BINDING_TOKEN_LEN: usize = 43;
+/// Covers both starts (`/accounts/epic/start`, the hosted form's `/accounts/oidc/epic`) and
+/// the callback, so every start in one browser reuses the same binding.
+const BINDING_PATH: &str = "/accounts";
 
 /// What the callback does with a redeemed state (`accounts.oauth_states.intent`).
 #[derive(Debug, PartialEq)]
@@ -233,10 +236,20 @@ fn valid_binding(value: &str) -> bool {
             .is_ok_and(|bytes| bytes.len() == 32)
 }
 
+/// The browser's binding for a new state: its valid binding cookie, else a fresh one. Reusing
+/// it keeps every state already started in this browser redeemable.
+pub(crate) fn browser_binding(jar: &CookieJar) -> String {
+    jar.get(BINDING_COOKIE)
+        .map(|cookie| cookie.value())
+        .filter(|value| valid_binding(value))
+        .map(str::to_owned)
+        .unwrap_or_else(crate::store::new_token)
+}
+
 pub(crate) fn binding_set_cookie(binding: &str, secure: bool) -> axum::http::HeaderValue {
     let secure = if secure { "; Secure" } else { "" };
     axum::http::HeaderValue::from_str(&format!(
-        "{BINDING_COOKIE}={binding}; HttpOnly; SameSite=Lax; Path=/accounts/epic; Max-Age=600{secure}"
+        "{BINDING_COOKIE}={binding}; HttpOnly; SameSite=Lax; Path={BINDING_PATH}; Max-Age=600{secure}"
     ))
     .expect("generated OAuth binding is ASCII")
 }
@@ -295,12 +308,7 @@ async fn handle_start(
             }
         }
     }
-    let browser_binding = jar
-        .get(BINDING_COOKIE)
-        .map(|cookie| cookie.value())
-        .filter(|value| valid_binding(value))
-        .map(str::to_owned)
-        .unwrap_or_else(crate::store::new_token);
+    let browser_binding = browser_binding(&jar);
     let state = match oauth.new_state(intent, browser_binding.clone()).await {
         Ok(s) => s,
         // Persisting the state failed (store outage) — retryable, never bad input.

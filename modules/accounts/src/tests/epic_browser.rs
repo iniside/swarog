@@ -85,13 +85,22 @@ async fn post_epic(base: &str, csrf: &str, session: Option<&str>, return_to: &st
         .unwrap()
 }
 
-/// Follows a start response to the callback the way Epic sends the browser back.
-async fn callback(base: &str, start: &reqwest::Response) -> reqwest::Response {
-    let state = url::Url::parse(&location(start))
+/// The `state` of a form start's authorize redirect.
+fn form_state(start: &reqwest::Response) -> String {
+    state_of(&location(start))
+}
+
+fn state_of(authorize: &str) -> String {
+    url::Url::parse(authorize)
         .unwrap()
         .query_pairs()
         .find_map(|(k, v)| (k == "state").then(|| v.into_owned()))
-        .expect("state in the authorize url");
+        .expect("state in the authorize url")
+}
+
+/// Follows a start response to the callback the way Epic sends the browser back.
+async fn callback(base: &str, start: &reqwest::Response) -> reqwest::Response {
+    let state = form_state(start);
     let binding = cookie_value(&set_cookie(start, BINDING_COOKIE));
     client()
         .get(format!("{base}/accounts/epic/callback?code=abc&state={state}"))
@@ -172,7 +181,7 @@ async fn browser_intent_sets_swarog_session_and_issues_no_player_session() {
     assert!(form_body.contains("Continue with Epic") && form_body.contains(r#"action="/accounts/oidc/epic""#), "{form_body}");
     assert_eq!(start_status, 303);
     assert!(authorize.starts_with("http://localhost/authorize?"), "{authorize}");
-    assert!(has_attr(&binding_cookie, "Path=/accounts/epic"), "{binding_cookie}");
+    assert!(has_attr(&binding_cookie, "Path=/accounts"), "{binding_cookie}");
     assert_eq!(first_status, 303);
     assert_eq!(first_to, return_to, "the callback follows the stored return_to");
     for attr in ["HttpOnly", "SameSite=Lax", "Path=/accounts/oidc", "Max-Age=43200"] {
@@ -188,6 +197,51 @@ async fn browser_intent_sets_swarog_session_and_issues_no_player_session() {
     assert!(!first_after, "the second sign-in ends the first browser session");
     assert_eq!(tokens_after_second, (0, 0));
     assert_eq!(registered, 1, "one player.registered for the created player");
+}
+
+/// A form start reuses the binding a JSON start (or an earlier form start) set, so every
+/// state this browser started stays redeemable with the one cookie it now holds.
+#[tokio::test(flavor = "multi_thread")]
+async fn form_starts_reuse_the_browsers_binding_so_parallel_states_redeem() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let oauth = mock_epic(&pool, &format!("epic-parallel-{}", suffix())).await;
+    let base = serve(svc, oauth.clone()).await;
+    let csrf = crate::store::new_token();
+
+    let json = client().post(format!("{base}/accounts/epic/start")).send().await.unwrap();
+    let json_cookie = set_cookie(&json, BINDING_COOKIE);
+    let binding = cookie_value(&json_cookie);
+    let body: serde_json::Value = json.json().await.unwrap();
+    let json_state = state_of(body["authorize_url"].as_str().unwrap());
+    let form_start = |extra: String| {
+        let (base, csrf) = (base.clone(), csrf.clone());
+        async move {
+            client()
+                .post(format!("{base}/accounts/oidc/epic"))
+                .header("Cookie", format!("{}={csrf}; {extra}", web::LOGIN_CSRF_COOKIE))
+                .form(&[("csrf", csrf.as_str()), ("return_to", "")])
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let first = form_start(format!("{BINDING_COOKIE}={binding}")).await;
+    let first_binding = cookie_value(&set_cookie(&first, BINDING_COOKIE));
+    let first_state = form_state(&first);
+    let second = form_start(format!("{BINDING_COOKIE}={first_binding}")).await;
+    let held = cookie_value(&set_cookie(&second, BINDING_COOKIE));
+    let second_state = form_state(&second);
+
+    assert_eq!((first.status().as_u16(), second.status().as_u16()), (303, 303));
+    assert!(has_attr(&json_cookie, "Path=/accounts"), "{json_cookie}");
+    assert_eq!(first_binding, binding, "the form start reuses the JSON start's binding");
+    assert_eq!(held, binding, "a second form start reuses it too");
+    assert_eq!(oauth.take_state(&json_state, Some(&held)).await.unwrap(), Some(Intent::Login));
+    for state in [first_state, second_state] {
+        let intent = oauth.take_state(&state, Some(&held)).await.unwrap();
+        assert!(matches!(intent, Some(Intent::Browser { .. })), "{intent:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
