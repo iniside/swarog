@@ -260,7 +260,8 @@ install.
 - (d) `[docs]` docs-writer sonnet.
 
 Verification per step follows the `safe-verification` skill (one rollout at a time);
-Steps 3 and 7 end with the split proof, Steps 1, 4a, 4b, 5, 6 with `verifyctl --fast`.
+each code step runs only its own crates' `cargo test` and clippy; one `verifyctl --fast` and the split
+proof run once, after Step 6, as part of Step 7 (owner, 2026-11-25).
 
 ### Owner decisions (2026-11-25)
 
