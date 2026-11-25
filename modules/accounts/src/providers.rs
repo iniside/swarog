@@ -23,11 +23,11 @@ use crate::oidc::{short_id, IssuerMatch, OidcVerifier};
 use crate::store::Store;
 
 /// The provider names, re-exported from the contract crate so this module and every
-/// event consumer read ONE symbol. [`DEV`] deliberately does NOT join
+/// event consumer read ONE symbol. [`PASSWORD`] deliberately does NOT join
 /// [`KNOWN_PROVIDERS`], which names the providers `login_federated` can resolve a
-/// [`CredentialVerifier`] for: dev/password is a different op with no verifier, so
-/// `login_federated("dev", …)` stays a 400.
-pub(crate) use accountsevents::providers::{DEV, EPIC, GOOGLE, GUEST};
+/// [`CredentialVerifier`] for: password login is a different op with no verifier, so
+/// `login_federated("password", …)` stays a 400.
+pub(crate) use accountsevents::providers::{EPIC, GOOGLE, GUEST, PASSWORD};
 
 /// Every provider name this build can construct a verifier for, configured or not —
 /// the verifier-registry authority, separate from the configured-verifier map so a

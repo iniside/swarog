@@ -176,15 +176,18 @@ pub trait Sessions: Send + Sync {
 #[rpc(prefix = "accounts")]
 #[async_trait]
 pub trait Auth: Send + Sync {
-    /// dev/password self-registration: creates a player + dev identity, emits
-    /// `player.registered` (durably, inside the store tx), mints a session. Missing
-    /// email/password → `Invalid` (400); duplicate email → `Conflict` (409). 201.
+    /// Password self-registration: creates a player + `password` identity, emits
+    /// `player.registered` (durably, inside the store tx), mints a session. `NotFound`
+    /// (404) unless the deployment opened registration; missing email/password →
+    /// `Invalid` (400); an email already registered, compared trimmed and
+    /// ASCII-case-insensitively → `Conflict` (409). 201.
     #[http(verb = "POST", path = "/accounts/register", auth = "none", success = 201, body_names(display_name = "displayName"))]
     async fn register(&self, email: String, password: String, display_name: String) -> Result<Session, Error>;
 
-    /// dev/password login. Bad credentials — an unknown email or a wrong password,
-    /// deliberately indistinguishable so the endpoint does not leak which emails
-    /// exist — are `Unauthorized` (401). 200.
+    /// Password login; the email is compared trimmed and ASCII-case-insensitively. Bad
+    /// credentials — an unknown email or a wrong password, deliberately
+    /// indistinguishable so the endpoint does not leak which emails exist — are
+    /// `Unauthorized` (401). 200.
     #[http(verb = "POST", path = "/accounts/login", auth = "none", success = 200)]
     async fn login(&self, email: String, password: String) -> Result<Session, Error>;
 

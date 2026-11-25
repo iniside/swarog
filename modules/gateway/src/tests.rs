@@ -102,6 +102,28 @@ async fn dev_verifier_accepts_dev_token_only() {
     );
 }
 
+fn fake_env(pairs: &[(&str, &str)], key: &str) -> Option<String> {
+    pairs.iter().find(|(name, _)| *name == key).map(|(_, value)| value.to_string())
+}
+
+#[tokio::test]
+async fn dev_verifier_is_chosen_only_on_the_gateway_flag() {
+    let on = |pairs: &[(&str, &str)]| verifier::dev_verifier_on(|key| fake_env(pairs, key));
+    assert!(on(&[("GATEWAY_DEV_VERIFIER", "1")]));
+    assert!(on(&[("GATEWAY_DEV_VERIFIER", "TRUE")]));
+    assert!(!on(&[]), "unset is off");
+    assert!(!on(&[("GATEWAY_DEV_VERIFIER", "0")]));
+    assert!(!on(&[("ACCOUNTS_DEV_AUTH", "1")]), "the accounts flag no longer turns it on");
+
+    let ctx = Context::new();
+    assert!(
+        verifier::resolve_verifier_with(&ctx, false).is_err(),
+        "no accounts.sessions and no flag fails startup"
+    );
+    let dev = verifier::resolve_verifier_with(&ctx, true).expect("the flag picks the dev verifier");
+    assert_eq!(dev.verify("dev-alice").await.unwrap().as_deref(), Some("alice"));
+}
+
 /// A topology-neutral stand-in for `accounts.sessions`: locally this trait object is
 /// the accounts service, while in a split gateway it is the generated RPC client.
 /// Counting calls therefore proves an over-cap bearer reaches neither topology.

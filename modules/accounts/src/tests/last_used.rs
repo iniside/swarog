@@ -43,14 +43,14 @@ async fn register_and_login_stamp_and_refresh_does_not() {
     let email = format!("used-{}@test.local", suffix().to_lowercase());
     let reg = svc.register(email.clone(), "pw".into(), "Used".into()).await.unwrap();
     let id = reg.player_id.clone();
-    let registered = idle_secs(&pool, &id, "dev").await;
+    let registered = idle_secs(&pool, &id, "password").await;
 
     backdate(&pool, &id).await;
     let refreshed = svc.refresh(reg.refresh_token.clone()).await.map(|_| ());
-    let after_refresh = idle_secs(&pool, &id, "dev").await;
+    let after_refresh = idle_secs(&pool, &id, "password").await;
 
     let login = svc.login(email.clone(), "pw".into()).await.map(|_| ());
-    let after_login = idle_secs(&pool, &id, "dev").await;
+    let after_login = idle_secs(&pool, &id, "password").await;
     cleanup_player(&pool, &id).await;
 
     assert!(fresh(registered), "register stamps its identity: {registered:?}");
@@ -58,6 +58,22 @@ async fn register_and_login_stamp_and_refresh_does_not() {
     assert!(day_old(after_refresh), "a refresh never stamps: {after_refresh:?}");
     login.unwrap();
     assert!(fresh(after_login), "a password login stamps: {after_login:?}");
+}
+
+#[tokio::test]
+async fn a_mixed_case_password_login_stamps_the_one_identity() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let email = format!("used-{}@test.local", suffix().to_lowercase());
+    let id = svc.register(email.clone(), "pw".into(), "Used".into()).await.unwrap().player_id;
+    backdate(&pool, &id).await;
+
+    let login = svc.login(email.to_ascii_uppercase(), "pw".into()).await.map(|_| ());
+    let after_login = idle_secs(&pool, &id, "password").await;
+    cleanup_player(&pool, &id).await;
+
+    login.unwrap();
+    assert!(fresh(after_login), "an upper-case login stamps the one identity: {after_login:?}");
 }
 
 #[tokio::test]

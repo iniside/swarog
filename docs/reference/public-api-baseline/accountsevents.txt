@@ -1,10 +1,10 @@
 # cargo-public-api 0.52.0 -- regenerate via cargo run -p verifyctl -- --bless-public-api
 pub mod accountsevents
 pub mod accountsevents::providers
-pub const accountsevents::providers::DEV: &str
 pub const accountsevents::providers::EPIC: &str
 pub const accountsevents::providers::GOOGLE: &str
 pub const accountsevents::providers::GUEST: &str
+pub const accountsevents::providers::PASSWORD: &str
 pub struct accountsevents::PlayerDeleted
 pub accountsevents::PlayerDeleted::handle: alloc::string::String
 pub accountsevents::PlayerDeleted::player_id: alloc::string::String

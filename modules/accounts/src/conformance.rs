@@ -140,7 +140,7 @@ fn service_on(pool: PgPool) -> Service {
     Service {
         store: Store { pool },
         bus: Arc::new(bus::Bus::new()),
-        dev_auth: false,
+        open_registration: false,
         providers: OnceLock::new(),
         argon_permits: Arc::new(Semaphore::new(2)),
         login_slots: Arc::new(Semaphore::new(32)),

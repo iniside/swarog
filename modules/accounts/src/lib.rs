@@ -1,9 +1,9 @@
 //! `accounts` — player identity (port of Go's `modules/accounts`). It owns schema
 //! `accounts` and is a trusted VERIFIER of external identities: the production model
 //! is federation (the EOS Connect shape) — the backend checks an IdP's signed token,
-//! never holds a password, except for the dev/password provider gated behind
-//! `ACCOUNTS_DEV_AUTH` (explicit opt-in — default OFF/fail-closed, loud warn when set;
-//! the run/split-proof scripts set `ACCOUNTS_DEV_AUTH=1` for local dev). One
+//! never holds a password, except for the `password` provider: login is always on,
+//! self-registration is gated behind `ACCOUNTS_OPEN_REGISTRATION` (explicit opt-in,
+//! default OFF, loud warn when set). Its subject is the email after [`normalize_email`]. One
 //! product-scoped `player_id`, many credential providers over it
 //! (`identities(provider, subject) → player_id`), opaque DB-backed `sessions`
 //! (60-minute access tokens, 32-byte base64url) renewed by rotating refresh tokens
@@ -74,6 +74,12 @@ pub const MAX_DELETE_TICKET_BYTES: usize = 128;
 /// proves what the handlers actually enforce, never a const compared to itself.
 /// Byte counts (`str::len()`), not characters. Emptiness is checked separately by
 /// each handler (a different rejection, not a cap).
+/// The one spelling of a password identity's email: trimmed and ASCII-lowercased, so
+/// `A@x.io` and `a@x.io` are one account. Every password path calls it before the cap.
+pub(crate) fn normalize_email(email: &str) -> String {
+    email.trim().to_ascii_lowercase()
+}
+
 pub(crate) fn email_within_cap(email: &str) -> bool {
     email.len() <= MAX_EMAIL_BYTES
 }
@@ -165,7 +171,7 @@ CREATE TABLE IF NOT EXISTS accounts.identities (
 	provider    text NOT NULL,
 	subject     text NOT NULL,
 	player_id   uuid NOT NULL REFERENCES accounts.players(id) ON DELETE CASCADE,
-	secret_hash text,                         -- dev/password: argon2id PHC; guest: SHA-256 digest
+	secret_hash text,                         -- password: argon2id PHC; guest: SHA-256 digest
 	created_at  timestamptz NOT NULL DEFAULT now(),
 	last_used_at timestamptz,                 -- the newest session family minted through it
 	PRIMARY KEY (provider, subject)
@@ -239,15 +245,12 @@ const TICKET_NOT_FOUND: &str = "delete ticket not found";
 pub struct Service {
     pub(crate) store: Store,
     bus: Arc<Bus>,
-    /// Whether the dev/password provider is enabled (`ACCOUNTS_DEV_AUTH`, resolved in
-    /// `register`). Gates `register`/`login` at the SERVICE level — the SINGLE
-    /// authority every exposure path traverses (the HTTP ops are contributed
-    /// unconditionally in `ops::register_player_ops`, so the gateway route, the
-    /// player-QUIC plane and the internal mTLS edge face all funnel into this one
-    /// guard): with the gate off both methods answer NotFound, so a peer with a
-    /// dev-CA cert cannot self-register/login when dev auth is off. `me` +
-    /// `verify_session` are unaffected (needed by the gateway regardless).
-    dev_auth: bool,
+    /// Whether password self-registration is open (`ACCOUNTS_OPEN_REGISTRATION`, resolved
+    /// in `register`). Gates only `Auth::register`, at the SERVICE level: the HTTP op
+    /// is contributed unconditionally, so the gateway route, the player-QUIC plane and
+    /// the internal mTLS edge face all meet this one guard and answer NotFound when it
+    /// is off. Password login has no gate.
+    open_registration: bool,
     /// The credential verifiers this process configured, filled in `init` from the
     /// validated [`ProviderConfig`]. The credential ops are contributed
     /// unconditionally; a known provider with no verifier here answers a typed
@@ -315,7 +318,7 @@ impl Service {
         })
     }
 
-    /// Mints a fresh bearer token for `p` through its `dev` identity `email` in its own
+    /// Mints a fresh bearer token for `p` through its `password` identity `email` in its own
     /// thin transaction. Password login uses this path; registration/external login use
     /// their outer tx.
     async fn issue_password_session(
@@ -325,10 +328,70 @@ impl Service {
     ) -> Result<accountsapi::Session, Error> {
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
         let session = self
-            .issue_session_tx(&mut tx, p, providers::DEV, email, store::new_token())
+            .issue_session_tx(&mut tx, p, providers::PASSWORD, email, store::new_token())
             .await?;
         tx.commit().await.map_err(internal)?;
         Ok(session)
+    }
+
+    /// Checks `password` against the password identity of `email`, which the caller has
+    /// already passed through [`normalize_email`]; the password login op and the web form
+    /// both call it. Bad credentials — an unknown email, a wrong password, or over-cap/empty
+    /// input, deliberately indistinguishable — are `Unauthorized` (401). Every admitted
+    /// request performs exactly ONE argon2 verify (the real hash or the [`DUMMY_HASH`]
+    /// decoy) on a `spawn_blocking` thread behind the argon permit, so unknown-email and
+    /// wrong-password are timing-indistinguishable and the 64 MiB hashes never run on an
+    /// async worker.
+    pub(crate) async fn verify_password(
+        &self,
+        email: &str,
+        password: String,
+    ) -> Result<Player, Error> {
+        // Admission bound: shed (never queue) beyond 32 concurrent logins. The slot
+        // stays in this async frame — releasing it on cancel is correct, the request
+        // is gone.
+        let Ok(_slot) = self.login_slots.clone().try_acquire_owned() else {
+            return Err(Error::unavailable("too many concurrent login attempts"));
+        };
+        let valid_input = !email.is_empty()
+            && email_within_cap(email)
+            && !password.is_empty()
+            && password_within_cap(&password);
+        let identity = if valid_input {
+            self.store.password_identity(email).await.map_err(|e| {
+                tracing::error!(err = %e, "login failed");
+                internal(e)
+            })?
+        } else {
+            None
+        };
+        let known_user = identity.is_some();
+        // Real-or-decoy: an unknown email (or invalid input) verifies a FIXED decoy
+        // candidate against the decoy hash — same argon2 cost, never a match, and
+        // the caller's password is never run against a hash we didn't store for it.
+        let (hash, candidate) = match &identity {
+            Some((_, hash)) => (hash.clone(), password),
+            None => (DUMMY_HASH.clone(), DECOY_CANDIDATE.to_string()),
+        };
+        let Ok(argon) = self.argon_permits.clone().acquire_owned().await else {
+            return Err(Error::internal("argon2 semaphore closed"));
+        };
+        let verifier = self.verifier.clone();
+        // The argon permit MUST live inside the blocking closure: spawn_blocking is
+        // not cancelled when its JoinHandle drops, so a permit held in this async
+        // frame would be released on client disconnect while the detached 64 MiB
+        // hash keeps running — defeating the RAM cap (admin 5844831 precedent).
+        let verified = tokio::task::spawn_blocking(move || {
+            let _permit = argon;
+            verifier.verify(&hash, &candidate)
+        })
+        .await
+        .map_err(|e| Error::internal(format!("password verifier task failed: {e}")))?;
+        if !(verified && known_user && valid_input) {
+            return Err(Error::unauthorized("invalid credentials"));
+        }
+        let (p, _) = identity.expect("known_user implies identity");
+        Ok(p)
     }
 
     async fn register_hashed_with_token(
@@ -341,7 +404,13 @@ impl Service {
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
         let p = match self
             .store
-            .insert_player_with_identity_tx(&mut tx, providers::DEV, email, display, Some(hash))
+            .insert_player_with_identity_tx(
+                &mut tx,
+                providers::PASSWORD,
+                email,
+                display,
+                Some(hash),
+            )
             .await
         {
             Ok(p) => p,
@@ -359,12 +428,12 @@ impl Service {
                 return Err(internal(e));
             }
         };
-        if let Err(err) = self.emit_registered_tx(&mut tx, &p, providers::DEV).await {
+        if let Err(err) = self.emit_registered_tx(&mut tx, &p, providers::PASSWORD).await {
             tx.rollback().await.ok();
             return Err(err);
         }
         let session = match self
-            .issue_session_tx(&mut tx, &p, providers::DEV, email, token)
+            .issue_session_tx(&mut tx, &p, providers::PASSWORD, email, token)
             .await
         {
             Ok(session) => session,
@@ -814,19 +883,20 @@ impl accountsapi::Sessions for Service {
 
 #[async_trait]
 impl accountsapi::Auth for Service {
-    /// dev/password self-registration (AuthNone): creates a player + dev identity
+    /// Password self-registration (AuthNone): creates a player + password identity
     /// and appends the `player.registered` durable event in ONE tx, then mints a session.
-    /// Missing email/password → `Invalid` (400); a duplicate email → `Conflict`
-    /// (409) — the same 400/409 Go returned, typed.
+    /// `NotFound` (404) unless registration is open; missing email/password → `Invalid`
+    /// (400); an email already registered in any letter case → `Conflict` (409).
     async fn register(
         &self,
         email: String,
         password: String,
         display_name: String,
     ) -> Result<accountsapi::Session, Error> {
-        if !self.dev_auth {
+        if !self.open_registration {
             return Err(Error::not_found("registration is not enabled"));
         }
+        let email = normalize_email(&email);
         if email.is_empty() || password.is_empty() {
             return Err(Error::invalid("email and password are required"));
         }
@@ -863,68 +933,16 @@ impl accountsapi::Auth for Service {
             .await
     }
 
-    /// dev/password login (AuthNone). Bad credentials — an unknown email, a wrong
-    /// password, or over-cap/empty input, deliberately indistinguishable — are
-    /// `Unauthorized` (401). Every admitted request performs exactly ONE argon2
-    /// verify (the real hash or the [`DUMMY_HASH`] decoy) on a `spawn_blocking`
-    /// thread behind the argon permit, so unknown-email and wrong-password are
-    /// timing-indistinguishable and the 64 MiB hashes never run on an async worker.
+    /// Password login (AuthNone): [`Service::verify_password`] on the normalised email,
+    /// then a fresh session through that identity.
     ///
     /// No per-IP limiter here on purpose: `Auth::login` is a pre-auth opsapi
     /// method — the gateway injects `Identity` only POST-auth, so no client IP ever
     /// reaches this service. Per-IP throttling, if wanted, lives at the gateway
     /// (which already rate-limits by source IP).
     async fn login(&self, email: String, password: String) -> Result<accountsapi::Session, Error> {
-        // The dev-auth guard stays the VERY FIRST check (before any admission or
-        // identity fetch): with the gate off the contributed op answers NotFound —
-        // the single trust gate every exposure path traverses (Step 1's invariant).
-        if !self.dev_auth {
-            return Err(Error::not_found("password login is not enabled"));
-        }
-        // Admission bound: shed (never queue) beyond 32 concurrent logins. The slot
-        // stays in this async frame — releasing it on cancel is correct, the request
-        // is gone.
-        let Ok(_slot) = self.login_slots.clone().try_acquire_owned() else {
-            return Err(Error::unavailable("too many concurrent login attempts"));
-        };
-        let valid_input = !email.is_empty()
-            && email_within_cap(&email)
-            && !password.is_empty()
-            && password_within_cap(&password);
-        let identity = if valid_input {
-            self.store.password_identity(&email).await.map_err(|e| {
-                tracing::error!(err = %e, "login failed");
-                internal(e)
-            })?
-        } else {
-            None
-        };
-        let known_user = identity.is_some();
-        // Real-or-decoy: an unknown email (or invalid input) verifies a FIXED decoy
-        // candidate against the decoy hash — same argon2 cost, never a match, and
-        // the caller's password is never run against a hash we didn't store for it.
-        let (hash, candidate) = match &identity {
-            Some((_, hash)) => (hash.clone(), password),
-            None => (DUMMY_HASH.clone(), DECOY_CANDIDATE.to_string()),
-        };
-        let Ok(argon) = self.argon_permits.clone().acquire_owned().await else {
-            return Err(Error::internal("argon2 semaphore closed"));
-        };
-        let verifier = self.verifier.clone();
-        // The argon permit MUST live inside the blocking closure: spawn_blocking is
-        // not cancelled when its JoinHandle drops, so a permit held in this async
-        // frame would be released on client disconnect while the detached 64 MiB
-        // hash keeps running — defeating the RAM cap (admin 5844831 precedent).
-        let verified = tokio::task::spawn_blocking(move || {
-            let _permit = argon;
-            verifier.verify(&hash, &candidate)
-        })
-        .await
-        .map_err(|e| Error::internal(format!("password verifier task failed: {e}")))?;
-        if !(verified && known_user && valid_input) {
-            return Err(Error::unauthorized("invalid credentials"));
-        }
-        let (p, _) = identity.expect("known_user implies identity");
+        let email = normalize_email(&email);
+        let p = self.verify_password(&email, password).await?;
         self.issue_password_session(&p, &email).await
     }
 
@@ -1200,10 +1218,10 @@ impl TxHandler for PruneHandler {
 /// the operations and the OAuth routes). Edge exposure is
 /// topology-blind: `init` contributes the generated Sessions + Auth faces to
 /// `edge::EDGE_SLOT` unconditionally, and `app::run` installs them iff this process
-/// serves an internal QUIC edge — the module never knows. The Auth face's
-/// dev-auth-gated methods (`register`/`login`) self-reject at the service level when
-/// `ACCOUNTS_DEV_AUTH` is off — the impl guard is the SINGLE gate for every exposure
-/// path (HTTP op, player QUIC, mTLS edge), so the trust model cannot diverge.
+/// serves an internal QUIC edge — the module never knows. The Auth face's gated
+/// `register` self-rejects at the service level when `ACCOUNTS_OPEN_REGISTRATION` is
+/// off — the impl guard is the SINGLE gate for every exposure path (HTTP op, player
+/// QUIC, mTLS edge), so the trust model cannot diverge.
 pub struct Accounts {
     svc: OnceLock<Arc<Service>>,
 }
@@ -1247,10 +1265,7 @@ impl Module for Accounts {
         let svc = Arc::new(Service {
             store: Store { pool },
             bus: ctx.bus().clone(),
-            // Resolve the dev-auth gate once, here, so it is the single source of
-            // truth for BOTH the (gated) HTTP op contributions and the service-level
-            // guard on the edge Auth face (register/login).
-            dev_auth: env_bool("ACCOUNTS_DEV_AUTH", false),
+            open_registration: env_bool("ACCOUNTS_OPEN_REGISTRATION", false),
             providers: OnceLock::new(),
             // Pure construction (no I/O): the argon RAM cap, the login admission
             // bound and the real verifier — admin's shapes.
@@ -1358,15 +1373,10 @@ impl Module for Accounts {
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         let svc = self.svc();
 
-        // dev/password provider — local testing convenience, gated off for prod. The
-        // register/login OPERATIONS are contributed unconditionally below; the
-        // `Service::dev_auth` guard rejects both methods at the impl when the gate is
-        // off — ONE trust model, every exposure path.
-        if svc.dev_auth {
+        if svc.open_registration {
             tracing::warn!(
-                "ACCOUNTS_DEV_AUTH is ON — /accounts/register and /accounts/login (dev/password \
-                 auth) are enabled; this is an explicit local-dev opt-in, keep it OFF (the \
-                 fail-closed default) in production"
+                "ACCOUNTS_OPEN_REGISTRATION is ON — anyone can self-register a password \
+                 account at /accounts/register; keep it OFF (the default) in production"
             );
         }
 
@@ -1434,8 +1444,8 @@ impl Module for Accounts {
         //
         // The whole Auth trait face is registered (the generated `register_server`
         // installs all methods at once), but the TRUST GATES live in the impl so the
-        // edge face matches the HTTP ops exactly: `register`/`login` self-reject with
-        // NotFound when `dev_auth` is off, and `login_federated` answers
+        // edge face matches the HTTP ops exactly: `register` self-rejects with
+        // NotFound when `open_registration` is off, and `login_federated` answers
         // `Unavailable` for a provider this deployment did not configure. `me` and
         // Sessions `verify_session` stay unconditional — the gateway needs them.
         ctx.contribute(

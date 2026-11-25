@@ -46,7 +46,7 @@ fn unreachable_service() -> Arc<Service> {
     Arc::new(Service {
         store: Store { pool },
         bus: Arc::new(Bus::new()),
-        dev_auth: true,
+        open_registration: true,
         providers: OnceLock::new(),
         argon_permits: Arc::new(Semaphore::new(2)),
         login_slots: Arc::new(Semaphore::new(32)),

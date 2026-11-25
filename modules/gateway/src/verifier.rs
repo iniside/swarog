@@ -10,7 +10,7 @@
 //! edge client (a `remote::Stub` factory) provides it in every other split process.
 //!
 //! Fallback policy (NO silent dev fallback): when the capability is absent at init
-//! the gateway FAILS STARTUP loudly — unless `ACCOUNTS_DEV_AUTH` is EXPLICITLY set
+//! the gateway FAILS STARTUP loudly — unless `GATEWAY_DEV_VERIFIER` is EXPLICITLY set
 //! truthy, which enables [`DevSessionVerifier`] with its loud warning. A
 //! mis-configured split gateway can no longer silently accept `dev-` tokens.
 
@@ -124,19 +124,26 @@ impl SessionVerifier for SessionsVerifier {
 /// provider's phase-1 `register`, module or stub, has already run):
 ///
 ///   1. the `accounts.sessions` capability, when present → [`SessionsVerifier`];
-///   2. else, `ACCOUNTS_DEV_AUTH` EXPLICITLY truthy (`1`/`true`/`on`) →
+///   2. else, `GATEWAY_DEV_VERIFIER` EXPLICITLY truthy (`1`/`true`/`on`) →
 ///      [`DevSessionVerifier`] with a loud warning;
 ///   3. else → **fail startup loudly** (review item 5: no silent dev fallback).
 pub(crate) fn resolve_verifier(ctx: &Context) -> anyhow::Result<Arc<dyn SessionVerifier>> {
+    resolve_verifier_with(ctx, dev_verifier_on(|key| std::env::var(key).ok()))
+}
+
+pub(crate) fn resolve_verifier_with(
+    ctx: &Context,
+    dev_verifier: bool,
+) -> anyhow::Result<Arc<dyn SessionVerifier>> {
     if let Some(sessions) = ctx
         .registry()
         .try_require::<dyn accountsapi::Sessions>(&registry::key("accounts", "sessions"))
     {
         return Ok(Arc::new(SessionsVerifier::new(sessions)));
     }
-    if dev_auth_explicitly_on() {
+    if dev_verifier {
         tracing::warn!(
-            "gateway: no accounts.sessions capability in this process; ACCOUNTS_DEV_AUTH is \
+            "gateway: no accounts.sessions capability in this process; GATEWAY_DEV_VERIFIER is \
              explicitly set, so falling back to DevSessionVerifier (dev-<player_id> tokens)"
         );
         return Ok(Arc::new(DevSessionVerifier::new()));
@@ -144,17 +151,16 @@ pub(crate) fn resolve_verifier(ctx: &Context) -> anyhow::Result<Arc<dyn SessionV
     anyhow::bail!(
         "gateway: no accounts.sessions capability is available in this process — add the \
          accounts module (monolith) or a remote::Stub::new(\"accounts\", ..., \
-         accountsrpc::remote_factories()) (split), or set ACCOUNTS_DEV_AUTH=1 explicitly \
+         accountsrpc::remote_factories()) (split), or set GATEWAY_DEV_VERIFIER=1 explicitly \
          for local dev-token auth"
     )
 }
 
-/// `true` only when `ACCOUNTS_DEV_AUTH` is EXPLICITLY set truthy (`1`/`true`/`on`,
-/// case-insensitive). Unset is `false` here — the accounts module's own default-ON
-/// convenience does NOT extend to the gateway's auth fallback.
-fn dev_auth_explicitly_on() -> bool {
+/// `true` only when `GATEWAY_DEV_VERIFIER` is EXPLICITLY set truthy (`1`/`true`/`on`,
+/// case-insensitive) in `var`, the environment reader; unset is `false`.
+pub(crate) fn dev_verifier_on(var: impl Fn(&str) -> Option<String>) -> bool {
     matches!(
-        std::env::var("ACCOUNTS_DEV_AUTH"),
-        Ok(v) if v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("on")
+        var("GATEWAY_DEV_VERIFIER"),
+        Some(v) if v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("on")
     )
 }

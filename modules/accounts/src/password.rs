@@ -1,4 +1,4 @@
-//! argon2id password hashing for the dev/password provider (port of Go's
+//! argon2id password hashing for the `password` provider (port of Go's
 //! `modules/accounts/password.go`). The encoded form is the PHC string
 //! `$argon2id$v=19$m=65536,t=1,p=4$<b64salt>$<b64key>` — byte-compatible with Go's
 //! hand-rolled `fmt.Sprintf` rendering (both sides use standard base64 without

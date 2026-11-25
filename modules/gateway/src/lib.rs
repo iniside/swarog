@@ -280,7 +280,7 @@ const POOL_STOP_BUDGET: Duration = Duration::from_secs(2);
 pub struct Gateway {
     /// The auth verifier. `None` (the [`Gateway::new`] default) defers resolution
     /// to `init`: the REAL `accounts.sessions` capability from the registry, or —
-    /// only when `ACCOUNTS_DEV_AUTH` is explicitly set — the dev fallback; absent
+    /// only when `GATEWAY_DEV_VERIFIER` is explicitly set — the dev fallback; absent
     /// both, startup FAILS loudly (see `verifier::resolve_verifier`). `Some` is a
     /// caller-supplied override (tests).
     verifier: Option<Arc<dyn SessionVerifier>>,
@@ -344,7 +344,7 @@ impl Gateway {
     /// A gateway that resolves its verifier at `init` (Step 6): the real
     /// `accounts.sessions` capability — provided locally by the accounts module or
     /// by an `accountsrpc` remote stub — else a loud startup failure (unless
-    /// `ACCOUNTS_DEV_AUTH=1` explicitly enables the dev fallback).
+    /// `GATEWAY_DEV_VERIFIER=1` explicitly enables the dev fallback).
     pub fn new() -> Self {
         Gateway {
             verifier: None,
@@ -461,7 +461,7 @@ impl Module for Gateway {
     /// provider's phase-1 `register` — the accounts/apikeys module or its remote
     /// stub — has already run, so `accounts.sessions`/`apikeys.keys` is present iff
     /// this process was wired for it. Absent capability + no explicit
-    /// `ACCOUNTS_DEV_AUTH`/`APIKEYS_DEV_ALLOW` fails startup loudly (no silent dev
+    /// `GATEWAY_DEV_VERIFIER`/`APIKEYS_DEV_ALLOW` fails startup loudly (no silent dev
     /// fallback).
     ///
     /// It also contributes this process's push sink (`push_ws::LocalSink`) to

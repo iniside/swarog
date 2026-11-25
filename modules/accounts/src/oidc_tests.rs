@@ -143,7 +143,7 @@ fn epic_service(verifier: OidcVerifier) -> Arc<Service> {
             pool: PgPool::connect_lazy(DSN).unwrap(),
         },
         bus: Arc::new(bus::Bus::new()),
-        dev_auth: false,
+        open_registration: false,
         providers,
         argon_permits: Arc::new(tokio::sync::Semaphore::new(2)),
         login_slots: Arc::new(tokio::sync::Semaphore::new(32)),

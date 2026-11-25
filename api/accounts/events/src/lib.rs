@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 /// `accounts.identities.provider` column value the provisioning path wrote — NOT the
 /// credential-verifier registry, which is a strictly narrower set: the federated paths
 /// write a registered provider name (`epic`, `google`, `guest` today), while
-/// dev/password registration writes `dev`, a provider no verifier exists for. A
+/// password registration writes `password`, a provider no verifier exists for. A
 /// consumer filtering this field must compare it against [`providers`], the naming
 /// authority, not the verifier registry. It carries our product-scoped player id, never
 /// a provider's external id. Evolve additively (constraint #6).
@@ -90,14 +90,15 @@ pub static PLAYER_DELETED: LazyLock<EventType<PlayerDeleted>> =
 /// constants instead of its own literal, so a rename moves both sides in one compile
 /// (`schedulerevents::schedule_names`' convention).
 ///
-/// This is the naming authority, NOT the credential-verifier registry: [`DEV`] is
-/// written by dev/password registration, an op with no verifier, and that narrower
+/// This is the naming authority, NOT the credential-verifier registry: [`PASSWORD`] is
+/// written by password registration, an op with no verifier, and that narrower
 /// registry stays private to the accounts module.
 pub mod providers {
     /// The anonymous device identity this backend mints itself — the one provider
     /// value that means "not an authenticated human yet".
     pub const GUEST: &str = "guest";
-    pub const DEV: &str = "dev";
+    /// The email + password identity; its subject is the trimmed, ASCII-lowercased email.
+    pub const PASSWORD: &str = "password";
     pub const EPIC: &str = "epic";
     pub const GOOGLE: &str = "google";
 }
@@ -116,7 +117,7 @@ pub fn golden_samples() -> Vec<(&'static str, u32, serde_json::Value)> {
             serde_json::to_value(PlayerRegistered {
                 player_id: "player-1".to_string(),
                 display_name: "Aria".to_string(),
-                provider: "dev".to_string(),
+                provider: "password".to_string(),
             })
             .expect("PlayerRegistered serializes to json"),
         ),

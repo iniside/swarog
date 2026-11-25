@@ -190,10 +190,11 @@ async fn players_table_finds_by_id_handle_email_and_substring_and_filters_by_pro
     let row = admin.svc.store.player_row(&id).await.unwrap().unwrap();
     let handle = format!("{}#{}", name.to_lowercase(), row.discriminator);
     let mut found = Vec::new();
-    for needle in [id.as_str(), handle.as_str(), email.as_str(), &name[2..]] {
+    let upper_email = email.to_ascii_uppercase();
+    for needle in [id.as_str(), handle.as_str(), email.as_str(), upper_email.as_str(), &name[2..]] {
         found.push((needle.to_string(), admin.panel(players_query(Some(needle), None, None)).await));
     }
-    let dev = admin.panel(players_query(Some(&id), Some("dev"), None)).await;
+    let password = admin.panel(players_query(Some(&id), Some("password"), None)).await;
     let guest = admin.panel(players_query(Some(&id), Some("guest"), None)).await;
     let unfiltered = admin.panel(players_query(None, None, None)).await;
     cleanup_player(&pool, &id).await;
@@ -203,15 +204,15 @@ async fn players_table_finds_by_id_handle_email_and_substring_and_filters_by_pro
         assert_eq!(row_ids(&t), vec![id.clone()], "needle {needle:?} finds exactly the player");
         assert_eq!(t.page.total, None, "a searched table has no total");
     }
-    let dev = table(dev.unwrap());
-    assert_eq!(row_ids(&dev), vec![id.clone()], "the dev filter keeps a player with a dev identity");
-    assert_eq!(dev.page.total, None, "a filtered table has no total");
-    let cells = &dev.rows[0].cells;
+    let password = table(password.unwrap());
+    assert_eq!(row_ids(&password), vec![id.clone()], "the password filter keeps a password player");
+    assert_eq!(password.page.total, None, "a filtered table has no total");
+    let cells = &password.rows[0].cells;
     assert_eq!(cells[0].value, format!("{name}#{}", row.discriminator), "the User cell is the handle");
     let entity = EntityRef { kind: "player".to_string(), id: id.clone() };
     assert_eq!(cells[0].link, Some(Link::Entity(entity)), "the User cell opens the player");
-    assert_eq!((cells[3].kind, cells[3].value.as_str()), (CellKind::Ref, "dev"), "Identities tags dev");
-    assert!(row_ids(&table(guest.unwrap())).is_empty(), "the guest filter drops a dev-only player");
+    assert_eq!((cells[3].kind, cells[3].value.as_str()), (CellKind::Ref, "password"), "Identities tags password");
+    assert!(row_ids(&table(guest.unwrap())).is_empty(), "the guest filter drops a password-only player");
     assert!(
         table(unfiltered.unwrap()).page.total.is_some_and(|n| n >= 1),
         "an unsearched, unfiltered table carries the exact count",
@@ -333,10 +334,10 @@ async fn identities_panel_masks_the_subject_and_counts_the_links() {
     assert_eq!(body.meta.as_deref(), Some("2"));
     let t = table(body);
     let row = &t.rows[0];
-    assert_eq!(row.cells[0].value, "dev");
+    assert_eq!(row.cells[0].value, "password");
     assert_eq!(row.cells[1].value, mask(&email), "the email subject is masked");
     assert!(!row.cells[1].value.contains(&email[4..email.len() - 4]), "the masked middle never leaks");
-    assert_eq!(row.cells[3].value, "now", "the registration session used dev just now");
+    assert_eq!(row.cells[3].value, "now", "the registration session used password just now");
     assert_eq!(t.rows[1].cells[0].value, "epic");
     assert_eq!(t.rows[1].cells[3].value, "—", "no session went through the linked identity");
     assert!(row.actions.is_empty(), "no operator action exists on a linked identity");

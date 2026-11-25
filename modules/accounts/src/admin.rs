@@ -17,7 +17,7 @@ use controlplane::{
 use controlplane::order;
 use opsapi::Error;
 
-use crate::providers::{DEV, EPIC, GOOGLE, GUEST};
+use crate::providers::{EPIC, GOOGLE, GUEST, PASSWORD};
 use crate::store::{render_handle, FamilyRow, IdentityRow, PlayerListRow, PlayerListing};
 use crate::Service;
 
@@ -60,7 +60,7 @@ const SESSIONS_SHOWN: i64 = 50;
 const MAX_NEEDLE_BYTES: usize = 256;
 
 /// The provider filter's options: every provider an identity can carry.
-const PROVIDERS: [&str; 4] = [GUEST, DEV, EPIC, GOOGLE];
+const PROVIDERS: [&str; 4] = [GUEST, PASSWORD, EPIC, GOOGLE];
 
 /// The length of the canonical uuid spelling, hyphens included.
 pub(crate) const UUID_BYTES: usize = 36;

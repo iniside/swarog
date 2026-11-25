@@ -2,13 +2,14 @@ use super::*;
 use accountsapi::{Auth as _, Sessions as _};
 use base64::Engine as _;
 
-mod dev_auth_gate;
 mod delete;
 mod directory;
 mod guest;
 mod last_used;
+mod password_email;
 mod prune;
 mod refresh;
+mod registration_gate;
 use crate::oidc::{IssuerMatch, OidcVerifier};
 use crate::password::verify_password;
 use crate::providers::EpicOAuthConfig;
@@ -233,7 +234,7 @@ fn lazy_service_with_pool(pool: PgPool, verifier: Arc<dyn PasswordVerifier>) -> 
     Arc::new(Service {
         store: Store { pool },
         bus: Arc::new(Bus::new()),
-        dev_auth: true,
+        open_registration: true,
         providers: OnceLock::new(),
         argon_permits: Arc::new(Semaphore::new(2)),
         login_slots: Arc::new(Semaphore::new(32)),
@@ -651,14 +652,12 @@ async fn wired_with_verifier(
     let transport = asyncevents::testing::transport(pool.clone());
     let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
 
-    // Build the service directly with dev-auth forced ON — the fixture must NOT ride
-    // the `ACCOUNTS_DEV_AUTH` env default, which is now fail-closed (OFF). Same struct
-    // route as `dev_auth_gate::gated_service`, but wired to the ctx's transport-backed
-    // bus so `register`'s durable `emit_tx` lands in the shared event log.
+    // Registration forced open without the env, on the ctx's transport-backed bus so
+    // `register`'s durable `emit_tx` lands in the shared event log.
     let svc = Arc::new(Service {
         store: Store { pool: pool.clone() },
         bus: ctx.bus().clone(),
-        dev_auth: true,
+        open_registration: true,
         providers: OnceLock::new(),
         argon_permits: Arc::new(Semaphore::new(2)),
         login_slots: Arc::new(Semaphore::new(32)),
@@ -704,7 +703,7 @@ async fn wired_with_failing_bus(pool: &PgPool) -> Arc<Service> {
     Arc::new(Service {
         store: Store { pool: pool.clone() },
         bus: ctx.bus().clone(),
-        dev_auth: true,
+        open_registration: true,
         providers: OnceLock::new(),
         argon_permits: Arc::new(Semaphore::new(2)),
         login_slots: Arc::new(Semaphore::new(32)),
@@ -792,7 +791,7 @@ async fn register_login_session_roundtrip_with_durable_event() {
     assert!(me
         .identities
         .iter()
-        .any(|i| i.provider == "dev" && i.subject == email));
+        .any(|i| i.provider == "password" && i.subject == normalize_email(&email)));
 
     cleanup_player(&pool, &sess.player_id).await;
 }
@@ -821,7 +820,7 @@ async fn session_token_collision_rolls_back_registration_and_event() {
         )
         .await;
     let identity_rows: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM accounts.identities WHERE provider = 'dev' AND subject = $1",
+        "SELECT count(*) FROM accounts.identities WHERE provider = 'password' AND subject = $1",
     )
     .bind(&attempted_email)
     .fetch_one(&pool)

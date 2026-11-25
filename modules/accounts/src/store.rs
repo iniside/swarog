@@ -636,7 +636,7 @@ impl Store {
                JOIN accounts.players p ON p.id = i.player_id \
               WHERE i.provider = $1 AND i.subject = $2",
         )
-        .bind(crate::providers::DEV)
+        .bind(crate::providers::PASSWORD)
         .bind(email)
         .fetch_optional(&self.pool)
         .await?;
@@ -651,7 +651,7 @@ impl Store {
     /// unknown subject and a wrong secret must be the same answer, and a lookup that
     /// returned the row first would hand its caller the oracle. A SIBLING of
     /// [`Store::password_identity`] rather than a widening of it — that one resolves a
-    /// dev/password identity by EMAIL, and a guest subject must never match it.
+    /// password identity by EMAIL, and a guest subject must never match it.
     pub async fn guest_identity_matches(
         &self,
         subject: &str,
@@ -1242,7 +1242,7 @@ impl Store {
                      OR p.id = $2::uuid \
                      OR (lower(p.display_name) = lower($3) AND p.discriminator = $4) \
                      OR EXISTS (SELECT 1 FROM accounts.identities d \
-                                 WHERE d.player_id = p.id AND d.provider = $5 AND d.subject = $1) \
+                                 WHERE d.player_id = p.id AND d.provider = $5 AND d.subject = $10) \
                      OR strpos(lower(p.display_name), lower($1)) > 0) \
                 AND ($6::text IS NULL \
                      OR EXISTS (SELECT 1 FROM accounts.identities f \
@@ -1256,11 +1256,12 @@ impl Store {
         .bind(id)
         .bind(handle.map(|(name, _)| name))
         .bind(handle.map(|(_, discriminator)| discriminator))
-        .bind(crate::providers::DEV)
+        .bind(crate::providers::PASSWORD)
         .bind(listing.provider)
         .bind(listing.after.map(|(micros, _)| micros))
         .bind(listing.after.map(|(_, id)| id))
         .bind(listing.limit)
+        .bind(needle.map(crate::normalize_email))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(player_list_row).collect())
