@@ -245,6 +245,7 @@ async fn standalone_unset_env_is_todays_defaults() {
         vec![
             ("/admin".to_string(), String::new()),
             ("/accounts/epic".to_string(), String::new()),
+            ("/accounts/oidc".to_string(), String::new()),
         ],
         "an unset origin stays BLANK — the proxy table drops the route and it 404s",
     );
@@ -322,6 +323,39 @@ async fn managed_resolves_the_same_pairs_as_env() {
     );
 }
 
+/// accounts-svc's ONE HTTP origin serves both browser trees: `/accounts/epic` (the Epic
+/// web OAuth flow) and `/accounts/oidc` (the hosted login pages). Both modes hand the
+/// gateway one `(prefix, origin)` pair per prefix, all on that one origin, and the agent
+/// is asked for it exactly once — still one address per provider, not one per prefix.
+/// An `unknown_peer` for that origin blanks BOTH prefixes, so neither is half-routed.
+#[tokio::test]
+async fn the_accounts_origin_serves_both_browser_prefixes() {
+    let expected = vec![
+        ("/admin".to_string(), "127.0.0.1:8085".to_string()),
+        ("/accounts/epic".to_string(), "127.0.0.1:8084".to_string()),
+        ("/accounts/oidc".to_string(), "127.0.0.1:8084".to_string()),
+    ];
+    let agent = FakeAgent::healthy();
+    let from_agent = resolve_managed(&agent).await.unwrap();
+    assert_eq!(passthroughs(&from_agent), expected, "managed");
+    assert_eq!(passthroughs(&resolve_env(FLEET).await), expected, "standalone");
+    let http_asks =
+        agent.asked.borrow().iter().filter(|asked| **asked == ("accounts", AddrKind::Http)).count();
+    assert_eq!(http_asks, 1, "one origin per provider, whatever its prefix count");
+
+    let refusing =
+        FakeAgent::healthy().with("accounts", AddrKind::Http, refused(ErrorCode::UnknownPeer));
+    let blanked = resolve_managed(&refusing).await.expect("a missing origin is not fatal");
+    assert_eq!(
+        passthroughs(&blanked)[1..],
+        [
+            ("/accounts/epic".to_string(), String::new()),
+            ("/accounts/oidc".to_string(), String::new()),
+        ],
+        "no origin ⇒ every prefix of it is blank ⇒ the proxy table drops both",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The per-class failure policy
 // ---------------------------------------------------------------------------
@@ -377,8 +411,11 @@ async fn unknown_peer_on_a_passthrough_is_an_empty_origin() {
         vec!["127.0.0.1:9000"]
     );
     assert_eq!(
-        passthroughs(&from_agent)[1],
-        ("/accounts/epic".to_string(), "127.0.0.1:8084".to_string()),
+        passthroughs(&from_agent)[1..],
+        [
+            ("/accounts/epic".to_string(), "127.0.0.1:8084".to_string()),
+            ("/accounts/oidc".to_string(), "127.0.0.1:8084".to_string()),
+        ],
     );
 }
 

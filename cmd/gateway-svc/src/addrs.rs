@@ -1,8 +1,8 @@
-//! Where this front door's thirteen addresses come from — the ONE deterministic
+//! Where this front door's addresses ([`ADDR_SPECS`]) come from — the ONE deterministic
 //! decision this process makes at start.
 //!
 //! ```text
-//! ORCHESTRATOR_URL unset ⇒ standalone: read the ten env vars (as always).
+//! ORCHESTRATOR_URL unset ⇒ standalone: read the env vars (as always).
 //! ORCHESTRATOR_URL set   ⇒ managed:    ask the local agent (`remote::resolve_peer`).
 //! ```
 //!
@@ -19,7 +19,7 @@
 //!
 //! # The failure policy is PER CLASS, and branches on the CODE — never on prose
 //!
-//! The ten addresses are two classes ([`AddrClass`]), and "unresolvable" does
+//! The addresses are two classes ([`AddrClass`]), and "unresolvable" does
 //! not mean the same thing to both:
 //!
 //! * An **edge peer** with no address ⇒ this process DIES. There is no benign
@@ -94,8 +94,10 @@ pub(crate) enum AddrClass {
     /// A `remote::Stub` peer, dialed over the internal mTLS edge.
     /// `ProcessWiring::with_peer`.
     Edge,
-    /// An HTTP reverse-proxy origin for `prefix`. `ProcessWiring::with_passthrough`.
-    Passthrough { prefix: &'static str },
+    /// ONE HTTP reverse-proxy origin serving every route under each of `prefixes`:
+    /// one address, resolved once, handed to `ProcessWiring::with_passthrough` once
+    /// per prefix (so a provider serving two browser trees stays one address).
+    Passthrough { prefixes: &'static [&'static str] },
 }
 
 impl AddrClass {
@@ -110,7 +112,7 @@ impl AddrClass {
     }
 }
 
-/// One of the ten addresses: its env key (standalone), the provider short name
+/// One address: its env key (standalone), the provider short name
 /// the agent knows it by (managed), its class, and its standalone default.
 struct AddrSpec {
     env_key: &'static str,
@@ -226,32 +228,33 @@ const ADDR_SPECS: &[AddrSpec] = &[
         class: AddrClass::Edge,
         env_default: "127.0.0.1:9017",
     },
-    // The two passthrough ORIGINS: `/admin` → admin-svc, `/accounts/epic` → the
-    // Epic web OAuth flow on accounts-svc. A blank default drops the prefix (the
-    // proxy table skips empties), so an unset var leaves that route a 404 — the
-    // semantics the managed path's `unknown_peer` arm reproduces exactly.
+    // The two passthrough ORIGINS: `/admin` → admin-svc; `/accounts/epic` (the Epic
+    // web OAuth flow) and `/accounts/oidc` (the hosted login pages) → accounts-svc's
+    // one HTTP origin. A blank default drops every prefix of that origin (the proxy
+    // table skips empties), so an unset var leaves those routes a 404 — the semantics
+    // the managed path's `unknown_peer` arm reproduces exactly.
     AddrSpec {
         env_key: "ADMIN_HTTP_ADDR",
         provider: "admin",
-        class: AddrClass::Passthrough { prefix: "/admin" },
+        class: AddrClass::Passthrough { prefixes: &["/admin"] },
         env_default: "",
     },
     AddrSpec {
         env_key: "ACCOUNTS_HTTP_ADDR",
         provider: "accounts",
         class: AddrClass::Passthrough {
-            prefix: "/accounts/epic",
+            prefixes: &["/accounts/epic", "/accounts/oidc"],
         },
         env_default: "",
     },
 ];
 
-/// The decided source of the ten addresses. Two variants, no third: there is
+/// The decided source of the addresses. Two variants, no third: there is
 /// no "managed with an env fallback", because the type that would express it is
 /// the bug (see the module doc).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum AddrSource {
-    /// Standalone: the ten env vars, exactly as before weles existed.
+    /// Standalone: the env vars, exactly as before weles existed.
     Env,
     /// Managed: ask the agent at this URL.
     Agent(String),
@@ -281,7 +284,7 @@ pub(crate) fn addr_source_from_env() -> Result<AddrSource> {
 /// Set-but-BLANK fails startup loudly rather than falling back to standalone —
 /// unlike the address vars below it, where blank means "unset" and the answer is
 /// a documented default. This var does not select a value, it selects the
-/// AUTHORITY for ten values; inferring "standalone" from a blank one is the
+/// AUTHORITY for every address; inferring "standalone" from a blank one is the
 /// silent-fallback this whole file exists to refuse, and the operator who
 /// exported an empty `ORCHESTRATOR_URL` meant to be managed.
 fn addr_source_from_value(raw: Option<&str>) -> Result<AddrSource> {
@@ -297,7 +300,7 @@ fn addr_source_from_value(raw: Option<&str>) -> Result<AddrSource> {
     }
 }
 
-/// The ten `(env key → address)` pairs, whatever they were resolved FROM.
+/// The `(env key → address)` pairs, whatever they were resolved FROM.
 ///
 /// Its own type, deliberately, rather than `ProcessWiring`: this is the value the
 /// two modes must agree on, so it needs `PartialEq`/`Debug` to be compared in a
@@ -333,16 +336,19 @@ impl ResolvedAddrs {
     /// An edge peer's whole instance SET goes to `with_peer_set` (a `remote::Pool`
     /// then round-robins across it, and the same set reaches the gateway route
     /// table via `PEER_SLOT`); a passthrough's single origin goes to
-    /// `with_passthrough` (a 0-element set is the blank origin the proxy table
-    /// drops — byte-identical to an unset env var).
+    /// `with_passthrough` once per prefix (a 0-element set is the blank origin the
+    /// proxy table drops — byte-identical to an unset env var).
     pub(crate) fn to_wiring(&self) -> ProcessWiring {
         let mut wiring = ProcessWiring::new();
         for spec in ADDR_SPECS {
             let addrs = self.addrs(spec.env_key);
             wiring = match spec.class {
                 AddrClass::Edge => wiring.with_peer_set(spec.provider, addrs.to_vec()),
-                AddrClass::Passthrough { prefix } => {
-                    wiring.with_passthrough(prefix, addrs.first().cloned().unwrap_or_default())
+                AddrClass::Passthrough { prefixes } => {
+                    let origin = addrs.first().cloned().unwrap_or_default();
+                    prefixes.iter().fold(wiring, |acc, prefix| {
+                        acc.with_passthrough(prefix, origin.clone())
+                    })
                 }
             };
         }
@@ -350,7 +356,7 @@ impl ResolvedAddrs {
     }
 }
 
-/// Resolves all ten addresses from `source`.
+/// Resolves every address from `source`.
 ///
 /// Both effects are injected, which is what makes this file's claims provable:
 /// `env_lookup` is `std::env::var` in production, and `ask_agent` is
@@ -437,17 +443,18 @@ fn managed_addrs(spec: &AddrSpec, answer: WireAnswer) -> Result<Vec<String>> {
                     spec.env_default,
                 ),
                 // Exactly today's blank-default semantics (`env_default: ""`):
-                // the proxy table drops a blank-origin route, so the prefix is
-                // unrouted and 404s. The agent said this origin is not a thing in
-                // this topology — which is the same fact an unset env var states.
+                // the proxy table drops a blank-origin route, so every prefix of
+                // that origin is unrouted and 404s. The agent said this origin is not
+                // a thing in this topology — which is the same fact an unset env var
+                // states.
                 // A ZERO-element set is that blank origin.
-                AddrClass::Passthrough { prefix } => {
+                AddrClass::Passthrough { prefixes } => {
                     tracing::warn!(
-                        prefix,
+                        ?prefixes,
                         provider = spec.provider,
                         status,
                         %message,
-                        "no HTTP origin in this topology — {prefix} will 404 (the agent \
+                        "no HTTP origin in this topology — {prefixes:?} will 404 (the agent \
                          answered unknown_peer; same as an unset {})",
                         spec.env_key,
                     );

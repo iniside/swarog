@@ -103,11 +103,11 @@ async fn main() -> anyhow::Result<()> {
     //
     // Peer edge addresses and passthrough origins are resolved HERE (the composition
     // root owns topology), never read inside the module: `/admin` → admin-svc,
-    // `/accounts/epic` → the Epic web OAuth flow on accounts-svc.
+    // `/accounts/epic` (Epic web OAuth) and `/accounts/oidc` (hosted login) → accounts-svc.
     //
-    // WHERE those nine addresses come from is `addrs`'s one decision, made once:
+    // WHERE those addresses come from is `addrs`'s one decision, made once:
     // `ORCHESTRATOR_URL` set ⇒ managed (ask the local weles agent over
-    // `remote::resolve_peer`), unset ⇒ standalone (the nine env vars, byte-identical
+    // `remote::resolve_peer`), unset ⇒ standalone (the env vars, byte-identical
     // to before). The modes are disjoint — a managed boot never falls back to env —
     // and everything below this line is blind to which one ran: `ResolvedAddrs::to_wiring`
     // builds the same `ProcessWiring`, so `gateway_svc::modules` and its `Stub`s are
@@ -170,7 +170,7 @@ async fn main() -> anyhow::Result<()> {
     // `with_rate_limit_default(20.0, 40)`: the front door ALWAYS rate limits (Go's
     // `cmd/gateway-svc` values), unlike a module host where it is opt-in. `RATE_LIMIT_RPS`
     // / `RATE_LIMIT_BURST` / `TRUSTED_PROXY_CIDRS` env still override. The limiter fronts
-    // the HTTP plane (ops + `/admin`+`/accounts/epic` passthrough alike); the player QUIC
+    // the HTTP plane (ops + every passthrough alike); the player QUIC
     // front is not rate limited (HTTP-plane concern, Go parity).
     app::run(
         app::Config::from_env()
