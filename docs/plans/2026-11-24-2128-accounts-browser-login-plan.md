@@ -300,3 +300,10 @@ proof run once, after Step 6, as part of Step 7 (owner, 2026-11-25).
 10. **Rate limit on the JSON Epic start:** "to dodaj limit". `POST /accounts/epic/start`
     gets the same per-IP limiter (one bucket) as the hosted form POSTs; a review-fix
     after Step 6, in the accounts crate only.
+11. **Step 6 review leftovers:** "ok mozesz tak zrobic". Step 8 records two items: in
+    `docs/todo/conformance.md`, the writer cap gate's per-field cases are a hand list in
+    `tools/conformance/src/policy.rs`, so a new form field without a domain cap passes
+    (only the generic 4096-byte value cap bounds it); derive the expected set from the
+    module manifests' form fields. In `docs/todo/accounts.md`, an operator cannot end one
+    browser session; only Revoke all ends them. A hosted password sign-in stamping the
+    identity's last-used time (as the JSON login does) is kept.
