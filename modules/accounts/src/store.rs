@@ -1004,7 +1004,8 @@ impl Store {
 
     /// Revokes every refresh family of a player on the caller's tx: all its refresh tokens,
     /// access sessions and browser sessions. `None` when there is no such player; otherwise
-    /// the rows deleted, tokens, sessions and live browser sessions together.
+    /// a "did anything end" signal only: deleted token and session rows (expired ones
+    /// included) plus the browser sessions that were still live. Not a session count.
     ///
     /// Lock order: the player row first ([`Store::lock_player_row_tx`]), then its token
     /// and session rows — the order every login and refresh takes them (FOR KEY SHARE on
