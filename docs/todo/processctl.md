@@ -88,6 +88,10 @@ _None._
   - core/app's private `DEFAULT_LISTEN_ADDR` (core/app/src/lib.rs:27), which nothing ties to the issuer
     default.
   The last one was found by the proof-auditor of oidc-signing-keys Step 2 (2026-11-26).
+  The split gateway has the same split: its `PORT` env comes from `split_gateway_port!()`
+  (tools/processctl/src/fleet.rs:889), but its spec repeats `http_port: 8082` and `player_port: Some(9100)`
+  as literals (fleet.rs:917, :919), tied only by fleet_tests.rs:259. Found by the core-reviewer of
+  6055e52f (oidc-signing-keys Step 4, 2026-11-26).
   Source: owner, after oidc-signing-keys Step 1 ("cos tu jest przekombinowane, zbadamy to pozniej", 2026-11-26).
 
 ### Known limits (admin-control-plane-redesign step 15)

@@ -42,6 +42,18 @@ _None._
   Scheduled after roadmap Phase A (Steps 2-4) of docs/plans/2026-11-24-0004-lore-integration-roadmap-plan.md
   (owner, 2026-11-26).
   Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, owner decision 8 (2026-11-25).
+- [ ] **Signing-key rotation**
+  No operator action rotates the ES256 OIDC signing key. The `retiring`/`retired` statuses of
+  `accounts.signing_keys` exist so rotation needs no schema change; a retiring key stays in the JWKS
+  until its last token expires. When rotation lands, splitproof `[SK3]`/`[SK3m]`
+  (tools/splitproof/src/oidc_discovery_checks.rs) must change: they expect exactly one live row.
+  Scheduled with roadmap Step 9 (docs/plans/2026-11-24-0004-lore-integration-roadmap-plan.md).
+  Source: docs/plans/2026-11-26-1415-oidc-signing-keys-plan.md D8, owner answer 3 (2026-11-26).
+- [ ] **KEK rotation**
+  Changing `ACCOUNTS_SIGNING_KEK` refuses startup until `accounts.signing_keys` is dropped and
+  accounts boots fresh, which invalidates every issued token. No re-seal tool exists.
+  Scheduled with roadmap Step 9.
+  Source: docs/plans/2026-11-26-1415-oidc-signing-keys-plan.md D8, owner answer 3 (2026-11-26).
 - [ ] **No single browser-session revoke for operators**
   An operator cannot end one browser session; only Revoke all ends them.
   Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, owner decision 11 (2026-11-26).

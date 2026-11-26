@@ -24,7 +24,10 @@ Per-module mechanics live in each `modules/<name>/src/lib.rs` header and the
   split proof never sets it. The hosted browser login lives under `/accounts/oidc`
   (served by accounts); its cookies are `Secure` unless `ACCOUNTS_COOKIE_SECURE` is
   `0`/`false`/`off` (dev/proof opt-out, loud warn), and password self-registration
-  stays behind `ACCOUNTS_OPEN_REGISTRATION` (default OFF). `wallet` grants starter
+  stays behind `ACCOUNTS_OPEN_REGISTRATION` (default OFF). accounts is the OIDC issuer
+  (`ACCOUNTS_OIDC_ISSUER`, default `accountsapi::DEFAULT_OIDC_ISSUER`): its ES256 signing keys
+  live in `accounts.signing_keys` sealed under `ACCOUNTS_SIGNING_KEK`, which is REQUIRED
+  (unset, malformed, or a KEK that cannot open a stored key fails startup). `wallet` grants starter
   currency on `player.promoted` (and non-guest `player.registered`) when configured.
   Self-delete: `begin` mints/upserts a confirmation ticket (a repeat returns the same
   live one); `delete` consumes it and in one tx revokes sessions, reserves the handle

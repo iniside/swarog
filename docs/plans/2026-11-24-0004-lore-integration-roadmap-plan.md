@@ -434,7 +434,9 @@ split proof checks its endpoints through gateway-svc.
   - events;
   - server (HTTP health probe only, no process control: Weles is excluded);
   - billing (seats = `authz` `holders_of_kind(lore)`, store size if loreserver reports it,
-    hourly `lore.billing_snapshot` schedule).
+    hourly `lore.billing_snapshot` schedule);
+  - accounts signing-key rotation and KEK rotation (deferred here by
+    docs/plans/2026-11-26-1415-oidc-signing-keys-plan.md owner answer 3; docs/todo/accounts.md).
 - (b) Operators see repositories and their access before studio members work
   (grant assignment itself is the `authz` page, Step 5a). It can run in
   parallel with Step 8 after Step 5b.

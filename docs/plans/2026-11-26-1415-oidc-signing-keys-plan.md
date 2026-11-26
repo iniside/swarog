@@ -1,6 +1,6 @@
 # OIDC signing keys, discovery and JWKS (roadmap Step 2)
 
-Status: approved by the owner 2026-11-26 ("ok mozesz zaczynac"); runs after the oauth-drift-fixes plan.
+Status: done (approved by the owner 2026-11-26, "ok mozesz zaczynac"; ran after the oauth-drift-fixes plan).
 Date: 2026-11-26
 Parent: docs/plans/2026-11-24-0004-lore-integration-roadmap-plan.md, Phase A, Step 2.
 Owner answers (2026-11-26): 1 encrypt the private keys (option b) unless much more work; 2 issuer from
