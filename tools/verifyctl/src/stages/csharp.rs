@@ -205,6 +205,21 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
     Ok(result)
 }
 
+/// The fixed environment the stage sets over the inherited one, in insertion order.
+fn stage_env(database_url: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("PORT", format!(":{HTTP_PORT}")),
+        ("PLAYER_EDGE_ADDR", format!(":{PLAYER_PORT}")),
+        ("DATABASE_URL", database_url.into()),
+        ("APIKEYS_DEV_SEED", "1".into()),
+        ("ACCOUNTS_OPEN_REGISTRATION", "1".into()),
+        ("ACCOUNTS_COOKIE_SECURE", "0".into()),
+        ("ACCOUNTS_SIGNING_KEK", testdb::DEV_ACCOUNTS_SIGNING_KEK.into()),
+        ("ACCOUNTS_OIDC_ISSUER", format!("http://localhost:{HTTP_PORT}/accounts/oidc")),
+        ("INVENTORY_DEV_GRANT", "1".into()),
+    ]
+}
+
 /// Boots the fixture server with `extra` on top of the stage environment and waits
 /// for `/healthz`; `None` when it never became healthy.
 fn boot(
@@ -214,21 +229,9 @@ fn boot(
     extra: &[(&str, String)],
 ) -> Result<Option<OwnedChild>> {
     let mut environment = ctx.environment().clone();
-    environment.insert("PORT".into(), format!(":{HTTP_PORT}"));
-    environment.insert("PLAYER_EDGE_ADDR".into(), format!(":{PLAYER_PORT}"));
-    environment.insert(
-        "DATABASE_URL".into(),
-        ctx.database_url().unwrap_or(DEFAULT_DSN).into(),
-    );
-    environment.insert("APIKEYS_DEV_SEED".into(), "1".into());
-    environment.insert("ACCOUNTS_OPEN_REGISTRATION".into(), "1".into());
-    environment.insert("ACCOUNTS_COOKIE_SECURE".into(), "0".into());
-    environment.insert("ACCOUNTS_SIGNING_KEK".into(), testdb::DEV_ACCOUNTS_SIGNING_KEK.into());
-    environment.insert(
-        "ACCOUNTS_OIDC_ISSUER".into(),
-        format!("http://localhost:{HTTP_PORT}/accounts/oidc"),
-    );
-    environment.insert("INVENTORY_DEV_GRANT".into(), "1".into());
+    for (key, value) in stage_env(ctx.database_url().unwrap_or(DEFAULT_DSN)) {
+        environment.insert(key.into(), value);
+    }
     for (key, value) in extra {
         environment.insert((*key).into(), value.clone());
     }

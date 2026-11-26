@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use processctl::{
     game_backend_fleet_with_environment, game_backend_monolith, EnvironmentSnapshot, FleetFlavor,
-    FleetInputs,
+    FleetInputs, ServiceSpec,
 };
 use weles::manifest::{Port, ServiceDef};
 
@@ -16,6 +16,11 @@ const ACCOUNTS_DEFAULT_ISSUER: &str = "http://localhost:8080/accounts/oidc";
 
 fn repo(path: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(path)
+}
+
+/// The processctl packages that host accounts: the monolith and accounts' own process.
+fn spec_hosts_accounts(service: &ServiceSpec) -> bool {
+    matches!(service.executable_package, "server" | "accounts-svc")
 }
 
 /// Both processctl topologies, Development and Proof, hand accounts the testdb KEK.
@@ -29,24 +34,33 @@ fn processctl_fleets_seal_with_the_testdb_kek() {
     let bare = EnvironmentSnapshot::from_values([]);
     for flavor in [FleetFlavor::Development, FleetFlavor::Proof] {
         let fleet = game_backend_fleet_with_environment(&inputs, flavor, &bare);
-        let split = &fleet.service("accounts-svc").expect("split fleet hosts accounts-svc").env;
-        let monolith = &game_backend_monolith(&inputs, flavor, &bare).env;
-        for (topology, env) in [("split", split), ("monolith", monolith)] {
+        let split: Vec<&ServiceSpec> =
+            fleet.services().iter().filter(|s| spec_hosts_accounts(s)).collect();
+        assert!(!split.is_empty(), "split {flavor:?} fleet hosts no accounts");
+        let monolith = game_backend_monolith(&inputs, flavor, &bare);
+        assert!(spec_hosts_accounts(&monolith), "monolith {flavor:?} does not host accounts");
+        let services = split.into_iter().map(|s| ("split", s)).chain([("monolith", &monolith)]);
+        for (topology, service) in services {
             assert_eq!(
-                env.get("ACCOUNTS_SIGNING_KEK").map(String::as_str),
+                service.env.get("ACCOUNTS_SIGNING_KEK").map(String::as_str),
                 Some(testdb::DEV_ACCOUNTS_SIGNING_KEK),
-                "{topology} {flavor:?}"
+                "{topology} {flavor:?} {}",
+                service.name
             );
         }
     }
 }
 
 fn hosts_accounts(service: &ServiceDef) -> bool {
-    service.pkg == "server" || service.provider.as_deref() == Some("accounts")
+    service.pkg == "server"
+        || service.pkg == "accounts-svc"
+        || service.provider.as_deref() == Some("accounts")
 }
 
 fn is_front_door(service: &ServiceDef) -> bool {
-    service.pkg == "server" || service.provider.as_deref() == Some("gateway")
+    service.pkg == "server"
+        || service.pkg == "gateway-svc"
+        || service.provider.as_deref() == Some("gateway")
 }
 
 /// Every `weles/fleet*.toml`: each service hosting accounts (the monolith `server` or the
@@ -114,6 +128,19 @@ fn server_environment(file: &str) -> Vec<String> {
     }
     assert!(!items.is_empty(), "{file} has no server environment");
     items
+}
+
+/// The compose tests below name compose.yaml and compose.dev.yaml; a new repo-root compose
+/// file fails here until it is pinned too.
+#[test]
+fn compose_files_are_the_pinned_pair() {
+    let mut files: Vec<String> = std::fs::read_dir(repo(""))
+        .expect("read the repo root")
+        .map(|entry| entry.expect("repo root entry").file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("compose") && name.ends_with(".yaml"))
+        .collect();
+    files.sort();
+    assert_eq!(files, ["compose.dev.yaml", "compose.yaml"]);
 }
 
 /// compose.yaml passes both keys through to `server` bare, from the operator's shell.

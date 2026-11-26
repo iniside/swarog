@@ -7,6 +7,19 @@ fn health_client_builds_without_an_ambient_runtime() {
     health_client(&runtime).unwrap();
 }
 
+/// The fixture server seals with the testdb KEK and names its own HTTP port as issuer.
+#[test]
+fn stage_env_pins_the_kek_and_names_the_fixture_port_as_issuer() {
+    let env = stage_env("postgres://pin");
+    let value = |key: &str| -> Vec<&str> {
+        env.iter().filter(|(k, _)| *k == key).map(|(_, v)| v.as_str()).collect()
+    };
+    let issuer = value("ACCOUNTS_OIDC_ISSUER");
+    assert_eq!(issuer.len(), 1, "{issuer:?}");
+    assert!(issuer[0].ends_with(&format!(":{HTTP_PORT}/accounts/oidc")), "{issuer:?}");
+    assert_eq!(value("ACCOUNTS_SIGNING_KEK"), [testdb::DEV_ACCOUNTS_SIGNING_KEK]);
+}
+
 #[test]
 fn c1_to_c6_predicates_are_exact() {
     assert!(predicate(0, "anything", Expected::Success));
