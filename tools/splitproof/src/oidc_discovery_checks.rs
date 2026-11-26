@@ -16,9 +16,9 @@
 //!   answer. When [SK3] is red or [SK0] cut the pass short there is no kid to compare, so the pass
 //!   records [SK4] red as "not run" (the cause in its detail) instead of skipping it.
 //! - [SK0] / [SK0m] report only a fault no check records: a transport error or an unreadable body on
-//!   the discovery GET, or a failed read of `accounts.signing_keys`. A discovery document without a
-//!   `jwks_uri`, and a `jwks_uri` GET that fails, still record [SK2] (the error in its detail) and
-//!   [SK3] red.
+//!   the discovery GET, or a failed read (or an unparsable `public_jwk`) of `accounts.signing_keys`.
+//!   A discovery document without a `jwks_uri`, and a `jwks_uri` GET that fails, still record
+//!   [SK2] (the error in its detail) and [SK3] red.
 //!
 //! The split pass runs after [REPLICAS] and before [LV2], so the respawned accounts-svc is in the
 //! liveness sweep and no earlier check meets a gateway connection to the killed process.
@@ -78,7 +78,8 @@ pub(super) async fn monolith(ctx: &Ctx, pool: &PgPool, p: &mut Proof, m: &str) {
 }
 
 /// [SK1]-[SK3] on `front`: the served `kid` once [SK3] passes, `None` when [SK3] recorded the failure,
-/// and `Err` only for a fault no check records (a transport error, an unreadable body, the table read).
+/// and `Err` only for a fault no check records: a transport error or an unreadable body on the
+/// discovery GET, or a failed read or parse of `accounts.signing_keys`.
 async fn served_key(
     ctx: &Ctx,
     pool: &PgPool,
