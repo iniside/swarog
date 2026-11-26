@@ -1451,8 +1451,11 @@ async fn race_families(first: FamilyDeleter, second: FamilyDeleter) {
     }
     drop(conn);
     let mut listing = pool.begin().await.unwrap();
-    // Without sorts the planner groups by hashing, so only the query's own ORDER BY sorts.
-    sqlx::query("SET LOCAL enable_sort = off").execute(&mut *listing).await.unwrap();
+    // Without sorts or index scans the planner groups by hashing over a sequential scan, so
+    // only the query's own ORDER BY can return the ids in order.
+    for off in ["enable_sort", "enable_indexscan", "enable_indexonlyscan"] {
+        sqlx::query(&format!("SET LOCAL {off} = off")).execute(&mut *listing).await.unwrap();
+    }
     let listed = svc.store.revocable_families_tx(&mut listing, &id).await.unwrap();
     listing.rollback().await.unwrap();
     let mut ascending = listed.clone();
@@ -1521,50 +1524,103 @@ async fn a_password_reset_and_a_racing_client_delete_take_two_families_in_one_or
     race_families(FamilyDeleter::ResetPassword, FamilyDeleter::DeleteClient).await;
 }
 
-/// The prune racing a password reset over a stale family holding an expired refresh token.
-/// A third transaction holds a stale family of another player with a smaller id, so the
-/// prune parks there, and the reset then deletes the player's families. A prune that
-/// deleted the token before it locked its family would hold the token the reset's cascade
-/// waits on, then wait on the family the reset holds, and Postgres would abort one of them
-/// with a deadlock.
-#[tokio::test(flavor = "multi_thread")]
-async fn the_prune_and_a_racing_password_reset_take_a_stale_family_before_its_token() {
+/// What the player's family in [`prune_race`] holds, so that exactly one clause of the
+/// prune's lock pass reaches it.
+#[derive(Clone, Copy)]
+enum PruneChild {
+    /// A live family holding an expired access session.
+    Session,
+    /// A live family holding an expired refresh token.
+    Refresh,
+    /// A stale family with no rows under it.
+    Childless,
+}
+
+/// Polls until backend `waiter` waits on a lock held by `holder`, directly or queued behind
+/// backends that do (another test's prune parked on the same gate); false when it does not
+/// within about twenty seconds.
+async fn parked_behind(pool: &PgPool, waiter: i32, holder: i32) -> bool {
+    for _ in 0..4000 {
+        let parked: bool = sqlx::query_scalar(
+            "WITH RECURSIVE blockers(pid) AS ( \
+                 SELECT unnest(pg_blocking_pids($1)) \
+                 UNION SELECT unnest(pg_blocking_pids(b.pid)) FROM blockers b) \
+             SELECT $2::int IN (SELECT pid FROM blockers)",
+        )
+        .bind(waiter)
+        .bind(holder)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if parked {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    false
+}
+
+/// The prune racing a password reset over a family of the player that the prune reaches
+/// through `child`. A third transaction holds a stale family of another player with a
+/// LARGER id, so the prune, taking families in ascending id, parks there holding the
+/// player's family and no child row yet: a probe skipping locked rows sees the family taken
+/// and the child still free. The reset then waits behind the prune, and both finish. A
+/// prune that deleted the child before it locked the family would hold the child the
+/// reset's cascade waits on, then wait on the family the reset holds, and Postgres would
+/// abort one of them with a deadlock. The prune is told apart from any other prune parked
+/// on the same gate by the pid of the connection it runs on.
+async fn prune_race(child: PruneChild) {
+    // The prune is global: the three cases hold one gate each, so they run one at a time.
+    static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _turn = ONE_AT_A_TIME.lock().await;
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("prunerace-{}@test.local", suffix());
     let player = svc.register(email, "pw".into(), "PruneRace".into(), test_client()).await.unwrap().player_id;
     let email = format!("prunegate-{}@test.local", suffix());
     let other = svc.register(email, "pw".into(), "PruneGate".into(), test_client()).await.unwrap().player_id;
-    let (stale, gated): (String, String) = sqlx::query_as(
-        "SELECT greatest(a, b)::text, least(a, b)::text \
+    let (target, gated): (String, String) = sqlx::query_as(
+        "SELECT least(a, b)::text, greatest(a, b)::text \
            FROM (SELECT gen_random_uuid() AS a, gen_random_uuid() AS b) AS ids",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
-    for (family, owner) in [(&stale, &player), (&gated, &other)] {
+    let target_access = match child {
+        PruneChild::Session | PruneChild::Refresh => "1 hour",
+        PruneChild::Childless => "-1 hour",
+    };
+    for (family, owner, access) in [(&target, &player, target_access), (&gated, &other, "-1 hour")] {
         sqlx::query(
             "INSERT INTO accounts.token_families (id, player_id, client_id, access_expires_at) \
-             VALUES ($1::uuid, $2::uuid, $3, now() - interval '1 hour')",
+             VALUES ($1::uuid, $2::uuid, $3, now() + $4::interval)",
         )
         .bind(family)
         .bind(owner)
         .bind(TEST_CLIENT_ID)
+        .bind(access)
         .execute(&pool)
         .await
         .unwrap();
     }
-    let expired = crate::store::new_token();
-    sqlx::query(
-        "INSERT INTO accounts.refresh_tokens (token, player_id, family_id, expires_at) \
-         VALUES ($1, $2::uuid, $3::uuid, now() - interval '1 hour')",
-    )
-    .bind(&expired)
-    .bind(&player)
-    .bind(&stale)
-    .execute(&pool)
-    .await
-    .unwrap();
+    let child_row = match child {
+        PruneChild::Session => Some("accounts.sessions"),
+        PruneChild::Refresh => Some("accounts.refresh_tokens"),
+        PruneChild::Childless => None,
+    }
+    .map(|table| (table, crate::store::new_token()));
+    if let Some((table, token)) = &child_row {
+        sqlx::query(&format!(
+            "INSERT INTO {table} (token, player_id, family_id, expires_at) \
+             VALUES ($1, $2::uuid, $3::uuid, now() - interval '1 hour')"
+        ))
+        .bind(token)
+        .bind(&player)
+        .bind(&target)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
     let mut gate = pool.begin().await.unwrap();
     let gate_pid = backend_pid(&mut gate).await;
     sqlx::query("SELECT 1 FROM accounts.token_families WHERE id = $1::uuid FOR KEY SHARE")
@@ -1572,24 +1628,52 @@ async fn the_prune_and_a_racing_password_reset_take_a_stale_family_before_its_to
         .execute(&mut *gate)
         .await
         .unwrap();
+    let mut prune_tx = pool.begin().await.unwrap();
+    let prune_pid = backend_pid(&mut prune_tx).await;
     let prune = {
         let svc = Arc::clone(&svc);
-        let pool = pool.clone();
         tokio::spawn(async move {
-            let mut tx = pool.begin().await?;
-            svc.store.prune_expired_token_rows(&mut tx).await?;
-            tx.commit().await
+            svc.store.prune_expired_token_rows(&mut prune_tx).await?;
+            prune_tx.commit().await
         })
     };
-    let prune_pid = waiter_of(&pool, gate_pid).await;
+    let parked = parked_behind(&pool, prune_pid, gate_pid).await;
+    let family_free: Option<i64> = if parked {
+        Some(
+            sqlx::query_scalar(
+                "SELECT count(*) FROM (SELECT 1 FROM accounts.token_families \
+                   WHERE id = $1::uuid FOR UPDATE SKIP LOCKED) AS free",
+            )
+            .bind(&target)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        )
+    } else {
+        None
+    };
+    let child_free: Option<i64> = match (&child_row, parked) {
+        (Some((table, token)), true) => Some(
+            sqlx::query_scalar(&format!(
+                "SELECT count(*) FROM (SELECT 1 FROM {table} \
+                   WHERE token = $1 FOR UPDATE SKIP LOCKED) AS free"
+            ))
+            .bind(token)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        ),
+        _ => None,
+    };
     let mut reset = spawn_deleter(&svc, FamilyDeleter::ResetPassword, &player, TEST_CLIENT_ID);
     // The reset either finishes or parks on the prune; only then is the gate released.
-    let reset_early = match prune_pid {
-        Some(pid) => tokio::select! {
+    let reset_early = if parked {
+        tokio::select! {
             done = &mut reset => Some(done.unwrap()),
-            _ = waits_on(&pool, pid) => None,
-        },
-        None => None,
+            _ = waits_on(&pool, prune_pid) => None,
+        }
+    } else {
+        None
     };
     gate.rollback().await.unwrap();
     let reset_done = match reset_early {
@@ -1597,21 +1681,46 @@ async fn the_prune_and_a_racing_password_reset_take_a_stale_family_before_its_to
         None => reset.await.unwrap(),
     };
     let pruned = prune.await.unwrap();
-    let left: i64 = sqlx::query_scalar(
-        "SELECT (SELECT count(*) FROM accounts.token_families WHERE id IN ($1::uuid, $2::uuid)) \
-              + (SELECT count(*) FROM accounts.refresh_tokens WHERE token = $3)",
-    )
-    .bind(&stale)
-    .bind(&gated)
-    .bind(&expired)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let families_left: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM accounts.token_families WHERE id IN ($1::uuid, $2::uuid)")
+            .bind(&target)
+            .bind(&gated)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let child_left: i64 = match &child_row {
+        Some((table, token)) => sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE token = $1"))
+            .bind(token)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        None => 0,
+    };
     cleanup_player(&pool, &player).await;
     cleanup_player(&pool, &other).await;
 
-    assert!(prune_pid.is_some(), "the prune must park on the held family");
+    assert!(parked, "the prune must park on the held family");
+    assert_eq!(family_free, Some(0), "the prune locked the player's family before the held one");
+    if child_row.is_some() {
+        assert_eq!(child_free, Some(1), "the prune locked no child row before its families");
+    }
     reset_done.expect("the password reset finishes without a deadlock");
     pruned.expect("the prune finishes without a deadlock");
-    assert_eq!(left, 0, "both stale families and the expired token are gone");
+    assert_eq!(families_left, 0, "the player's family and the held stale family are gone");
+    assert_eq!(child_left, 0, "the expired child row is gone");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_prune_locks_a_family_with_an_expired_session_before_a_racing_password_reset() {
+    prune_race(PruneChild::Session).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_prune_locks_a_family_with_an_expired_refresh_token_before_a_racing_password_reset() {
+    prune_race(PruneChild::Refresh).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_prune_locks_a_stale_family_before_a_racing_password_reset() {
+    prune_race(PruneChild::Childless).await;
 }

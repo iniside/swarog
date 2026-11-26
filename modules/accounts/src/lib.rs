@@ -1739,6 +1739,11 @@ impl Accounts {
                 "CREATE INDEX token_families_client_idx ON accounts.token_families(client_id)",
             )
             .index(
+                "accounts.token_families_access_expires_idx",
+                "CREATE INDEX token_families_access_expires_idx \
+                 ON accounts.token_families(access_expires_at)",
+            )
+            .index(
                 "accounts.refresh_family_idx",
                 "CREATE INDEX refresh_family_idx ON accounts.refresh_tokens(family_id)",
             )

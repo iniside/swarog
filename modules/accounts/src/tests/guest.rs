@@ -440,6 +440,48 @@ async fn a_client_without_the_refresh_grant_mints_no_refresh_token() {
     rotated.unwrap();
 }
 
+/// A login on a client without the `refresh_token` grant writes no refresh row, so the
+/// admin players list and the 24-hour active count must read its family: the guest shows a
+/// last-seen value and is counted. The count is global, so it is read twice in one
+/// REPEATABLE READ snapshot, before and after the guest's family is moved back past the
+/// window in that same transaction, and only the difference is asserted.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_login_without_a_refresh_token_is_last_seen_and_counted_active() {
+    use accountsapi::grant_types::GUEST as GUEST_GRANT;
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired_with_guest(&pool).await;
+    let bare = insert_client(&pool, &[GUEST_GRANT]).await;
+    let guest = svc.create_guest(bare.clone()).await.unwrap();
+    let row = svc.store.player_row(&guest.player_id).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ").execute(&mut *tx).await.unwrap();
+    let with_guest = svc.store.active_players_24h_tx(&mut tx).await.unwrap();
+    sqlx::query(
+        "UPDATE accounts.token_families \
+            SET access_expires_at = access_expires_at - interval '25 hours' \
+          WHERE player_id = $1::uuid",
+    )
+    .bind(&guest.player_id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    let without_guest = svc.store.active_players_24h_tx(&mut tx).await.unwrap();
+    tx.rollback().await.unwrap();
+    cleanup_player(&pool, &guest.player_id).await;
+    delete_client(&pool, &bare).await;
+
+    assert_eq!(guest.refresh_token, "", "no refresh_token grant, no refresh token");
+    let secs = row
+        .expect("the guest is listed")
+        .last_seen_secs
+        .expect("a login with no refresh row still shows when it was last seen");
+    assert!(
+        (0..crate::store::access_expires_in_secs()).contains(&secs),
+        "last seen counts from the mint, not from the access expiry: {secs}"
+    );
+    assert_eq!(with_guest - without_guest, 1, "the guest's login counts as active in the last 24 hours");
+}
+
 /// A client without the guest grant mints no guest and logs no guest back in; an
 /// unknown client is refused the guest login too.
 #[tokio::test(flavor = "multi_thread")]

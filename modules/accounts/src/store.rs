@@ -275,27 +275,32 @@ pub(crate) struct PlayerListRow {
     pub created_at_micros: i64,
     /// The linked providers, sorted and distinct.
     pub providers: Vec<String>,
-    /// Seconds since the player's newest refresh token was issued, on the database clock;
-    /// `None` once every token of the player is pruned.
+    /// Seconds since the player's last token mint, login or refresh, on the database clock;
+    /// `None` once every family of the player is revoked or pruned.
     pub last_seen_secs: Option<i64>,
 }
 
-/// [`PlayerListRow`]'s columns, in field order; the providers comma-joined.
+/// [`PlayerListRow`]'s columns, in field order; the providers comma-joined, then the
+/// seconds since the newest access token of the player's families expires (negative while
+/// it is live).
 type PlayerListColumns = (String, String, String, String, i64, String, Option<i64>);
 
 /// [`PlayerListRow`]'s projection. The two correlated reads use `identities_player_idx` and
-/// `refresh_player_idx`.
+/// `token_families_player_idx`. Every mint, login or refresh, moves its family's
+/// `access_expires_at` to [`ACCESS_TTL_MINUTES`] past the mint, so the newest expiry less
+/// that TTL is the player's last mint; [`player_list_row`] adds the TTL back.
 const PLAYER_LIST_SELECT: &str = "SELECT p.id::text, p.display_name, p.discriminator, \
         to_char(p.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'), \
         (EXTRACT(EPOCH FROM p.created_at) * 1000000)::int8, \
         coalesce((SELECT string_agg(DISTINCT i.provider, ',' ORDER BY i.provider) \
                     FROM accounts.identities i WHERE i.player_id = p.id), ''), \
-        (SELECT floor(EXTRACT(EPOCH FROM (now() - max(r.issued_at))))::int8 \
-           FROM accounts.refresh_tokens r WHERE r.player_id = p.id) \
+        (SELECT floor(EXTRACT(EPOCH FROM (now() - max(f.access_expires_at))))::int8 \
+           FROM accounts.token_families f WHERE f.player_id = p.id) \
    FROM accounts.players p ";
 
 fn player_list_row(row: PlayerListColumns) -> PlayerListRow {
-    let (id, display_name, discriminator, created, created_at_micros, providers, last_seen_secs) = row;
+    let (id, display_name, discriminator, created, created_at_micros, providers, since_expiry) = row;
+    let last_seen_secs = since_expiry.map(|secs| secs + access_expires_in_secs());
     PlayerListRow {
         id,
         display_name,
@@ -344,6 +349,19 @@ pub(crate) struct FamilyRow {
     /// Seconds until the last of the family's tokens expires, on the database clock.
     pub expires_in_secs: i64,
 }
+
+/// The tables whose rows each belong to one token family and die at `expires_at`, the
+/// children [`Store::prune_expired_token_rows`] drains (alias `c` in [`EXPIRED_CHILD`]).
+const PRUNED_FAMILY_CHILDREN: [&str; 2] = ["accounts.sessions", "accounts.refresh_tokens"];
+
+/// A child row (alias `c`) the prune deletes: an expired one, consumed or not.
+const EXPIRED_CHILD: &str = "c.expires_at <= now()";
+
+/// A family (alias `f`) that no longer grants access ([`granting_families`]): its newest
+/// access token has expired and it holds no unexpired refresh token.
+const STALE_FAMILY: &str = "f.access_expires_at <= now() \
+     AND NOT EXISTS (SELECT 1 FROM accounts.refresh_tokens t \
+                      WHERE t.family_id = f.id AND t.expires_at > now())";
 
 /// The token families of player `$1` that still grant access, as one statement
 /// selecting `$select` per family and ending in `$tail`. A family grants access while its
@@ -1232,30 +1250,43 @@ impl Store {
     /// family these deletes reach is locked first, in one ascending-id pass (the order of
     /// [`Store::kill_player_families_tx`]): a token deleted before its family is locked would
     /// be held while a family delete's cascade waits on it, and that delete holds the family.
+    /// The deletes reach only the families that pass locked: a row committed after it is left
+    /// to the next prune.
     pub async fn prune_expired_token_rows(&self, conn: &mut PgConnection) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "SELECT 1 FROM accounts.token_families f \
-              WHERE EXISTS (SELECT 1 FROM accounts.sessions s \
-                             WHERE s.family_id = f.id AND s.expires_at <= now()) \
-                 OR EXISTS (SELECT 1 FROM accounts.refresh_tokens t \
-                             WHERE t.family_id = f.id AND t.expires_at <= now()) \
-                 OR (f.access_expires_at <= now() \
-                     AND NOT EXISTS (SELECT 1 FROM accounts.refresh_tokens t \
-                                      WHERE t.family_id = f.id AND t.expires_at > now())) \
-              ORDER BY f.id FOR UPDATE OF f",
-        )
+        // Each delete and the lock clause naming its families come from one predicate, so
+        // no delete can exist without the lock that covers it.
+        let mut reached: Vec<String> = PRUNED_FAMILY_CHILDREN
+            .iter()
+            .map(|child| {
+                format!(
+                    "EXISTS (SELECT 1 FROM {child} c WHERE c.family_id = f.id AND {EXPIRED_CHILD})"
+                )
+            })
+            .collect();
+        reached.push(format!("({STALE_FAMILY})"));
+        let locked: Vec<String> = sqlx::query_scalar(&format!(
+            "SELECT f.id::text FROM accounts.token_families f WHERE {} ORDER BY f.id FOR UPDATE OF f",
+            reached.join(" OR ")
+        ))
+        .fetch_all(&mut *conn)
+        .await?;
+        if locked.is_empty() {
+            return Ok(());
+        }
+        for child in PRUNED_FAMILY_CHILDREN {
+            sqlx::query(&format!(
+                "DELETE FROM {child} c WHERE c.family_id = ANY($1::text[]::uuid[]) AND {EXPIRED_CHILD}"
+            ))
+            .bind(&locked)
+            .execute(&mut *conn)
+            .await?;
+        }
+        sqlx::query(&format!(
+            "DELETE FROM accounts.token_families f WHERE f.id = ANY($1::text[]::uuid[]) AND {STALE_FAMILY}"
+        ))
+        .bind(&locked)
         .execute(&mut *conn)
         .await?;
-        for delete in [
-            "DELETE FROM accounts.sessions WHERE expires_at <= now()",
-            "DELETE FROM accounts.refresh_tokens WHERE expires_at <= now()",
-            "DELETE FROM accounts.token_families f \
-              WHERE f.access_expires_at <= now() \
-                AND NOT EXISTS (SELECT 1 FROM accounts.refresh_tokens t \
-                                 WHERE t.family_id = f.id AND t.expires_at > now())",
-        ] {
-            sqlx::query(delete).execute(&mut *conn).await?;
-        }
         Ok(())
     }
 
@@ -1347,15 +1378,24 @@ impl Store {
             .await
     }
 
-    /// Players with a refresh token issued in the last 24 hours. `expires_at` bounds the
-    /// scan through `refresh_expires_idx`: a token's family expiry never precedes its issue.
+    /// Players with a token minted in the last 24 hours, on the pool.
     pub async fn active_players_24h(&self) -> Result<i64, sqlx::Error> {
+        let mut conn = self.pool.acquire().await?;
+        self.active_players_24h_tx(&mut conn).await
+    }
+
+    /// Players with a token minted in the last 24 hours, login or refresh, on `conn`. A
+    /// family's last mint is its `access_expires_at` less [`ACCESS_TTL_MINUTES`] (see
+    /// [`PLAYER_LIST_SELECT`]), so the bound is on `access_expires_at` itself and the scan
+    /// goes through `token_families_access_expires_idx`. A revoked or pruned family no
+    /// longer counts.
+    pub async fn active_players_24h_tx(&self, conn: &mut PgConnection) -> Result<i64, sqlx::Error> {
         sqlx::query_scalar(
-            "SELECT count(DISTINCT player_id) FROM accounts.refresh_tokens \
-              WHERE expires_at > now() - interval '24 hours' \
-                AND issued_at > now() - interval '24 hours'",
+            "SELECT count(DISTINCT player_id) FROM accounts.token_families \
+              WHERE access_expires_at > now() - interval '24 hours' + make_interval(mins => $1)",
         )
-        .fetch_one(&self.pool)
+        .bind(ACCESS_TTL_MINUTES)
+        .fetch_one(&mut *conn)
         .await
     }
 
