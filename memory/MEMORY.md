@@ -39,6 +39,7 @@
 - [Stop polishing admindiff](stop-polishing-admindiff.md) — change it only when a crawl is blocked; no gate-hardening loops
 - [Proportional verification and scope](proportional-verification-and-scope.md) — smallest check that proves the step; no extra rounds or side work
 - [C# client after contract is final](csharp-client-after-contract-is-final.md) — regenerate/fix C# client once, at the plan end, not per step
+- [Plan while long tests run](plan-while-long-tests-run.md) — write the next plan during the plan-end verification, not after
 - [Team = solo + agents](team-is-solo-plus-agents-forever.md) — scaling means more agents; speak as we/our
 
 ## Project / architecture / decisions
