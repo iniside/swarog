@@ -1504,6 +1504,138 @@ impl Accounts {
             .expect("accounts.register must run before init/start")
             .clone()
     }
+
+    /// `init` past the env read: everything it wires, from the parsed inputs.
+    pub(crate) fn init_with(
+        &self,
+        ctx: &Context,
+        config: ProviderConfig,
+        cookie_secure: bool,
+        trusted: Vec<ipnet::IpNet>,
+    ) -> anyhow::Result<()> {
+        let svc = self.svc();
+
+        if svc.open_registration {
+            tracing::warn!(
+                "ACCOUNTS_OPEN_REGISTRATION is ON — anyone can self-register a password \
+                 account at /accounts/register; keep it OFF (the default) in production"
+            );
+        }
+
+        if !cookie_secure {
+            tracing::warn!(
+                "accounts cookies are NOT Secure (ACCOUNTS_COOKIE_SECURE=0) — dev/proof opt-out, never production"
+            );
+        }
+        let web_limiter = login_ip_limiter();
+        self.web_limiter
+            .set(web_limiter.clone())
+            .map_err(|_| anyhow::anyhow!("accounts.init ran twice"))?;
+        let login_limiter = web::LoginLimiter::new(web_limiter, trusted);
+        let mut epic_flow = None;
+        if let Some(epic) = &config.epic {
+            tracing::info!(jwks = %epic.jwks_url, aud = %epic.client_id, "epic provider enabled");
+
+            // Web OAuth (authorize-code), present iff the confidential client secret
+            // enabled it. These two routes are HTTP-NATIVE (a browser redirect flow
+            // with an external contract) — they are NOT operations; they join the
+            // hosted-browser router mounted below.
+            if let Some(oauth) = &epic.oauth {
+                let redirect = oauth.redirect_uri.clone();
+                let flow = epic_oauth::EpicOAuth::new(
+                    epic.client_id.clone(),
+                    oauth.clone(),
+                    epic.verifier.clone(),
+                    svc.store.pool.clone(),
+                    cookie_secure,
+                )?;
+                epic_flow = Some(Arc::new(flow));
+                tracing::info!(redirect = %redirect, "epic OAuth enabled");
+            }
+        }
+        let mut google_flow = None;
+        if let Some(google) = &config.google {
+            tracing::info!(
+                jwks = %google.jwks_url,
+                aud = %google.client_ids.join(","),
+                "google provider enabled"
+            );
+            // Browser sign-in only, present iff GOOGLE_CLIENT_SECRET enabled it. Its start
+            // is the hosted form's; its callback joins the hosted-browser router, not
+            // rate-limited, as Epic's.
+            if let Some(flow) = google.browser_flow(&svc.store.pool, cookie_secure)? {
+                tracing::info!(
+                    redirect = %flow.client().redirect_uri,
+                    client = %flow.client().client_id,
+                    "google OAuth enabled"
+                );
+                google_flow = Some(Arc::new(flow));
+            }
+        }
+        let flows = web::Flows { epic: epic_flow, google: google_flow };
+        ctx.mount(web::hosted_browser_router(svc.clone(), cookie_secure, login_limiter, flows)?);
+        svc.providers
+            .set(Arc::new(config.providers(&svc.store.pool)))
+            .map_err(|_| anyhow::anyhow!("accounts.init ran twice"))?;
+
+        // Player operations: the generated Auth OpSets, ALL contributed
+        // unconditionally — the gating lives at the impl (register/login → NotFound
+        // when dev auth is off, loginFederated → Unavailable for a known but
+        // unconfigured provider),
+        // so the monolith and split front-door route sets are structurally equal.
+        ops::register_player_ops(ctx, svc.clone());
+
+        // Durable session prune as a REACTION to scheduler.fired on the durable plane.
+        // Raw subscribe by the CONTRACT descriptor's topic const (no payload-type
+        // import): the handler parses `name` and prunes only for "accounts-sessions-prune",
+        // inside the handed delivery tx (audit's prune precedent — a contract-crate dep,
+        // NOT a scheduler capability, so no requires() entry).
+        let prune: Arc<dyn TxHandler> = Arc::new(PruneHandler { svc: svc.clone() });
+        ctx.bus()
+            .on_tx_raw(PRUNE_SUB, schedulerevents::FIRED.topic(), prune);
+
+        let provider: Arc<dyn controlplane::Provider> =
+            Arc::new(admin::AccountsAdmin::new(svc.clone()));
+        ctx.contribute(controlplane::PROVIDER_SLOT, provider);
+
+        // Edge exposure, contributed UNCONDITIONALLY — topology-blind: `app::run`
+        // applies this iff the entrypoint stood up an internal edge server (then a
+        // peer gateway verifies sessions / fronts the auth ops over QUIC); in the
+        // monolith it is never applied. Own glue (rule 5): the generated
+        // register_server faces live in `accountsrpc`.
+        //
+        // The whole Auth trait face is registered (the generated `register_server`
+        // installs all methods at once), but the TRUST GATES live in the impl so the
+        // edge face matches the HTTP ops exactly: `register` self-rejects with
+        // NotFound when `open_registration` is off, and `login_federated` answers
+        // `Unavailable` for a provider this deployment did not configure. `me` and
+        // Sessions `verify_session` stay unconditional — the gateway needs them.
+        ctx.contribute(
+            edge::EDGE_SLOT,
+            edge::EdgeReg::new(move |server| {
+                accountsrpc::sessions_rpc::register_server(server, svc.clone());
+                accountsrpc::directory_rpc::register_server(server, svc.clone());
+                accountsrpc::auth_rpc::register_server(server, svc);
+            }),
+        );
+
+        // Routing-as-data SERVE side (D1.5b): this module's `#[http]` op manifest as
+        // pure DATA, contributed UNCONDITIONALLY (topology-blind). `app::run` concats
+        // every module's manifest and serves the union under the ONE reserved
+        // `__describe` op iff this process serves an edge. `auth_rpc` carries the
+        // register/login/loginFederated/me HTTP ops; `sessions_rpc` and `directory_rpc`
+        // are wire-only (empty `describe()`) — concatenated so a future `#[http]` op on
+        // any of them flows through.
+        ctx.contribute(
+            opsapi::DESCRIBE_SLOT,
+            opsapi::DescribeManifest::concat([
+                accountsrpc::auth_rpc::describe(),
+                accountsrpc::sessions_rpc::describe(),
+                accountsrpc::directory_rpc::describe(),
+            ]),
+        );
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -1639,15 +1771,6 @@ impl Module for Accounts {
     /// dev/epic gating lives at the impl), and the generated Sessions + Auth RPC faces
     /// to the edge slot.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
-        let svc = self.svc();
-
-        if svc.open_registration {
-            tracing::warn!(
-                "ACCOUNTS_OPEN_REGISTRATION is ON — anyone can self-register a password \
-                 account at /accounts/register; keep it OFF (the default) in production"
-            );
-        }
-
         // Federated credential providers, parsed and VALIDATED by the one typed
         // authority. A present-but-malformed provider is an `Err` here and fails
         // startup — the verifiers construct without I/O (#8), so nothing downstream
@@ -1655,123 +1778,9 @@ impl Module for Accounts {
         // answered 503 on every token forever.
         let config = ProviderConfig::from_env()?;
         let cookie_secure = web::cookie_secure_from_env();
-        if !cookie_secure {
-            tracing::warn!(
-                "accounts cookies are NOT Secure (ACCOUNTS_COOKIE_SECURE=0) — dev/proof opt-out, never production"
-            );
-        }
         let trusted = httpmw::parse_cidrs(&std::env::var("TRUSTED_PROXY_CIDRS").unwrap_or_default())
             .map_err(|e| anyhow::anyhow!("accounts: parse TRUSTED_PROXY_CIDRS: {e}"))?;
-        let web_limiter = login_ip_limiter();
-        self.web_limiter
-            .set(web_limiter.clone())
-            .map_err(|_| anyhow::anyhow!("accounts.init ran twice"))?;
-        let login_limiter = web::LoginLimiter::new(web_limiter, trusted);
-        let mut epic_flow = None;
-        if let Some(epic) = &config.epic {
-            tracing::info!(jwks = %epic.jwks_url, aud = %epic.client_id, "epic provider enabled");
-
-            // Web OAuth (authorize-code), present iff the confidential client secret
-            // enabled it. These two routes are HTTP-NATIVE (a browser redirect flow
-            // with an external contract) — they are NOT operations; they join the
-            // hosted-browser router mounted below.
-            if let Some(oauth) = &epic.oauth {
-                let redirect = oauth.redirect_uri.clone();
-                let flow = epic_oauth::EpicOAuth::new(
-                    epic.client_id.clone(),
-                    oauth.clone(),
-                    epic.verifier.clone(),
-                    svc.store.pool.clone(),
-                    cookie_secure,
-                )?;
-                epic_flow = Some(Arc::new(flow));
-                tracing::info!(redirect = %redirect, "epic OAuth enabled");
-            }
-        }
-        let mut google_flow = None;
-        if let Some(google) = &config.google {
-            tracing::info!(
-                jwks = %google.jwks_url,
-                aud = %google.client_ids.join(","),
-                "google provider enabled"
-            );
-            // Browser sign-in only, present iff GOOGLE_CLIENT_SECRET enabled it. Its start
-            // is the hosted form's; its callback joins the hosted-browser router, not
-            // rate-limited, as Epic's.
-            if let Some(flow) = google.browser_flow(&svc.store.pool, cookie_secure)? {
-                google_flow = Some(Arc::new(flow));
-            }
-            if let Some(oauth) = &google.oauth {
-                tracing::info!(
-                    redirect = %oauth.client.redirect_uri,
-                    client = %oauth.client.client_id,
-                    "google OAuth enabled"
-                );
-            }
-        }
-        let flows = web::Flows { epic: epic_flow, google: google_flow };
-        ctx.mount(web::hosted_browser_router(svc.clone(), cookie_secure, login_limiter, flows)?);
-        svc.providers
-            .set(Arc::new(config.providers(&svc.store.pool)))
-            .map_err(|_| anyhow::anyhow!("accounts.init ran twice"))?;
-
-        // Player operations: the generated Auth OpSets, ALL contributed
-        // unconditionally — the gating lives at the impl (register/login → NotFound
-        // when dev auth is off, loginFederated → Unavailable for a known but
-        // unconfigured provider),
-        // so the monolith and split front-door route sets are structurally equal.
-        ops::register_player_ops(ctx, svc.clone());
-
-        // Durable session prune as a REACTION to scheduler.fired on the durable plane.
-        // Raw subscribe by the CONTRACT descriptor's topic const (no payload-type
-        // import): the handler parses `name` and prunes only for "accounts-sessions-prune",
-        // inside the handed delivery tx (audit's prune precedent — a contract-crate dep,
-        // NOT a scheduler capability, so no requires() entry).
-        let prune: Arc<dyn TxHandler> = Arc::new(PruneHandler { svc: svc.clone() });
-        ctx.bus()
-            .on_tx_raw(PRUNE_SUB, schedulerevents::FIRED.topic(), prune);
-
-        let provider: Arc<dyn controlplane::Provider> =
-            Arc::new(admin::AccountsAdmin::new(svc.clone()));
-        ctx.contribute(controlplane::PROVIDER_SLOT, provider);
-
-        // Edge exposure, contributed UNCONDITIONALLY — topology-blind: `app::run`
-        // applies this iff the entrypoint stood up an internal edge server (then a
-        // peer gateway verifies sessions / fronts the auth ops over QUIC); in the
-        // monolith it is never applied. Own glue (rule 5): the generated
-        // register_server faces live in `accountsrpc`.
-        //
-        // The whole Auth trait face is registered (the generated `register_server`
-        // installs all methods at once), but the TRUST GATES live in the impl so the
-        // edge face matches the HTTP ops exactly: `register` self-rejects with
-        // NotFound when `open_registration` is off, and `login_federated` answers
-        // `Unavailable` for a provider this deployment did not configure. `me` and
-        // Sessions `verify_session` stay unconditional — the gateway needs them.
-        ctx.contribute(
-            edge::EDGE_SLOT,
-            edge::EdgeReg::new(move |server| {
-                accountsrpc::sessions_rpc::register_server(server, svc.clone());
-                accountsrpc::directory_rpc::register_server(server, svc.clone());
-                accountsrpc::auth_rpc::register_server(server, svc);
-            }),
-        );
-
-        // Routing-as-data SERVE side (D1.5b): this module's `#[http]` op manifest as
-        // pure DATA, contributed UNCONDITIONALLY (topology-blind). `app::run` concats
-        // every module's manifest and serves the union under the ONE reserved
-        // `__describe` op iff this process serves an edge. `auth_rpc` carries the
-        // register/login/loginFederated/me HTTP ops; `sessions_rpc` and `directory_rpc`
-        // are wire-only (empty `describe()`) — concatenated so a future `#[http]` op on
-        // any of them flows through.
-        ctx.contribute(
-            opsapi::DESCRIBE_SLOT,
-            opsapi::DescribeManifest::concat([
-                accountsrpc::auth_rpc::describe(),
-                accountsrpc::sessions_rpc::describe(),
-                accountsrpc::directory_rpc::describe(),
-            ]),
-        );
-        Ok(())
+        self.init_with(ctx, config, cookie_secure, trusted)
     }
 
     /// First I/O/CPU (#8): forces the argon2 `DUMMY_HASH` LazyLock here, on a

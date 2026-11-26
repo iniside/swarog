@@ -232,7 +232,7 @@ struct LogoutForm {
 
 /// The hosted browser surface `init` mounts: the hosted pages, Epic's start and callback when
 /// its flow is given, Google's browser callback when its flow is given. Nothing wraps the
-/// merge, so neither callback carries the pages' headers or draws from `limiter`.
+/// merge, so neither callback carries the pages' security headers or draws from `limiter`.
 pub(crate) fn hosted_browser_router(
     svc: Arc<Service>,
     cookie_secure: bool,

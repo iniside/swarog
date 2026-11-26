@@ -183,6 +183,7 @@ async fn google_sign_in_sets_the_session_and_ends_the_replaced_one() {
     let done = call_back(&base, CALLBACK, GOOD_CODE, &state, Some(&cookie_value(&binding_cookie))).await;
     let done_status = done.status();
     let done_to = location(&done);
+    let done_cache = done.headers().get("cache-control").map(|v| v.to_str().unwrap().to_string());
     let token = cookie_value(&set_cookie(&done, web::SESSION_COOKIE));
     let player = google_player(&pool, &subject).await.expect("the callback created the google identity");
     let live = svc.store.browser_session(&token).await.unwrap().map(|s| s.player_id);
@@ -210,6 +211,7 @@ async fn google_sign_in_sets_the_session_and_ends_the_replaced_one() {
     assert!(has_attr(&binding_cookie, "Path=/accounts"), "{binding_cookie}");
     assert_eq!(done_status, 303);
     assert_eq!(done_to, return_to, "the callback follows the stored return_to");
+    assert_eq!(done_cache.as_deref(), Some("no-store"), "the sign-in response is not cached");
     assert_eq!(live.as_deref(), Some(player.as_str()), "the session cookie signs in the google player");
     assert!(!held_after, "the session the browser held at start ends at sign-in");
     assert!(display.starts_with("google:"), "{display}");

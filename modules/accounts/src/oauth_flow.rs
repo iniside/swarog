@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use axum::extract::Query;
 use axum::http::{header, HeaderValue, StatusCode};
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
@@ -110,6 +111,10 @@ impl OAuthFlow {
     /// The identity provider this flow signs in with.
     pub(crate) fn provider(&self) -> &'static str {
         self.spec.name
+    }
+
+    pub(crate) fn client(&self) -> &ClientConfig {
+        &self.client
     }
 
     /// `cookie_secure` is the accounts-wide `ACCOUNTS_COOKIE_SECURE` rule.
@@ -334,8 +339,15 @@ pub(crate) fn browser_router(flow: Arc<OAuthFlow>, svc: Arc<Service>) -> Router 
                 })
                 .await
             }
-        }),
+        })
+        .layer(middleware::map_response(no_store)),
     )
+}
+
+/// A callback response may set the session cookie, so no response of a callback route is cached.
+pub(crate) async fn no_store(mut resp: Response) -> Response {
+    resp.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
 }
 
 /// Where the provider redirects back. Redeems the state, exchanges the code and verifies

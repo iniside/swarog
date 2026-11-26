@@ -163,6 +163,7 @@ async fn browser_intent_sets_swarog_session_and_issues_no_player_session() {
     let first = callback(&base, &start).await;
     let first_status = first.status();
     let first_to = location(&first);
+    let first_cache = first.headers().get("cache-control").map(|v| v.to_str().unwrap().to_string());
     let session_cookie = set_cookie(&first, web::SESSION_COOKIE);
     let csrf_cleared = set_cookie(&first, web::LOGIN_CSRF_COOKIE);
     let token = cookie_value(&session_cookie);
@@ -190,6 +191,7 @@ async fn browser_intent_sets_swarog_session_and_issues_no_player_session() {
     assert!(has_attr(&binding_cookie, "Path=/accounts"), "{binding_cookie}");
     assert_eq!(first_status, 303);
     assert_eq!(first_to, return_to, "the callback follows the stored return_to");
+    assert_eq!(first_cache.as_deref(), Some("no-store"), "the sign-in response is not cached");
     for attr in ["HttpOnly", "SameSite=Lax", "Path=/accounts/oidc", "Max-Age=43200"] {
         assert!(has_attr(&session_cookie, attr), "{attr}: {session_cookie}");
     }

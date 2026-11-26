@@ -4,22 +4,7 @@ Last updated: 2026-11-26
 
 ## In progress
 
-- [ ] **`google.oauth` is checked twice**
-  `GoogleConfig::browser_flow` (modules/accounts/src/providers.rs:195) and `init`
-  (modules/accounts/src/lib.rs:1696) both test it to decide whether the browser flow exists.
-  Source: docs/plans/2026-11-26-1352-oauth-drift-fixes-plan.md D5, owner answer ("ok 1,2 zrobic reszta do todo", 2026-11-26).
-  Being fixed by docs/plans/2026-11-26-1440-accounts-browser-fixes-plan.md Step 2.
-- [ ] **The Google and Epic callbacks send no `Cache-Control: no-store`**
-  Only the hosted pages set it (modules/accounts/src/web/mod.rs:281); the callback responses do not.
-  Source: docs/plans/2026-11-26-1352-oauth-drift-fixes-plan.md D5, owner answer ("ok 1,2 zrobic reszta do todo", 2026-11-26).
-  Being fixed by docs/plans/2026-11-26-1440-accounts-browser-fixes-plan.md Step 2.
-- [ ] **`init` alone decides which flows reach the hosted-browser router**
-  `init` (modules/accounts/src/lib.rs:1705) passes the flows to `web::hosted_browser_router`; the
-  browser tests build their own flows, so dropping a flow in `init` keeps them green, and so does a
-  limiter or header layer added in `init` around the builder's result. A test that runs `init` and
-  serves its router would close both.
-  Source: docs/plans/2026-11-26-1352-oauth-drift-fixes-plan.md D5, owner answer ("ok 1,2 zrobic reszta do todo", 2026-11-26).
-  Being fixed by docs/plans/2026-11-26-1440-accounts-browser-fixes-plan.md Step 2.
+_None._
 
 ## Open
 

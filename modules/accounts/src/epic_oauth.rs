@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use axum::extract::{ConnectInfo, Query};
 use axum::http::{header, HeaderMap, StatusCode};
+use axum::middleware;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -101,7 +102,8 @@ pub(crate) fn router(oauth: Arc<EpicOAuth>, svc: Arc<Service>, limiter: Arc<web:
                 async move {
                     oauth_flow::handle_callback(&oauth, &svc, &jar, &q, |outcome| complete(&svc, outcome)).await
                 }
-            }),
+            })
+            .layer(middleware::map_response(oauth_flow::no_store)),
         )
 }
 
