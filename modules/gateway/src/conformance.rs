@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use axum::http::StatusCode;
 
-use crate::verifier::{SessionVerifier, SessionsVerifier, VerifyUnavailable};
+use crate::verifier::{JwtVerifier, SessionVerifier, VerifyUnavailable};
 use crate::{KeyVerifier as _, LookupUnavailable, RealKeyVerifier};
 
 /// The group-name bound this front owns, re-exported so the conformance gate's CapCase
@@ -24,11 +24,11 @@ impl SessionVerifier for UnavailableVerifier {
     }
 }
 
-struct UnavailableSessions;
+struct UnavailableTokenState;
 
 #[async_trait]
-impl accountsapi::Sessions for UnavailableSessions {
-    async fn verify_session(&self, _token: String) -> Result<Option<String>, opsapi::Error> {
+impl accountsapi::TokenState for UnavailableTokenState {
+    async fn token_state(&self) -> Result<accountsapi::TokenStateSnapshot, opsapi::Error> {
         Err(opsapi::Error::unavailable("conformance: accounts dependency down"))
     }
 }
@@ -94,29 +94,25 @@ fn probe_runtime() -> tokio::runtime::Runtime {
 }
 
 /// Whether the front REFUSES a bearer of `len` bytes as a credential verdict — the
-/// gateway's OWN cap (`SessionsVerifier::verify`), ahead of the accounts capability.
+/// gateway's OWN cap (`JwtVerifier::verify`), ahead of its token-state snapshot.
 ///
-/// The unavailable `Sessions` fake is what makes the cap executable, because a 401 has a
-/// second producer: an at-cap token is simply unknown, and an unknown token is a 401 too.
-/// Against a dependency that can only fail, the 401 is reachable ONLY before the call —
-/// at the cap this reaches the fake and renders 503 (false, as required), over the cap
-/// the guard answers `Ok(None)` and renders 401 (true). Delete the guard and the over-cap
-/// case 503s as well, turning this case red.
+/// The unavailable `TokenState` fake is what makes the cap executable, because a 401 has
+/// a second producer: an at-cap token is simply invalid, and an invalid token is a 401 too.
+/// Its pull fails, so the verifier holds no snapshot and the 401 is reachable ONLY before
+/// the snapshot check — at the cap this renders 503 (false, as required), over the cap the
+/// guard answers `Ok(None)` and renders 401 (true). Delete the guard and the over-cap case
+/// 503s as well, turning this case red.
 ///
 /// It drives `crate::verify_bearer` — the one bearer authority `/push` and `admit_inner`
 /// share — not the verifier in isolation.
 #[doc(hidden)]
 pub fn conformance_session_token_rejected(len: usize) -> bool {
     let rt = probe_runtime();
-    let verifier = {
-        let _guard = rt.enter();
-        SessionsVerifier::new(Arc::new(UnavailableSessions))
-    };
-    let outcome = rt.block_on(crate::verify_bearer(
-        &verifier,
-        Some(&"a".repeat(len)),
-        opsapi::AuthReq::Player,
-    ));
+    let verifier = JwtVerifier::new(Arc::new(UnavailableTokenState));
+    let outcome = rt.block_on(async {
+        verifier.refresh_once().await;
+        crate::verify_bearer(&verifier, Some(&"a".repeat(len)), opsapi::AuthReq::Player).await
+    });
     match outcome {
         Err(denial) => {
             crate::admission_denial_response(&denial).status() == StatusCode::UNAUTHORIZED

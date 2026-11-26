@@ -877,7 +877,7 @@ fn gateway() -> Entry {
                     // arrive from a client that cannot set headers.
                     CapCase {
                         name: "gateway presented bearer",
-                        cap: accountsapi::MAX_SESSION_TOKEN_BYTES,
+                        cap: accountsapi::MAX_ACCESS_TOKEN_BYTES,
                         exact: false,
                         writer: None,
                         probe: Arc::new(gateway::conformance::conformance_session_token_rejected),

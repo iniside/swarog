@@ -1,6 +1,12 @@
 # Gateway
 
-Last updated: 2026-11-13
+Last updated: 2026-11-26
+
+- [x] **Gateway session-verification cache** (2026-11-26, one-token-mechanism step 5)
+  GATEWAY-08. Obsolete: `JwtVerifier` (modules/gateway/src/verifier.rs) checks a bearer
+  locally against a pulled `accounts.token_state` snapshot that carries the revocations, so
+  no request calls accounts. Source:
+  docs/plans/2026-07-30-2230-accounts-federated-providers-plan.md:107 (2026-07-30).
 
 - [x] **Production WebPKI certificate for the player QUIC port** (2026-11-13, player-quic-production-tls step 7)
   GATEWAY-07. `core/app` `resolve_player_tls` (core/app/src/lib.rs:1580) picks the player

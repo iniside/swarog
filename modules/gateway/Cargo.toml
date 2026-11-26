@@ -10,8 +10,8 @@ lifecycle = { workspace = true }
 registry = { workspace = true }
 opsapi = { workspace = true }
 # The accounts CONTRACT crate (rule 4 / the dependency law: contract crates of any
-# domain are importable by a module) — names `dyn Sessions` for the verifier
-# adapter. NEVER the accounts impl crate, never accountsrpc (archcheck enforces).
+# domain are importable by a module) — names `dyn TokenState` for the verifier.
+# NEVER the accounts impl crate, never accountsrpc (archcheck enforces).
 accountsapi = { workspace = true }
 # The apikeys CONTRACT crate (same rule) — names `dyn Keys` for the key-verifier
 # adapter. NEVER the apikeys impl crate, never apikeysrpc (archcheck enforces).
@@ -56,6 +56,8 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+# ES256 verification of player access tokens against the keys of the token-state snapshot.
+jsonwebtoken = { workspace = true }
 
 [dev-dependencies]
 # test-util: start_paused virtual clock for the flight-lock parallelism proof.
@@ -67,3 +69,6 @@ futures = { workspace = true }
 # socket. Same 0.24 line axum's `ws` feature already locks (and `core/app`'s Step 9a proof
 # uses), default features — no TLS stack, no new lock entries.
 tokio-tungstenite = "0.24"
+# Generates the P-256 test signing keys the JwtVerifier tests mint tokens with (the ring
+# jsonwebtoken already builds on).
+ring = { workspace = true }

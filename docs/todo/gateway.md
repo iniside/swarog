@@ -1,6 +1,6 @@
 # Gateway
 
-Last updated: 2026-11-13
+Last updated: 2026-11-26
 
 ## In progress
 
@@ -25,10 +25,3 @@ _None._
 - [ ] **Test that `POOL_STOP_BUDGET` fan-out is concurrent**
   GATEWAY-06. Needs `remote::Pool::with_factory` (core/remote/src/lib.rs:804, private)
   reachable from gateway tests. Source: modules/gateway/src/tests.rs:2477 (2026-07-28).
-
-### Deferred
-
-- [ ] **Gateway session-verification cache**
-  GATEWAY-08. No cache in modules/gateway/src/verifier.rs. A cache interacts with
-  refresh-family revocation and needs its own reviewed change. Source:
-  docs/plans/2026-07-30-2230-accounts-federated-providers-plan.md:107 (2026-07-30).

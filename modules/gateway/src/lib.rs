@@ -106,7 +106,9 @@ use serde_json::value::RawValue;
 pub use backend::{LocalBackend, OperationBackend, RemoteBackend};
 pub use push_ws::PushLimits;
 pub use keys::{AllowAllKeyVerifier, KeyVerifier, LookupUnavailable, RealKeyVerifier};
-pub use verifier::{DevSessionVerifier, SessionVerifier, SessionsVerifier, VerifyUnavailable};
+pub use verifier::{
+    DevSessionVerifier, JwtVerifier, SessionVerifier, SessionsVerifier, VerifyUnavailable,
+};
 
 use keys::{check_api_key, KeyCheck, KeyDenial};
 use push_ws::PushHub;
@@ -279,7 +281,7 @@ const POOL_STOP_BUDGET: Duration = Duration::from_secs(2);
 /// request.
 pub struct Gateway {
     /// The auth verifier. `None` (the [`Gateway::new`] default) defers resolution
-    /// to `init`: the REAL `accounts.sessions` capability from the registry, or —
+    /// to `init`: a [`JwtVerifier`] over the `accounts.token_state` capability, or —
     /// only when `GATEWAY_DEV_VERIFIER` is explicitly set — the dev fallback; absent
     /// both, startup FAILS loudly (see `verifier::resolve_verifier`). `Some` is a
     /// caller-supplied override (tests).
@@ -338,12 +340,16 @@ pub struct Gateway {
     /// The `/push` per-IP invoke limiter's idle-bucket reaper (`Some` between `start` and
     /// `stop`).
     limiter_eviction: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The [`JwtVerifier`] `init` resolved, whose pull loop `start` spawns.
+    jwt_verifier: OnceLock<Arc<JwtVerifier>>,
+    /// That pull loop (`Some` between `start` and `stop`).
+    token_pull: Mutex<Option<verifier::PullTask>>,
 }
 
 impl Gateway {
-    /// A gateway that resolves its verifier at `init` (Step 6): the real
-    /// `accounts.sessions` capability — provided locally by the accounts module or
-    /// by an `accountsrpc` remote stub — else a loud startup failure (unless
+    /// A gateway that resolves its verifier at `init`: the `accounts.token_state`
+    /// capability — provided locally by the accounts module or by an `accountsrpc`
+    /// remote stub — else a loud startup failure (unless
     /// `GATEWAY_DEV_VERIFIER=1` explicitly enables the dev fallback).
     pub fn new() -> Self {
         Gateway {
@@ -358,6 +364,8 @@ impl Gateway {
             stop_tx: Mutex::new(None),
             task: Mutex::new(None),
             limiter_eviction: Mutex::new(None),
+            jwt_verifier: OnceLock::new(),
+            token_pull: Mutex::new(None),
         }
     }
 
@@ -376,6 +384,8 @@ impl Gateway {
             stop_tx: Mutex::new(None),
             task: Mutex::new(None),
             limiter_eviction: Mutex::new(None),
+            jwt_verifier: OnceLock::new(),
+            token_pull: Mutex::new(None),
         }
     }
 
@@ -459,7 +469,7 @@ impl Module for Gateway {
     ///
     /// BOTH verifiers are resolved HERE (phase 2) when none was injected: every
     /// provider's phase-1 `register` — the accounts/apikeys module or its remote
-    /// stub — has already run, so `accounts.sessions`/`apikeys.keys` is present iff
+    /// stub — has already run, so `accounts.token_state`/`apikeys.keys` is present iff
     /// this process was wired for it. Absent capability + no explicit
     /// `GATEWAY_DEV_VERIFIER`/`APIKEYS_DEV_ALLOW` fails startup loudly (no silent dev
     /// fallback).
@@ -470,7 +480,13 @@ impl Module for Gateway {
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         let verifier = match &self.verifier {
             Some(v) => v.clone(),
-            None => verifier::resolve_verifier(ctx)?,
+            None => {
+                let resolved = verifier::resolve_verifier(ctx)?;
+                if let Some(jwt) = resolved.pull {
+                    let _ = self.jwt_verifier.set(jwt);
+                }
+                resolved.verifier
+            }
         };
         let key_verifier = match &self.key_verifier {
             Some(v) => v.clone(),
@@ -561,6 +577,9 @@ impl Module for Gateway {
         }
         let eviction = front_door.push_hub().spawn_invoke_limiter_eviction();
         *self.limiter_eviction.lock().unwrap_or_else(|e| e.into_inner()) = Some(eviction);
+        if let Some(jwt) = self.jwt_verifier.get() {
+            *self.token_pull.lock().unwrap_or_else(|e| e.into_inner()) = Some(jwt.spawn_pull());
+        }
         Ok(())
     }
 
@@ -571,8 +590,9 @@ impl Module for Gateway {
     ///    nothing else would ever end them. They are flushed a typed close within
     ///    `PUSH_STOP_GRACE` and then aborted; that grace is part of the arithmetic on
     ///    [`DESCRIBE_STOP_GRACE`], which sums the three time-bounded awaits;
-    /// 0b. the `/push` invoke limiter's idle-bucket reaper — aborted and joined, which
-    ///    completes immediately and adds nothing to the grace arithmetic;
+    /// 0b. the `/push` invoke limiter's idle-bucket reaper and the token-state pull loop —
+    ///    each aborted and joined, which completes immediately and adds nothing to the
+    ///    grace arithmetic;
     /// 1. the D2 describe-refresh task (grace-then-abort, mirroring `remote::Stub::stop`):
     ///    signal, join within [`DESCRIBE_STOP_GRACE`], else abort and await the abort so the
     ///    task is not leaked;
@@ -602,6 +622,10 @@ impl Module for Gateway {
         if let Some(eviction) = eviction {
             eviction.abort();
             let _ = eviction.await;
+        }
+        let token_pull = self.token_pull.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(token_pull) = token_pull {
+            token_pull.stop().await;
         }
         if let Some(tx) = self.stop_tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = tx.send(true);

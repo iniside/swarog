@@ -118,10 +118,12 @@ async fn dev_verifier_is_chosen_only_on_the_gateway_flag() {
     let ctx = Context::new();
     assert!(
         verifier::resolve_verifier_with(&ctx, false).is_err(),
-        "no accounts.sessions and no flag fails startup"
+        "no accounts.token_state and no flag fails startup"
     );
-    let dev = verifier::resolve_verifier_with(&ctx, true).expect("the flag picks the dev verifier");
-    assert_eq!(dev.verify("dev-alice").await.unwrap().as_deref(), Some("alice"));
+    let dev = verifier::resolve_verifier_with(&ctx, true)
+        .unwrap_or_else(|e| panic!("the flag picks the dev verifier: {e}"));
+    assert!(dev.pull.is_none());
+    assert_eq!(dev.verifier.verify("dev-alice").await.unwrap().as_deref(), Some("alice"));
 }
 
 /// A topology-neutral stand-in for `accounts.sessions`: locally this trait object is
@@ -214,6 +216,372 @@ async fn verify_bearer_overlong_token_is_401_without_capability_dispatch() {
         .expect_err("an over-long token is denied");
     assert_eq!(denial_status(&denial), StatusCode::UNAUTHORIZED);
     assert_eq!(sessions.calls.load(Ordering::SeqCst), 0);
+}
+
+// ---- JwtVerifier: the token-state snapshot, injected clocks, the D6 verify order ----
+
+const JWT_ISSUER: &str = "https://issuer.test/accounts/oidc";
+/// The fake wall clock's "now" in Unix seconds.
+const NOW: i64 = 1_800_000_000;
+
+/// A wall clock and a monotonic clock that move only when a test moves them.
+struct FakeClocks {
+    base: std::time::Instant,
+    mono_ms: std::sync::atomic::AtomicU64,
+    unix: std::sync::atomic::AtomicI64,
+}
+
+impl FakeClocks {
+    fn new() -> Arc<FakeClocks> {
+        Arc::new(FakeClocks {
+            base: std::time::Instant::now(),
+            mono_ms: std::sync::atomic::AtomicU64::new(0),
+            unix: std::sync::atomic::AtomicI64::new(NOW),
+        })
+    }
+
+    fn advance(&self, by: Duration) {
+        self.mono_ms.fetch_add(by.as_millis() as u64, Ordering::SeqCst);
+    }
+}
+
+impl verifier::Clocks for FakeClocks {
+    fn unix_now(&self) -> i64 {
+        self.unix.load(Ordering::SeqCst)
+    }
+
+    fn mono_now(&self) -> std::time::Instant {
+        self.base + Duration::from_millis(self.mono_ms.load(Ordering::SeqCst))
+    }
+}
+
+/// A topology-neutral stand-in for `accounts.token_state`: `None` answers Unavailable.
+/// `delay` advances the fake monotonic clock inside the call, a reply that arrives late.
+struct FakeTokenState {
+    snapshot: std::sync::Mutex<Option<accountsapi::TokenStateSnapshot>>,
+    delay: Option<(Arc<FakeClocks>, Duration)>,
+    pulls: AtomicUsize,
+    pulled: tokio::sync::Notify,
+}
+
+impl FakeTokenState {
+    fn new(snapshot: Option<accountsapi::TokenStateSnapshot>) -> Arc<FakeTokenState> {
+        FakeTokenState::delayed(snapshot, None)
+    }
+
+    fn delayed(
+        snapshot: Option<accountsapi::TokenStateSnapshot>,
+        delay: Option<(Arc<FakeClocks>, Duration)>,
+    ) -> Arc<FakeTokenState> {
+        Arc::new(FakeTokenState {
+            snapshot: std::sync::Mutex::new(snapshot),
+            delay,
+            pulls: AtomicUsize::new(0),
+            pulled: tokio::sync::Notify::new(),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl accountsapi::TokenState for FakeTokenState {
+    async fn token_state(&self) -> Result<accountsapi::TokenStateSnapshot, Error> {
+        if let Some((clocks, by)) = &self.delay {
+            clocks.advance(*by);
+        }
+        let answer = self.snapshot.lock().unwrap().clone();
+        self.pulls.fetch_add(1, Ordering::SeqCst);
+        self.pulled.notify_one();
+        answer.ok_or_else(|| Error::unavailable("fake: accounts down"))
+    }
+}
+
+/// A P-256 signing key: the private half signs test tokens, the public half is the JWK a
+/// snapshot carries.
+struct TestKey {
+    encoding: jsonwebtoken::EncodingKey,
+    jwk: accountsapi::PublicJwk,
+}
+
+fn test_key(kid: &str) -> TestKey {
+    use base64::Engine as _;
+    use ring::signature::{EcdsaKeyPair, KeyPair as _, ECDSA_P256_SHA256_FIXED_SIGNING};
+    let rng = ring::rand::SystemRandom::new();
+    let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
+    let pair =
+        EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng).unwrap();
+    // An uncompressed SEC1 point: 0x04, then x and y.
+    let point = pair.public_key().as_ref();
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    TestKey {
+        encoding: jsonwebtoken::EncodingKey::from_ec_der(pkcs8.as_ref()),
+        jwk: accountsapi::PublicJwk {
+            kty: "EC".into(),
+            crv: "P-256".into(),
+            x: b64(&point[1..33]),
+            y: b64(&point[33..65]),
+            kid: kid.into(),
+            use_: "sig".into(),
+            alg: "ES256".into(),
+        },
+    }
+}
+
+/// Access-token claims as accounts mints them, issued at `iat` for 15 minutes.
+fn access_claims(sub: &str, client_id: &str, sid: &str, iat: i64) -> serde_json::Value {
+    serde_json::json!({
+        "iss": JWT_ISSUER,
+        "sub": sub,
+        "aud": accountsapi::SWAROG_AUDIENCE,
+        "client_id": client_id,
+        "sid": sid,
+        "iat": iat,
+        "exp": iat + 900,
+        "jti": "jti-1",
+    })
+}
+
+fn mint_with_kid(key: &TestKey, kid: &str, claims: &serde_json::Value) -> String {
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+    header.kid = Some(kid.into());
+    header.typ = Some("at+jwt".into());
+    jsonwebtoken::encode(&header, claims, &key.encoding).unwrap()
+}
+
+fn mint(key: &TestKey, claims: &serde_json::Value) -> String {
+    mint_with_kid(key, &key.jwk.kid, claims)
+}
+
+fn token_snapshot(keys: &[&TestKey]) -> accountsapi::TokenStateSnapshot {
+    accountsapi::TokenStateSnapshot {
+        issuer: JWT_ISSUER.into(),
+        keys: keys.iter().map(|k| k.jwk.clone()).collect(),
+        ..Default::default()
+    }
+}
+
+/// A [`JwtVerifier`] over fake clocks that has pulled `snapshot` once.
+async fn loaded_verifier(
+    snapshot: accountsapi::TokenStateSnapshot,
+) -> (JwtVerifier, Arc<FakeClocks>) {
+    let clocks = FakeClocks::new();
+    let verifier = JwtVerifier::with_clocks(FakeTokenState::new(Some(snapshot)), clocks.clone());
+    verifier.refresh_once().await;
+    (verifier, clocks)
+}
+
+#[tokio::test]
+async fn jwt_verifier_answers_503_without_a_snapshot_or_with_one_older_than_60s() {
+    let key = test_key("k1");
+    let token = mint(&key, &access_claims("p1", "c1", "fam-1", NOW));
+    let clocks = FakeClocks::new();
+    let source = FakeTokenState::new(None);
+    let verifier = JwtVerifier::with_clocks(source.clone(), clocks.clone());
+
+    verifier.refresh_once().await;
+    assert!(verifier.verify(&token).await.is_err(), "no snapshot yet is unavailable");
+    let denial = verify_bearer(&verifier, Some(&token), AuthReq::Player)
+        .await
+        .expect_err("no snapshot denies");
+    assert_eq!(denial_status(&denial), StatusCode::SERVICE_UNAVAILABLE);
+
+    *source.snapshot.lock().unwrap() = Some(token_snapshot(&[&key]));
+    verifier.refresh_once().await;
+    clocks.advance(Duration::from_secs(59));
+    assert_eq!(verifier.verify(&token).await.unwrap().as_deref(), Some("p1"));
+
+    clocks.advance(Duration::from_secs(2));
+    assert!(verifier.verify(&token).await.is_err(), "a 61 s old snapshot is unavailable");
+
+    *source.snapshot.lock().unwrap() = None;
+    verifier.refresh_once().await;
+    assert!(verifier.verify(&token).await.is_err(), "a failed pull does not refresh the stamp");
+}
+
+#[tokio::test]
+async fn jwt_verifier_stamps_a_snapshot_with_the_instant_before_its_pull() {
+    let key = test_key("k1");
+    let token = mint(&key, &access_claims("p1", "c1", "fam-1", NOW));
+
+    let clocks = FakeClocks::new();
+    let late = FakeTokenState::delayed(
+        Some(token_snapshot(&[&key])),
+        Some((clocks.clone(), Duration::from_secs(61))),
+    );
+    let verifier = JwtVerifier::with_clocks(late, clocks.clone());
+    verifier.refresh_once().await;
+    assert!(
+        verifier.verify(&token).await.is_err(),
+        "a reply that took 61 s is stale on arrival"
+    );
+
+    let clocks = FakeClocks::new();
+    let slow = FakeTokenState::delayed(
+        Some(token_snapshot(&[&key])),
+        Some((clocks.clone(), Duration::from_secs(59))),
+    );
+    let verifier = JwtVerifier::with_clocks(slow, clocks.clone());
+    verifier.refresh_once().await;
+    assert_eq!(verifier.verify(&token).await.unwrap().as_deref(), Some("p1"));
+}
+
+#[tokio::test]
+async fn jwt_verifier_applies_family_player_and_client_revocations() {
+    let key = test_key("k1");
+    let mut snapshot = token_snapshot(&[&key]);
+    snapshot.revoked_families = vec!["fam-dead".into()];
+    snapshot.revoked_players =
+        vec![accountsapi::Revoked { id: "p-cut".into(), revoked_at_unix: NOW - 100 }];
+    snapshot.revoked_clients =
+        vec![accountsapi::Revoked { id: "c-cut".into(), revoked_at_unix: NOW - 100 }];
+    let (verifier, _clocks) = loaded_verifier(snapshot).await;
+    let verify = |claims: serde_json::Value| {
+        let token = mint(&key, &claims);
+        let verifier = &verifier;
+        async move { verifier.verify(&token).await.unwrap() }
+    };
+
+    assert_eq!(verify(access_claims("p1", "c1", "fam-dead", NOW)).await, None);
+    let denial = verify_bearer(
+        &verifier,
+        Some(&mint(&key, &access_claims("p1", "c1", "fam-dead", NOW))),
+        AuthReq::Player,
+    )
+    .await
+    .expect_err("a revoked family is denied");
+    assert_eq!(denial_status(&denial), StatusCode::UNAUTHORIZED);
+    assert_eq!(verify(access_claims("p1", "c1", "fam-live", NOW)).await.as_deref(), Some("p1"));
+
+    for iat in [NOW - 101, NOW - 100] {
+        assert_eq!(verify(access_claims("p-cut", "c1", "fam-1", iat)).await, None);
+        assert_eq!(verify(access_claims("p1", "c-cut", "fam-1", iat)).await, None);
+    }
+    assert_eq!(
+        verify(access_claims("p-cut", "c1", "fam-1", NOW - 99)).await.as_deref(),
+        Some("p-cut"),
+        "a token issued after the player cut-off verifies"
+    );
+    assert_eq!(
+        verify(access_claims("p1", "c-cut", "fam-1", NOW - 99)).await.as_deref(),
+        Some("p1"),
+        "a token issued after the client cut-off verifies"
+    );
+}
+
+#[tokio::test]
+async fn jwt_verifier_refuses_a_wrong_aud_iss_kid_or_signature() {
+    let key = test_key("k1");
+    let forger = test_key("k1");
+    let (verifier, _clocks) = loaded_verifier(token_snapshot(&[&key])).await;
+    let good = access_claims("p1", "c1", "fam-1", NOW);
+    assert_eq!(verifier.verify(&mint(&key, &good)).await.unwrap().as_deref(), Some("p1"));
+
+    let mut wrong_aud = good.clone();
+    wrong_aud["aud"] = "another-api".into();
+    let mut wrong_iss = good.clone();
+    wrong_iss["iss"] = "https://elsewhere.test".into();
+    let refused = [
+        ("wrong aud", mint(&key, &wrong_aud)),
+        ("wrong iss", mint(&key, &wrong_iss)),
+        ("unknown kid", mint_with_kid(&key, "k2", &good)),
+        ("bad signature", mint(&forger, &good)),
+    ];
+    for (case, token) in refused {
+        let denial = verify_bearer(&verifier, Some(&token), AuthReq::Player)
+            .await
+            .expect_err(case);
+        assert_eq!(denial_status(&denial), StatusCode::UNAUTHORIZED, "{case}");
+    }
+}
+
+#[tokio::test]
+async fn jwt_verifier_accepts_exp_within_the_leeway_only() {
+    let key = test_key("k1");
+    let (verifier, _clocks) = loaded_verifier(token_snapshot(&[&key])).await;
+    let leeway = accountsapi::ACCESS_EXP_LEEWAY.as_secs() as i64;
+    let expired_at = |exp: i64| {
+        let mut claims = access_claims("p1", "c1", "fam-1", exp - 900);
+        claims["exp"] = exp.into();
+        mint(&key, &claims)
+    };
+    assert_eq!(
+        verifier.verify(&expired_at(NOW - leeway)).await.unwrap().as_deref(),
+        Some("p1")
+    );
+    assert_eq!(verifier.verify(&expired_at(NOW - leeway - 1)).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn jwt_verifier_refuses_an_oversized_token_before_parsing() {
+    let key = test_key("k1");
+    let padded = |pad: usize| {
+        let mut claims = access_claims("p1", "c1", "fam-1", NOW);
+        claims["pad"] = "x".repeat(pad).into();
+        mint(&key, &claims)
+    };
+    let mut pad = 0;
+    while padded(pad + 1).len() <= accountsapi::MAX_ACCESS_TOKEN_BYTES {
+        pad += 1;
+    }
+    let at_cap = padded(pad);
+    let over_cap = padded(pad + 1);
+    assert!(over_cap.len() > accountsapi::MAX_ACCESS_TOKEN_BYTES);
+
+    let (verifier, _clocks) = loaded_verifier(token_snapshot(&[&key])).await;
+    assert_eq!(verifier.verify(&at_cap).await.unwrap().as_deref(), Some("p1"));
+    assert_eq!(verifier.verify(&over_cap).await.unwrap(), None, "a valid but oversized token");
+
+    let unloaded = JwtVerifier::with_clocks(FakeTokenState::new(None), FakeClocks::new());
+    assert_eq!(
+        unloaded.verify(&over_cap).await.unwrap(),
+        None,
+        "the cap answers before the snapshot is consulted"
+    );
+}
+
+#[tokio::test]
+async fn resolve_verifier_requires_the_token_state_capability() {
+    let ctx = Context::new();
+    let err = verifier::resolve_verifier_with(&ctx, false)
+        .err()
+        .expect("no accounts.token_state and no flag fails startup");
+    assert!(err.to_string().contains("accounts.token_state"), "{err}");
+
+    let source = FakeTokenState::new(None);
+    ctx.registry().provide::<dyn accountsapi::TokenState>(
+        registry::key("accounts", "token_state"),
+        source.clone(),
+    );
+    let resolved = verifier::resolve_verifier_with(&ctx, true)
+        .unwrap_or_else(|e| panic!("the capability resolves: {e}"));
+    assert!(resolved.pull.is_some(), "the capability wins over the dev flag");
+    assert!(
+        resolved.verifier.verify("dev-alice").await.is_err(),
+        "a JwtVerifier with no snapshot, not the dev verifier"
+    );
+}
+
+#[tokio::test]
+async fn gateway_start_runs_the_token_pull_and_stop_ends_it() {
+    let key = test_key("k1");
+    let source = FakeTokenState::new(Some(token_snapshot(&[&key])));
+    let ctx = Context::new();
+    ctx.registry().provide::<dyn accountsapi::TokenState>(
+        registry::key("accounts", "token_state"),
+        source.clone(),
+    );
+    let gw = Gateway::new().with_key_verifier(demo_keys());
+    gw.init(&ctx).expect("init resolves the JwtVerifier");
+    let jwt = gw.jwt_verifier.get().expect("init keeps the JwtVerifier").clone();
+    assert!(jwt.verify("not-a-jwt").await.is_err(), "no pull before start");
+
+    gw.start(&ctx).await.expect("start");
+    source.pulled.notified().await;
+    assert_eq!(jwt.verify("not-a-jwt").await.unwrap(), None, "the first pull loaded a snapshot");
+
+    let held = Arc::strong_count(&jwt);
+    gw.stop(&ctx).await.expect("stop");
+    assert!(gw.token_pull.lock().unwrap().is_none());
+    assert_eq!(Arc::strong_count(&jwt), held - 1, "stop dropped the loop's handle");
 }
 
 // ---- (b/c) end-to-end through the axum fallback ----
