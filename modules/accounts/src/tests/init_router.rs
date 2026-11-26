@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr};
+use std::time::{Duration, Instant};
 
 use super::hosted_login::client;
 use super::*;
@@ -44,7 +45,13 @@ async fn init_mounts_both_callbacks_outside_the_bucket_and_the_page_headers() {
             .unwrap();
     });
     let bucket = accounts.web_limiter.get().expect("init sets the sign-in bucket");
-    let drain = || while bucket.allow(IpAddr::V4(Ipv4Addr::LOCALHOST)) {};
+    // Drained as of an hour ahead: `allow_at` saturates the elapsed time and parks `last` there, so a
+    // real-clock request right after refills nothing, however slow the machine (no race on the 200 ms
+    // refill). Each request gets its own drain because a real-clock check moves `last` back.
+    let drain = || {
+        let ahead = Instant::now() + Duration::from_secs(3600);
+        while bucket.allow_at(IpAddr::V4(Ipv4Addr::LOCALHOST), ahead) {}
+    };
 
     drain();
     let epic_start = client().post(format!("{base}/accounts/epic/start")).send().await.unwrap();
