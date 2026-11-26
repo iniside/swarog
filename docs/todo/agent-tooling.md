@@ -1,12 +1,20 @@
 # Agent tooling
 
-Last updated: 2026-10-23
+Last updated: 2026-11-26
 
 ## In progress
 
 _None._
 
 ## Open
+
+- [ ] **Public-API stage not required for contract steps**
+  Three commits changed a public API without blessing the baseline: c7e3e141 (`LOGIN_LIMIT_*`), f39daf19
+  (`EPIC_ENV_KEYS`/`GOOGLE_ENV_KEYS`) and 70598eb0 (`ACCOUNTS_RESET_PASSWORD`). The stage compares
+  correctly when it runs (tools/verifyctl/src/stages/public_api.rs:18-55), so it was not run for those steps.
+  Make it part of the required verify for any step that touches `api/*` or `core/controlplane`.
+  Source: proof-auditor of the oidc-signing-keys Step 2 review fix (309d8708, 2026-11-26); owner asked
+  for the item (2026-11-26).
 
 ### Known limits (arcgame-workflow-port step 9)
 
