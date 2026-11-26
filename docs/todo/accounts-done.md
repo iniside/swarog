@@ -2,6 +2,11 @@
 
 Last updated: 2026-11-26
 
+- [x] **Sign-in limiter test helpers repeat 5.0/20** (2026-11-26, accounts-browser-fixes step 3)
+  modules/accounts/src/tests.rs:1850, modules/accounts/src/tests/hosted_login.rs:24 and
+  modules/accounts/src/tests/epic_browser.rs:60 should use `accountsapi::LOGIN_LIMIT_PER_SEC` and
+  `accountsapi::LOGIN_LIMIT_BURST`.
+  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
 - [x] **`google.oauth` is checked twice** (2026-11-26, accounts-browser-fixes step 2)
   The init body logs "google OAuth enabled" from the flow `GoogleConfig::browser_flow` built.
 - [x] **The Google and Epic callbacks send no `Cache-Control: no-store`** (2026-11-26, accounts-browser-fixes step 2)

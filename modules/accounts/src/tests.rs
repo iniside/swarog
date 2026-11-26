@@ -1873,7 +1873,12 @@ fn oauth_config(redirect_uri: &str, token_url: &str) -> EpicOAuthConfig {
 
 /// A sign-in bucket no test request drains, for tests that are not about the limiter.
 fn roomy_login_limiter() -> Arc<crate::web::LoginLimiter> {
-    crate::web::LoginLimiter::new(httpmw::IpLimiter::new("accounts_login_test", 5.0, 20), Vec::new())
+    let bucket = httpmw::IpLimiter::new(
+        "accounts_login_test",
+        accountsapi::LOGIN_LIMIT_PER_SEC,
+        accountsapi::LOGIN_LIMIT_BURST,
+    );
+    crate::web::LoginLimiter::new(bucket, Vec::new())
 }
 
 async fn serve_oauth_router(oauth: Arc<epic_oauth::EpicOAuth>, svc: Arc<Service>) -> String {

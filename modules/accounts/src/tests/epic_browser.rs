@@ -58,7 +58,12 @@ async fn mock_epic(pool: &PgPool, subject: &str) -> Arc<EpicOAuth> {
 
 /// The hosted pages with Epic and the Epic routes on one listener, as `init` mounts them.
 async fn serve(svc: Arc<Service>, oauth: Arc<EpicOAuth>) -> String {
-    serve_limited(svc, oauth, httpmw::IpLimiter::new("accounts_epic_browser_test", 5.0, 20)).await
+    let bucket = httpmw::IpLimiter::new(
+        "accounts_epic_browser_test",
+        accountsapi::LOGIN_LIMIT_PER_SEC,
+        accountsapi::LOGIN_LIMIT_BURST,
+    );
+    serve_limited(svc, oauth, bucket).await
 }
 
 /// `serve` with the given sign-in bucket, shared by the hosted form and the Epic start as in `init`.

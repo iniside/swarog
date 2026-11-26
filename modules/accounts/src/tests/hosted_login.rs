@@ -21,7 +21,12 @@ async fn serve_web(svc: Arc<Service>, trusted: &str, limiter: Arc<httpmw::IpLimi
 }
 
 pub(super) async fn serve_default(svc: Arc<Service>) -> String {
-    serve_web(svc, "", httpmw::IpLimiter::new("accounts_login_test", 5.0, 20)).await
+    let bucket = httpmw::IpLimiter::new(
+        "accounts_login_test",
+        accountsapi::LOGIN_LIMIT_PER_SEC,
+        accountsapi::LOGIN_LIMIT_BURST,
+    );
+    serve_web(svc, "", bucket).await
 }
 
 pub(super) fn client() -> reqwest::Client {
