@@ -1,6 +1,6 @@
 # Processctl
 
-Last updated: 2026-11-24
+Last updated: 2026-11-26
 
 ## In progress
 
@@ -52,7 +52,10 @@ _None._
   PROCESSCTL-09. The env allow-lists are hand-kept in several places: tools/processctl/src/fleet.rs
   (`SERVICE_ENV_ALLOWLIST` :17, `ACCOUNTS_OVERRIDEABLE_ENV` :25-30, `MAIL_OVERRIDEABLE_ENV` :35-39,
   `MONOLITH_BASE_ENV` :46-74, per-service lists :902-909), compose.yaml:22-40, .env.example and
-  weles/fleet.*.toml. Nothing checks them against the crates' env reads, and they have already drifted:
+  weles/fleet.*.toml. Only the `EPIC_*`/`GOOGLE_*` keys are checked against the crate's reads
+  (`provider_allowlists_match_the_accounts_provider_keys` in tools/processctl/src/fleet_tests.rs pins
+  both allowlists to `accountsapi::EPIC_ENV_KEYS`/`GOOGLE_ENV_KEYS`); nothing checks the rest, and they
+  have already drifted:
   - `SCHEDULER_ENABLED` is missing from the monolith list, though the split passes it (a both-topologies gap).
   - `AUDIT_RETENTION_DAYS`, `GROUPS_RETENTION_DAYS` and `PARTY_LEASE_SECS` are on no processctl list.
   - compose.yaml and .env.example lack `EPIC_*`, `GOOGLE_*`, `ADMIN_COOKIE_SECURE`, the retention vars and others.

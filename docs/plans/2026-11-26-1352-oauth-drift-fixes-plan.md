@@ -1,6 +1,6 @@
 # OAuth key-list and mount drift fixes
 
-Status: approved by the owner 2026-11-26 ("ok mozesz zaczynac"); Q1 approved: clear `EPIC_*` by prefix too.
+Status: done (2026-11-26). Approved by the owner 2026-11-26 ("ok mozesz zaczynac"); Q1 approved: clear `EPIC_*` by prefix too.
 Date: 2026-11-26
 Source: owner answer on the google-browser-login leftovers ("ok 1,2 zrobic reszta do todo", 2026-11-26).
 Parent: docs/plans/2026-11-26-1123-google-browser-login-plan.md (landed 06b4c873..959671f9).
