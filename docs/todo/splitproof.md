@@ -18,6 +18,14 @@ _None._
 
 ## Open
 
+- [ ] **A respawn erases the restarted service's earlier log**
+  `Ctx::spawn` reuses `run_dir/<name>.{out,err}.log`, and both platforms truncate it on open
+  (`File::create`, tools/processctl/src/process.rs:26; `CREATE_ALWAYS`, tools/processctl/src/platform/windows.rs:404).
+  So every splitproof respawn (`[SK4]`, `i_gate`, `rdy_dead`, `replicas_exactly_once`) loses that service's
+  log for all earlier checks. Fix in the shared spawn path: rotate an existing log to `<name>.<n>.*.log`, or
+  append.
+  Source: proof-auditor of 7205c18f (oidc-signing-keys step 4, 2026-11-26).
+
 - [ ] **Error-string sniffing in `status_or_err` and `player_burst`**
   SPLITPROOF-02. The `Err` arm does `e.to_string().contains(want)` (tools/splitproof/src/main.rs:7109,
   2026-07-11). Typed edge codes (audit-remediation step 16) allow re-pointing it.
