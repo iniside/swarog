@@ -154,6 +154,10 @@ pub(crate) fn delete_ticket_within_cap(ticket: &str) -> bool {
 /// unknown or the input invalid — never the caller's real password against a decoy.
 const DECOY_CANDIDATE: &str = "accounts-invalid-credentials";
 
+/// The schema `migrate` fills the signing keys in and the JWKS reads them from: one name
+/// for both, so a rename cannot split them.
+const SIGNING_KEYS_SCHEMA: &str = "accounts";
+
 /// This module's OWN schema and tables, nothing else — full logical isolation (#10).
 /// Idempotent; `migrate` adds the indexes. The identities/sessions FKs are INTERNAL to
 /// the accounts schema (allowed; the ban is on cross-module FKs).
@@ -1603,7 +1607,7 @@ impl Accounts {
             );
         }
         refuse_stale_oauth_states(pool, "accounts").await?;
-        signing_keys::migrate_signing_keys(pool, "accounts", &kek).await
+        signing_keys::migrate_signing_keys(pool, SIGNING_KEYS_SCHEMA, &kek).await
     }
 
     fn svc(&self) -> Arc<Service> {
@@ -1683,7 +1687,7 @@ impl Accounts {
         }
         let flows = web::Flows { epic: epic_flow, google: google_flow };
         ctx.mount(web::hosted_browser_router(svc.clone(), cookie_secure, login_limiter, flows)?);
-        let signing_keys = signing_keys::SigningKeys::new(svc.store.pool.clone(), "accounts");
+        let signing_keys = signing_keys::SigningKeys::new(svc.store.pool.clone(), SIGNING_KEYS_SCHEMA);
         ctx.mount(discovery::router(issuer, Arc::new(signing_keys)));
         svc.providers
             .set(Arc::new(config.providers(&svc.store.pool)))
