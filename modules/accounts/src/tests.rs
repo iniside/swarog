@@ -2040,7 +2040,8 @@ async fn oauth_start_reuses_hardened_binding_cookie_for_parallel_states() {
         "http://localhost/accounts/epic/callback",
         "http://localhost/token",
     );
-    let base = serve_oauth_router(oauth.clone(), lazy_service()).await;
+    let svc = lazy_service_with_pool(pool.clone(), Arc::new(ArgonVerifier));
+    let base = serve_oauth_router(oauth.clone(), svc.clone()).await;
     let client = reqwest::Client::new();
 
     let first = client
@@ -2103,7 +2104,7 @@ async fn oauth_start_reuses_hardened_binding_cookie_for_parallel_states() {
         "http://localhost/token",
         true,
     );
-    let secure_base = serve_oauth_router(secure_oauth, lazy_service()).await;
+    let secure_base = serve_oauth_router(secure_oauth, svc).await;
     let secure = client
         .post(epic_start_url(&secure_base))
         .send()
@@ -2222,9 +2223,9 @@ async fn epic_start_no_bearer_mints_login_state() {
         "http://localhost/accounts/epic/callback",
         "http://localhost/token",
     );
-    // No bearer ⇒ the SESSION store is never consulted, so a lazy service is fine;
-    // the oauth `state` store still needs the real pool to INSERT/redeem.
-    let base = serve_oauth_router(oauth.clone(), lazy_service()).await;
+    // The start reads the client from the service's pool, so both stores are the real pool.
+    let svc = lazy_service_with_pool(pool.clone(), Arc::new(ArgonVerifier));
+    let base = serve_oauth_router(oauth.clone(), svc).await;
     let client = reqwest::Client::new();
 
     let resp = client

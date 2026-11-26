@@ -202,3 +202,51 @@ async fn an_external_login_needs_only_an_existing_client() {
 
     session.expect("a client listing neither password nor guest still serves an external login");
 }
+
+/// Migrate refuses a `refresh_tokens` or `sessions` without a foreign key to its schema's
+/// `token_families`, naming the table and the drop remedy; a key to another table does
+/// not count, and a fully linked set, like the one migrate creates, passes.
+#[tokio::test(flavor = "multi_thread")]
+async fn boot_refusal_fires_on_tokens_without_a_family_key() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let schema = format!("accounts_unfamilied_{}_{nanos}", std::process::id());
+    let exec = |sql: String| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(&sql).execute(&pool).await.unwrap();
+        }
+    };
+    exec(format!("CREATE SCHEMA {schema}")).await;
+    exec(format!("CREATE TABLE {schema}.players (id int PRIMARY KEY)")).await;
+    exec(format!("CREATE TABLE {schema}.token_families (id int PRIMARY KEY)")).await;
+    for table in ["refresh_tokens", "sessions"] {
+        exec(format!(
+            "CREATE TABLE {schema}.{table} \
+             (token text PRIMARY KEY, player_id int REFERENCES {schema}.players(id), family_id int)"
+        ))
+        .await;
+    }
+    let link = |table: &str| {
+        format!(
+            "ALTER TABLE {schema}.{table} \
+             ADD FOREIGN KEY (family_id) REFERENCES {schema}.token_families(id)"
+        )
+    };
+    let no_refresh_key = crate::refuse_unfamilied_tokens(&pool, &schema).await;
+    exec(link("refresh_tokens")).await;
+    let no_session_key = crate::refuse_unfamilied_tokens(&pool, &schema).await;
+    exec(link("sessions")).await;
+    let linked = crate::refuse_unfamilied_tokens(&pool, &schema).await;
+    exec(format!("DROP SCHEMA {schema} CASCADE")).await;
+
+    for (table, refused) in [("refresh_tokens", no_refresh_key), ("sessions", no_session_key)] {
+        let err = refused.expect_err(table).to_string();
+        let names = format!("{schema}.{table} has no foreign key to {schema}.token_families");
+        assert!(err.contains(&names), "{err}");
+        assert!(err.contains(&format!("DROP SCHEMA {schema} CASCADE;")), "{err}");
+    }
+    linked.expect("a fully linked set passes");
+    crate::refuse_unfamilied_tokens(&pool, "accounts").await.unwrap();
+}

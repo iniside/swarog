@@ -86,3 +86,27 @@ async fn boot_refusal_fires_on_oauth_states_without_provider() {
     assert!(err.contains(&format!("DROP TABLE {schema}.oauth_states;")), "{err}");
     crate::refuse_stale_oauth_states(&pool, "accounts").await.unwrap();
 }
+
+/// Migrate refuses an `oauth_states` that has `intent` and `provider` but no `client_id`,
+/// naming the drop remedy.
+#[tokio::test(flavor = "multi_thread")]
+async fn boot_refusal_fires_on_oauth_states_without_client_id() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let schema = format!("accounts_refusal_client_{}_{nanos}", std::process::id());
+    sqlx::query(&format!("CREATE SCHEMA {schema}")).execute(&pool).await.unwrap();
+    sqlx::query(&format!(
+        "CREATE TABLE {schema}.oauth_states \
+         (state text PRIMARY KEY, intent text NOT NULL, provider text NOT NULL)"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let refused = crate::refuse_stale_oauth_states(&pool, &schema).await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE")).execute(&pool).await.unwrap();
+
+    let err = refused.expect_err("an oauth_states without client_id must refuse boot").to_string();
+    assert!(err.contains("has no client_id column"), "{err}");
+    assert!(err.contains(&format!("DROP TABLE {schema}.oauth_states;")), "{err}");
+}

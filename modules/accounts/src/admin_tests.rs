@@ -1082,7 +1082,13 @@ async fn reset_password_refuses_a_player_without_a_password_and_a_missing_player
         .await
         .unwrap_or_else(|_| panic!("an epic-only player"));
     let session = svc
-        .issue_session_tx(&mut tx, &epic, "epic", &subject, None, TEST_CLIENT_ID, crate::store::new_token())
+        .issue_session_tx(
+            &mut tx,
+            &epic,
+            crate::MintedVia { provider: "epic", subject: &subject, secret_hash: None },
+            TEST_CLIENT_ID,
+            crate::store::new_token(),
+        )
         .await
         .unwrap();
     tx.commit().await.unwrap();

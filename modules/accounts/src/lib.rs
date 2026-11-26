@@ -334,23 +334,26 @@ async fn refuse_stale_oauth_states(pool: &sqlx::PgPool, schema: &str) -> anyhow:
     Ok(())
 }
 
-/// Refuses an `accounts.refresh_tokens` or `accounts.sessions` that predates
-/// `accounts.token_families`: `CREATE TABLE IF NOT EXISTS` keeps the old table, whose
+/// Refuses a `{schema}.refresh_tokens` or `{schema}.sessions` that predates
+/// `{schema}.token_families`: `CREATE TABLE IF NOT EXISTS` keeps the old table, whose
 /// tokens would outlive a deleted family.
-async fn refuse_unfamilied_tokens(pool: &sqlx::PgPool) -> anyhow::Result<()> {
-    for table in ["accounts.refresh_tokens", "accounts.sessions"] {
+async fn refuse_unfamilied_tokens(pool: &sqlx::PgPool, schema: &str) -> anyhow::Result<()> {
+    let families = format!("{schema}.token_families");
+    for table in ["refresh_tokens", "sessions"] {
+        let table = format!("{schema}.{table}");
         let linked: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM pg_constraint \
                              WHERE conrelid = $1::regclass AND contype = 'f' \
-                               AND confrelid = 'accounts.token_families'::regclass)",
+                               AND confrelid = $2::regclass)",
         )
-        .bind(table)
+        .bind(&table)
+        .bind(&families)
         .fetch_one(pool)
         .await?;
         if !linked {
             anyhow::bail!(
-                "accounts: {table} has no foreign key to accounts.token_families. \
-                 Remedy: DROP SCHEMA accounts CASCADE; and reboot."
+                "accounts: {table} has no foreign key to {families}. \
+                 Remedy: DROP SCHEMA {schema} CASCADE; and reboot."
             );
         }
     }
@@ -377,6 +380,14 @@ fn stamp_refused(secret_hash: Option<&str>) -> Error {
     } else {
         Error::internal("no identity to mint a session through")
     }
+}
+
+/// The identity a login is minted through, which [`Service::issue_session_tx`] stamps as
+/// last used; `secret_hash` is the hash a password sign-in verified.
+struct MintedVia<'a> {
+    provider: &'a str,
+    subject: &'a str,
+    secret_hash: Option<&'a str>,
 }
 
 /// A password [`Service::verify_password`] accepted: the player, the normalised email
@@ -448,15 +459,15 @@ impl Service {
     }
 
     /// Mints one login for `client_id`: a new token FAMILY and the first access token
-    /// inside it, on the caller's transaction, and stamps the identity `(provider,
-    /// subject)` it was minted through as last used. The client must exist and list the
-    /// grant [`clients::grant_for_provider`] names, else nothing is minted and the answer
-    /// is [`invalid_client`]; every caller has already capped `client_id` at its op's
-    /// entry ([`client_id_within_cap`]). With `secret_hash` (a password sign-in) the identity
-    /// must still store the hash that was verified, else nothing is minted and the answer
-    /// is the wrong-password 401. All three commit with whatever else that
-    /// transaction carries (the player row, the `player.registered` append); a refresh
-    /// rotates inside a family and never comes here, so it never stamps.
+    /// inside it, on the caller's transaction, and stamps the identity `via` names as last
+    /// used. The client must exist and list the grant [`clients::grant_for_provider`]
+    /// names, else nothing is minted and the answer is [`invalid_client`]; every caller has
+    /// already capped `client_id` at its op's entry ([`client_id_within_cap`]). With
+    /// `via.secret_hash` (a password sign-in) the identity must still store the hash that
+    /// was verified, else nothing is minted and the answer is the wrong-password 401. All
+    /// three commit with whatever else that transaction carries (the player row, the
+    /// `player.registered` append); a refresh rotates inside a family and never comes here,
+    /// so it never stamps.
     ///
     /// Lock order: the client row (FOR KEY SHARE, so a client delete waits for this
     /// commit), then the player row (FOR KEY SHARE, taken by the family insert's FK),
@@ -468,12 +479,11 @@ impl Service {
         &self,
         conn: &mut PgConnection,
         p: &Player,
-        provider: &str,
-        subject: &str,
-        secret_hash: Option<&str>,
+        via: MintedVia<'_>,
         client_id: &str,
         token: String,
     ) -> Result<accountsapi::Session, Error> {
+        let MintedVia { provider, subject, secret_hash } = via;
         if !self
             .store
             .client_allows_tx(conn, client_id, clients::grant_for_provider(provider))
@@ -525,9 +535,11 @@ impl Service {
             .issue_session_tx(
                 &mut tx,
                 &verified.player,
-                providers::PASSWORD,
-                &verified.email,
-                Some(&verified.hash),
+                MintedVia {
+                    provider: providers::PASSWORD,
+                    subject: &verified.email,
+                    secret_hash: Some(&verified.hash),
+                },
                 client_id,
                 store::new_token(),
             )
@@ -761,7 +773,13 @@ impl Service {
             }
         };
         let session = match self
-            .issue_session_tx(&mut tx, &p, providers::PASSWORD, email, None, client_id, token)
+            .issue_session_tx(
+                &mut tx,
+                &p,
+                MintedVia { provider: providers::PASSWORD, subject: email, secret_hash: None },
+                client_id,
+                token,
+            )
             .await
         {
             Ok(session) => session,
@@ -795,7 +813,13 @@ impl Service {
                 }
             };
         let session = match self
-            .issue_session_tx(&mut tx, &p, provider, subject, None, client_id, store::new_token())
+            .issue_session_tx(
+                &mut tx,
+                &p,
+                MintedVia { provider, subject, secret_hash: None },
+                client_id,
+                store::new_token(),
+            )
             .await
         {
             Ok(session) => session,
@@ -1762,7 +1786,7 @@ impl Accounts {
             );
         }
         refuse_stale_oauth_states(pool, "accounts").await?;
-        refuse_unfamilied_tokens(pool).await?;
+        refuse_unfamilied_tokens(pool, "accounts").await?;
         signing_keys::migrate_signing_keys(pool, SIGNING_KEYS_SCHEMA, &kek).await?;
         clients::migrate_dev_seed(self.dev_seed_on(), pool).await?;
         Ok(())

@@ -518,6 +518,37 @@ async fn the_epic_start_without_a_known_client_is_refused() {
     assert_eq!(states, 0, "a refused start writes no state");
 }
 
+/// The cap answers before the client lookup: a service whose pool cannot connect would
+/// answer that lookup 503, so a 401 here comes from the cap alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_epic_start_refuses_an_oversized_client_before_the_lookup() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    const DEAD_DSN: &str = "postgres://gamebackend:gamebackend@127.0.0.1:1/epic-start-cap";
+    let dead = dead_service_at(DEAD_DSN, Arc::new(ArgonVerifier));
+    let base = serve(dead, flow(&pool, "http://localhost/jwks", "http://localhost/token")).await;
+    let binding = store::new_token();
+    let oversized = "c".repeat(accountsapi::MAX_CLIENT_ID_BYTES + 1);
+
+    let resp = client()
+        .post(format!("{base}/accounts/epic/start?client_id={oversized}"))
+        .header("Cookie", format!("{BINDING_COOKIE}={binding}"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 401);
+    assert!(resp.headers().get("set-cookie").is_none(), "a refused start sets no binding");
+    assert_eq!(resp.text().await.unwrap(), "invalid client");
+    let states: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM accounts.oauth_states WHERE browser_binding = $1")
+            .bind(&binding)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(states, 0, "a refused start writes no state");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_epic_login_mints_for_the_client_that_started_it() {
     let Some(pool) = test_pool().await else { return };
