@@ -26,7 +26,8 @@ const ACCOUNTS_OVERRIDEABLE_ENV: &[&str] = &[
     "ACCOUNTS_OPEN_REGISTRATION", "ACCOUNTS_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS",
     "EPIC_CLIENT_ID", "EPIC_JWKS_URL", "EPIC_ISSUER_PREFIX", "EPIC_CLIENT_SECRET",
     "EPIC_REDIRECT_URI", "EPIC_AUTHORIZE_URL", "EPIC_TOKEN_URL",
-    "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL",
+    "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL", "GOOGLE_CLIENT_SECRET", "GOOGLE_OAUTH_CLIENT_ID",
+    "GOOGLE_REDIRECT_URI", "GOOGLE_AUTHORIZE_URL", "GOOGLE_TOKEN_URL",
 ];
 
 /// Every `MAIL_*` key an operator's shell may reach `mail-svc` with — the SOLE source
@@ -43,44 +44,49 @@ const MAIL_OVERRIDEABLE_ENV: &[&str; 10] = &[
 /// other than mail's — one process hosts accounts, so the provider keys are read from
 /// the same env map. [`MONOLITH_OVERRIDEABLE_ENV`] appends [`MAIL_OVERRIDEABLE_ENV`] to
 /// this at compile time, so the mail keys themselves are written out exactly once.
-const MONOLITH_BASE_ENV: &[&str; 18] = &[
+const MONOLITH_BASE_ENV: &[&str; 23] = &[
     "APIKEYS_DEV_SEED", "ACCOUNTS_OPEN_REGISTRATION", "ACCOUNTS_COOKIE_SECURE",
     "INVENTORY_DEV_GRANT", "WALLET_DEV_SEED",
     "ADMIN_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS", "NOTIFICATIONS_RETENTION_DAYS",
     "EPIC_CLIENT_ID", "EPIC_JWKS_URL", "EPIC_ISSUER_PREFIX", "EPIC_CLIENT_SECRET",
     "EPIC_REDIRECT_URI", "EPIC_AUTHORIZE_URL", "EPIC_TOKEN_URL",
-    "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL", "ADMIN_DEPLOYMENT_NAME",
+    "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL", "GOOGLE_CLIENT_SECRET", "GOOGLE_OAUTH_CLIENT_ID",
+    "GOOGLE_REDIRECT_URI", "GOOGLE_AUTHORIZE_URL", "GOOGLE_TOKEN_URL", "ADMIN_DEPLOYMENT_NAME",
 ];
 
-/// Concatenates [`MONOLITH_BASE_ENV`] (18 keys) and [`MAIL_OVERRIDEABLE_ENV`] (10 keys)
+/// Concatenates [`MONOLITH_BASE_ENV`] (23 keys) and [`MAIL_OVERRIDEABLE_ENV`] (10 keys)
 /// at compile time into [`MONOLITH_OVERRIDEABLE_ENV_ARR`] — const generics cannot
 /// express `N + M` as an array length on stable Rust (no `generic_const_exprs`), so this
 /// is monomorphic to the two callers' concrete sizes rather than generic; a length
 /// mismatch at either input is a compile error here, never a silent truncation.
-const fn concat_env_18_10(a: &[&'static str; 18], b: &[&'static str; 10]) -> [&'static str; 28] {
-    let mut out = [""; 28];
+const fn concat_env_23_10(a: &[&'static str; 23], b: &[&'static str; 10]) -> [&'static str; 33] {
+    let mut out = [""; 33];
     let mut i = 0;
-    while i < 18 {
+    while i < 23 {
         out[i] = a[i];
         i += 1;
     }
     let mut j = 0;
     while j < 10 {
-        out[18 + j] = b[j];
+        out[23 + j] = b[j];
         j += 1;
     }
     out
 }
 
-const MONOLITH_OVERRIDEABLE_ENV_ARR: [&str; 28] = concat_env_18_10(MONOLITH_BASE_ENV, MAIL_OVERRIDEABLE_ENV);
+const MONOLITH_OVERRIDEABLE_ENV_ARR: [&str; 33] = concat_env_23_10(MONOLITH_BASE_ENV, MAIL_OVERRIDEABLE_ENV);
 const MONOLITH_OVERRIDEABLE_ENV: &[&str] = &MONOLITH_OVERRIDEABLE_ENV_ARR;
 
 /// Provider keys the `Proof` overlay CLEARS before pinning its own. `google` is the
 /// split-proof fleet's deliberately unconfigured provider: it is the only way to execute
 /// the `KnownButUnconfigured` 503 arm that separates "no such provider" (400) from "not
 /// configured here" (503), so an ambient `GOOGLE_CLIENT_IDS` would silently delete an
-/// assertion rather than fail one.
-const PROOF_UNCONFIGURED_PROVIDER_ENV: &[&str] = &["GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL"];
+/// assertion rather than fail one. Every allowlisted `GOOGLE_*` key is cleared: any one of
+/// them present makes accounts parse google as configured.
+const PROOF_UNCONFIGURED_PROVIDER_ENV: &[&str] = &[
+    "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL", "GOOGLE_CLIENT_SECRET", "GOOGLE_OAUTH_CLIENT_ID",
+    "GOOGLE_REDIRECT_URI", "GOOGLE_AUTHORIZE_URL", "GOOGLE_TOKEN_URL",
+];
 
 /// The `MAIL_SMTP_*` group the `Proof` overlay CLEARS from `mail`'s OWN env (never
 /// `accounts.env` — a distinct list from [`PROOF_UNCONFIGURED_PROVIDER_ENV`], whose

@@ -248,6 +248,11 @@ fn accounts() -> Entry {
                         bad_value: ",",
                         expect: "invalid GOOGLE_CLIENT_IDS",
                     },
+                    EnvCase {
+                        var: "GOOGLE_AUTHORIZE_URL",
+                        bad_value: "hunter2",
+                        expect: "invalid GOOGLE_AUTHORIZE_URL",
+                    },
                 ])),
             ),
             (

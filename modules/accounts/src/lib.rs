@@ -1687,6 +1687,13 @@ impl Module for Accounts {
                 aud = %google.client_ids.join(","),
                 "google provider enabled"
             );
+            if let Some(oauth) = &google.oauth {
+                tracing::info!(
+                    redirect = %oauth.client.redirect_uri,
+                    client = %oauth.client.client_id,
+                    "google OAuth configured"
+                );
+            }
         }
         svc.providers
             .set(Arc::new(config.providers(&svc.store.pool)))

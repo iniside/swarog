@@ -2,15 +2,8 @@
 //! against the live database. A child of `tests` so it reuses that module's helpers.
 
 use super::*;
-use crate::oauth_flow::{ClientConfig, Intent, OAuthFlow, ProviderSpec};
-
-static GOOGLE_SPEC: ProviderSpec = ProviderSpec {
-    name: crate::providers::GOOGLE,
-    scope: "openid",
-    callback_path: "/accounts/google/callback",
-    error_key: "google",
-    display_prefix: "google",
-};
+use crate::oauth_flow::{ClientConfig, Intent, OAuthFlow};
+use crate::providers::GOOGLE_SPEC;
 
 fn google_flow(pool: PgPool) -> OAuthFlow {
     let verifier = Arc::new(
@@ -24,7 +17,7 @@ fn google_flow(pool: PgPool) -> OAuthFlow {
     let client = ClientConfig {
         client_id: "cid".into(),
         client_secret: "sec".into(),
-        redirect_uri: "http://localhost/accounts/google/callback".into(),
+        redirect_uri: format!("http://localhost{}", GOOGLE_SPEC.callback_path),
         authorize_url: "http://localhost/authorize".into(),
         token_url: "http://localhost/token".into(),
     };

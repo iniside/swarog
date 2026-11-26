@@ -456,6 +456,173 @@ fn reject_set_but_empty_google_var() {
     assert!(msg.contains("set but empty"), "message did not describe the empty-value rule: {msg}");
 }
 
+#[test]
+fn google_without_a_client_secret_has_no_browser_flow() {
+    let cfg = ProviderConfig::from_vars(&vars(&[("GOOGLE_CLIENT_IDS", "a")])).unwrap();
+    assert!(cfg.google.expect("google present").oauth.is_none());
+}
+
+#[test]
+fn google_client_secret_enables_the_flow_on_the_documented_defaults() {
+    let cfg = ProviderConfig::from_vars(&vars(&[
+        ("GOOGLE_CLIENT_IDS", "web,ios"),
+        ("GOOGLE_CLIENT_SECRET", "shh"),
+        ("GOOGLE_OAUTH_CLIENT_ID", "ios"),
+    ]))
+    .unwrap();
+    let google = cfg.google.expect("google present");
+    let oauth = google.oauth.expect("client secret set => oauth present");
+    assert_eq!(oauth.client.client_id, "ios");
+    assert_eq!(oauth.client.client_secret, "shh");
+    assert_eq!(oauth.client.redirect_uri, "http://localhost:8080/accounts/oidc/google/callback");
+    assert_eq!(oauth.client.authorize_url, "https://accounts.google.com/o/oauth2/v2/auth");
+    assert_eq!(oauth.client.token_url, "https://oauth2.googleapis.com/token");
+    assert_eq!(google.client_ids, vec!["web".to_string(), "ios".to_string()]);
+}
+
+#[test]
+fn google_flow_accepts_https_and_loopback_http_endpoints() {
+    for (redirect, authorize, token) in [
+        (
+            "https://game.example/accounts/oidc/google/callback",
+            "https://idp.example/auth",
+            "https://idp.example/token",
+        ),
+        (
+            "http://127.0.0.1:8082/accounts/oidc/google/callback",
+            "http://localhost:9000/auth",
+            "http://127.0.0.1:1/token",
+        ),
+    ] {
+        let cfg = ProviderConfig::from_vars(&vars(&[
+            ("GOOGLE_CLIENT_IDS", "a"),
+            ("GOOGLE_CLIENT_SECRET", "shh"),
+            ("GOOGLE_OAUTH_CLIENT_ID", "a"),
+            ("GOOGLE_REDIRECT_URI", redirect),
+            ("GOOGLE_AUTHORIZE_URL", authorize),
+            ("GOOGLE_TOKEN_URL", token),
+        ]))
+        .unwrap();
+        let oauth = cfg.google.unwrap().oauth.expect("client secret set => oauth present");
+        assert_eq!(oauth.client.redirect_uri, redirect);
+        assert_eq!(oauth.client.authorize_url, authorize);
+        assert_eq!(oauth.client.token_url, token);
+    }
+}
+
+#[test]
+fn reject_google_oauth_var_without_client_secret() {
+    for (key, value) in [
+        ("GOOGLE_OAUTH_CLIENT_ID", "a"),
+        ("GOOGLE_REDIRECT_URI", "https://game.example/accounts/oidc/google/callback"),
+        ("GOOGLE_AUTHORIZE_URL", "https://idp.example/auth"),
+        ("GOOGLE_TOKEN_URL", "https://idp.example/token"),
+    ] {
+        let msg = err_msg(&[("GOOGLE_CLIENT_IDS", "a"), (key, value)]);
+        assert!(
+            msg.contains(&format!("{key} is set but GOOGLE_CLIENT_SECRET is not")),
+            "{key}: message did not describe the missing-secret rule: {msg}"
+        );
+    }
+}
+
+#[test]
+fn reject_google_client_secret_without_oauth_client_id() {
+    let msg = err_msg(&[("GOOGLE_CLIENT_IDS", "a"), ("GOOGLE_CLIENT_SECRET", "shh")]);
+    assert!(
+        msg.contains("GOOGLE_CLIENT_SECRET is set but GOOGLE_OAUTH_CLIENT_ID is not"),
+        "message did not describe the missing-client-id rule: {msg}"
+    );
+}
+
+#[test]
+fn reject_google_oauth_client_id_outside_client_ids() {
+    let msg = err_msg(&[
+        ("GOOGLE_CLIENT_IDS", "web,ios"),
+        ("GOOGLE_CLIENT_SECRET", "shh"),
+        ("GOOGLE_OAUTH_CLIENT_ID", "android"),
+    ]);
+    assert!(
+        msg.contains("invalid GOOGLE_OAUTH_CLIENT_ID") && msg.contains("one of GOOGLE_CLIENT_IDS"),
+        "message did not describe the membership rule: {msg}"
+    );
+}
+
+#[test]
+fn reject_google_redirect_uri_wrong_path() {
+    for path in ["/accounts/epic/callback", "/accounts/google/callback", "/accounts/oidc/google/callback/"] {
+        let msg = err_msg(&[
+            ("GOOGLE_CLIENT_IDS", "a"),
+            ("GOOGLE_CLIENT_SECRET", "shh"),
+            ("GOOGLE_OAUTH_CLIENT_ID", "a"),
+            ("GOOGLE_REDIRECT_URI", &format!("https://game.example{path}")),
+        ]);
+        assert!(
+            msg.contains("invalid GOOGLE_REDIRECT_URI: path must be /accounts/oidc/google/callback"),
+            "{path}: message did not describe the path rule: {msg}"
+        );
+    }
+}
+
+#[test]
+fn reject_epic_redirect_uri_on_the_google_callback_path() {
+    let msg = err_msg(&[
+        ("EPIC_CLIENT_ID", "client-1"),
+        ("EPIC_REDIRECT_URI", "https://game.example/accounts/oidc/google/callback"),
+    ]);
+    assert!(
+        msg.contains("invalid EPIC_REDIRECT_URI: path must be /accounts/epic/callback"),
+        "message did not describe the path rule: {msg}"
+    );
+}
+
+#[test]
+fn reject_set_but_empty_google_oauth_vars() {
+    for key in [
+        "GOOGLE_CLIENT_SECRET",
+        "GOOGLE_OAUTH_CLIENT_ID",
+        "GOOGLE_REDIRECT_URI",
+        "GOOGLE_AUTHORIZE_URL",
+        "GOOGLE_TOKEN_URL",
+    ] {
+        let msg = err_msg(&[("GOOGLE_CLIENT_IDS", "a"), (key, "")]);
+        assert!(
+            msg.contains(&format!("invalid {key}: set but empty")),
+            "{key}: message did not describe the empty-value rule: {msg}"
+        );
+    }
+}
+
+#[test]
+fn reject_google_http_endpoint_off_loopback() {
+    for (key, value) in [
+        ("GOOGLE_REDIRECT_URI", "http://game.example/accounts/oidc/google/callback"),
+        ("GOOGLE_AUTHORIZE_URL", "http://idp.example/auth"),
+        ("GOOGLE_TOKEN_URL", "http://idp.example/token"),
+    ] {
+        let msg = err_msg(&[
+            ("GOOGLE_CLIENT_IDS", "a"),
+            ("GOOGLE_CLIENT_SECRET", "shh"),
+            ("GOOGLE_OAUTH_CLIENT_ID", "a"),
+            (key, value),
+        ]);
+        assert!(
+            msg.contains(&format!("invalid {key}: HTTP is allowed only")),
+            "{key}: message did not describe the loopback rule: {msg}"
+        );
+    }
+}
+
+/// The endpoints are validated before the cross-field checks, so a malformed one is
+/// reported on its own even when nothing else about google is set.
+#[test]
+fn malformed_google_endpoint_fails_on_its_own_rule_without_client_ids_or_secret() {
+    for key in ["GOOGLE_REDIRECT_URI", "GOOGLE_AUTHORIZE_URL", "GOOGLE_TOKEN_URL"] {
+        let msg = err_msg(&[(key, "hunter2")]);
+        assert!(msg.contains(&format!("invalid {key}")), "{key}: message did not name the var: {msg}");
+    }
+}
+
 /// Full control over `iss`/`aud`, unlike `token_with_kid` above which always
 /// appends `/x` to the issuer — Google's issuer is matched EXACTLY, so the
 /// token here must carry the real issuer spelling byte-for-byte.

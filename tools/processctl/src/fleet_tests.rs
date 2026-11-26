@@ -246,6 +246,40 @@ fn proof_gateway_rate_limit_survives_an_ambient_override() {
     );
 }
 
+const GOOGLE_ENV: [&str; 7] = [
+    "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL", "GOOGLE_CLIENT_SECRET", "GOOGLE_OAUTH_CLIENT_ID",
+    "GOOGLE_REDIRECT_URI", "GOOGLE_AUTHORIZE_URL", "GOOGLE_TOKEN_URL",
+];
+
+fn ambient_google() -> EnvironmentSnapshot {
+    EnvironmentSnapshot::from_values(GOOGLE_ENV.map(|key| (key.into(), format!("ambient-{key}"))))
+}
+
+#[test]
+fn development_fleet_passes_every_google_key_to_accounts_in_both_topologies() {
+    let environment = ambient_google();
+    let fleet = game_backend_fleet_with_environment(&inputs(), FleetFlavor::Development, &environment);
+    let accounts = &fleet.service("accounts-svc").unwrap().env;
+    let monolith = game_backend_monolith(&inputs(), FleetFlavor::Development, &environment);
+    for key in GOOGLE_ENV {
+        let expected = format!("ambient-{key}");
+        assert_eq!(accounts.get(key), Some(&expected), "accounts-svc {key}");
+        assert_eq!(monolith.env.get(key), Some(&expected), "monolith {key}");
+    }
+}
+
+#[test]
+fn proof_fleet_clears_every_ambient_google_key_in_both_topologies() {
+    let environment = ambient_google();
+    let fleet = game_backend_fleet_with_environment(&inputs(), FleetFlavor::Proof, &environment);
+    let accounts = &fleet.service("accounts-svc").unwrap().env;
+    let monolith = game_backend_monolith(&inputs(), FleetFlavor::Proof, &environment);
+    for key in GOOGLE_ENV {
+        assert!(!accounts.contains_key(key), "accounts-svc kept ambient {key}");
+        assert!(!monolith.env.contains_key(key), "monolith kept ambient {key}");
+    }
+}
+
 #[test]
 fn disk_drift_compares_names_not_order() {
     let fleet = game_backend_fleet(&inputs(), FleetFlavor::Proof);

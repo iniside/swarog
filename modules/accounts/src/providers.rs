@@ -19,6 +19,7 @@ use std::sync::{Arc, LazyLock};
 use async_trait::async_trait;
 
 use crate::guest::guest_credentials;
+use crate::oauth_flow::{ClientConfig, ProviderSpec};
 use crate::oidc::{short_id, IssuerMatch, OidcVerifier};
 use crate::store::Store;
 
@@ -163,9 +164,7 @@ impl EpicOAuthConfig {
         authorize_url: String,
         token_url: String,
     ) -> anyhow::Result<EpicOAuthConfig> {
-        check_redirect_uri("EPIC_REDIRECT_URI", &redirect_uri, crate::epic_oauth::SPEC.callback_path)?;
-        check_endpoint("EPIC_AUTHORIZE_URL", &authorize_url)?;
-        check_endpoint("EPIC_TOKEN_URL", &token_url)?;
+        check_oauth_endpoints("EPIC", &crate::epic_oauth::SPEC, &redirect_uri, &authorize_url, &token_url)?;
         Ok(EpicOAuthConfig {
             client_secret,
             redirect_uri,
@@ -182,6 +181,39 @@ pub(crate) struct GoogleConfig {
     pub(crate) client_ids: Vec<String>,
     pub(crate) jwks_url: String,
     pub(crate) verifier: Arc<OidcVerifier>,
+    /// `Some` iff `GOOGLE_CLIENT_SECRET` enables the browser sign-in flow, which reuses
+    /// [`GoogleConfig::verifier`]. The endpoint VALUES are validated either way.
+    pub(crate) oauth: Option<GoogleOAuthConfig>,
+}
+
+/// The validated browser-flow half of Google's configuration. Its client id is
+/// `GOOGLE_OAUTH_CLIENT_ID`, one of the verifier's `GOOGLE_CLIENT_IDS` audiences.
+pub(crate) struct GoogleOAuthConfig {
+    pub(crate) client: ClientConfig,
+}
+
+impl GoogleOAuthConfig {
+    /// Validates the endpoints only, under the same rule as [`EpicOAuthConfig::new`]; the
+    /// secret and the client id are checked against the rest of the configuration by
+    /// `google_from_vars`.
+    pub(crate) fn new(
+        client_id: String,
+        client_secret: String,
+        redirect_uri: String,
+        authorize_url: String,
+        token_url: String,
+    ) -> anyhow::Result<GoogleOAuthConfig> {
+        check_oauth_endpoints("GOOGLE", &GOOGLE_SPEC, &redirect_uri, &authorize_url, &token_url)?;
+        Ok(GoogleOAuthConfig {
+            client: ClientConfig {
+                client_id,
+                client_secret,
+                redirect_uri,
+                authorize_url,
+                token_url,
+            },
+        })
+    }
 }
 
 /// The validated provider configuration: one entry per PRESENT provider. An absent
@@ -302,7 +334,6 @@ const EPIC_OAUTH_VARS: &[&str] = &["EPIC_REDIRECT_URI", "EPIC_AUTHORIZE_URL", "E
 const EPIC_DEFAULT_JWKS_URL: &str =
     "https://api.epicgames.dev/epic/oauth/v1/.well-known/jwks.json";
 const EPIC_DEFAULT_ISSUER_PREFIX: &str = "https://api.epicgames.dev/epic/oauth/v1";
-const EPIC_DEFAULT_REDIRECT_ORIGIN: &str = "http://localhost:8080";
 const EPIC_DEFAULT_AUTHORIZE_URL: &str = "https://www.epicgames.com/id/authorize";
 const EPIC_DEFAULT_TOKEN_URL: &str = "https://api.epicgames.dev/epic/oauth/v1/token";
 
@@ -335,7 +366,7 @@ fn epic_from_vars(vars: &BTreeMap<String, String>) -> anyhow::Result<Option<Epic
         var_or(
             vars,
             "EPIC_REDIRECT_URI",
-            &format!("{EPIC_DEFAULT_REDIRECT_ORIGIN}{}", crate::epic_oauth::SPEC.callback_path),
+            &format!("{DEFAULT_REDIRECT_ORIGIN}{}", crate::epic_oauth::SPEC.callback_path),
         ),
         var_or(vars, "EPIC_AUTHORIZE_URL", EPIC_DEFAULT_AUTHORIZE_URL),
         var_or(vars, "EPIC_TOKEN_URL", EPIC_DEFAULT_TOKEN_URL),
@@ -368,11 +399,42 @@ fn epic_from_vars(vars: &BTreeMap<String, String>) -> anyhow::Result<Option<Epic
     }))
 }
 
+/// The origin every provider's default redirect URI is built on: the local front.
+const DEFAULT_REDIRECT_ORIGIN: &str = "http://localhost:8080";
+
+/// Google's browser sign-in flow. Only `sub` is used, so the scope is `openid` alone.
+pub(crate) static GOOGLE_SPEC: ProviderSpec = ProviderSpec {
+    name: GOOGLE,
+    scope: "openid",
+    callback_path: "/accounts/oidc/google/callback",
+    error_key: "google",
+    display_prefix: "google",
+};
+
 /// Google's whole environment surface. Presence of ANY of these means the operator is
-/// configuring google.
-const GOOGLE_VARS: &[&str] = &["GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL"];
+/// configuring google, including the OAuth keys.
+const GOOGLE_VARS: &[&str] = &[
+    "GOOGLE_CLIENT_IDS",
+    "GOOGLE_JWKS_URL",
+    "GOOGLE_CLIENT_SECRET",
+    "GOOGLE_OAUTH_CLIENT_ID",
+    "GOOGLE_REDIRECT_URI",
+    "GOOGLE_AUTHORIZE_URL",
+    "GOOGLE_TOKEN_URL",
+];
+
+/// The subset that configures the browser flow but cannot enable it without
+/// `GOOGLE_CLIENT_SECRET`.
+const GOOGLE_OAUTH_VARS: &[&str] = &[
+    "GOOGLE_OAUTH_CLIENT_ID",
+    "GOOGLE_REDIRECT_URI",
+    "GOOGLE_AUTHORIZE_URL",
+    "GOOGLE_TOKEN_URL",
+];
 
 const GOOGLE_DEFAULT_JWKS_URL: &str = "https://www.googleapis.com/oauth2/v3/certs";
+const GOOGLE_DEFAULT_AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_DEFAULT_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 
 /// Google's issuer spellings, both of which appear in real id_tokens. NOT an operator
 /// knob: they are fixed protocol facts, and an env-widened issuer set would loosen the
@@ -392,6 +454,18 @@ fn google_from_vars(vars: &BTreeMap<String, String>) -> anyhow::Result<Option<Go
     // Per-FIELD validation FIRST, cross-field completeness second (epic's order).
     let jwks_url = var_or(vars, "GOOGLE_JWKS_URL", GOOGLE_DEFAULT_JWKS_URL);
     check_endpoint("GOOGLE_JWKS_URL", &jwks_url)?;
+    let oauth = GoogleOAuthConfig::new(
+        var_or(vars, "GOOGLE_OAUTH_CLIENT_ID", ""),
+        var_or(vars, "GOOGLE_CLIENT_SECRET", ""),
+        var_or(
+            vars,
+            "GOOGLE_REDIRECT_URI",
+            &format!("{DEFAULT_REDIRECT_ORIGIN}{}", GOOGLE_SPEC.callback_path),
+        ),
+        var_or(vars, "GOOGLE_AUTHORIZE_URL", GOOGLE_DEFAULT_AUTHORIZE_URL),
+        var_or(vars, "GOOGLE_TOKEN_URL", GOOGLE_DEFAULT_TOKEN_URL),
+    )?;
+
     let Some(raw_client_ids) = vars.get("GOOGLE_CLIENT_IDS") else {
         anyhow::bail!(
             "{present} is set but GOOGLE_CLIENT_IDS is not — the google provider needs its \
@@ -399,6 +473,28 @@ fn google_from_vars(vars: &BTreeMap<String, String>) -> anyhow::Result<Option<Go
         );
     };
     let client_ids = split_list("GOOGLE_CLIENT_IDS", raw_client_ids)?;
+    let oauth = if oauth.client.client_secret.is_empty() {
+        if let Some(key) = GOOGLE_OAUTH_VARS.iter().find(|key| vars.contains_key(**key)) {
+            anyhow::bail!(
+                "{key} is set but GOOGLE_CLIENT_SECRET is not — the google web OAuth flow needs \
+                 the confidential client secret"
+            );
+        }
+        None
+    } else {
+        if oauth.client.client_id.is_empty() {
+            anyhow::bail!(
+                "GOOGLE_CLIENT_SECRET is set but GOOGLE_OAUTH_CLIENT_ID is not — the google web \
+                 OAuth flow needs the client id it signs in as"
+            );
+        }
+        // The flow's id_token is checked by the shared verifier, whose audiences are
+        // GOOGLE_CLIENT_IDS: any other client id would fail every sign-in.
+        if !client_ids.contains(&oauth.client.client_id) {
+            anyhow::bail!("invalid GOOGLE_OAUTH_CLIENT_ID: it must be one of GOOGLE_CLIENT_IDS");
+        }
+        Some(oauth)
+    };
 
     let verifier = Arc::new(OidcVerifier::new(
         &jwks_url,
@@ -409,6 +505,7 @@ fn google_from_vars(vars: &BTreeMap<String, String>) -> anyhow::Result<Option<Go
         client_ids,
         jwks_url,
         verifier,
+        oauth,
     }))
 }
 
@@ -466,6 +563,20 @@ fn checked_endpoint(key: &str, raw: &str) -> anyhow::Result<url::Url> {
         }
     }
     Ok(url)
+}
+
+/// The browser-flow endpoint rule every provider's OAuth configuration is built through.
+/// `family` is the env prefix (`EPIC`) the offending key is reported under.
+fn check_oauth_endpoints(
+    family: &str,
+    spec: &ProviderSpec,
+    redirect_uri: &str,
+    authorize_url: &str,
+    token_url: &str,
+) -> anyhow::Result<()> {
+    check_redirect_uri(&format!("{family}_REDIRECT_URI"), redirect_uri, spec.callback_path)?;
+    check_endpoint(&format!("{family}_AUTHORIZE_URL"), authorize_url)?;
+    check_endpoint(&format!("{family}_TOKEN_URL"), token_url)
 }
 
 /// The OAuth redirect URI: the endpoint rule plus the two constraints specific to a
