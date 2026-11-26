@@ -4,7 +4,18 @@ Last updated: 2026-11-26
 
 ## In progress
 
-_None._
+- [ ] **Sign-in limiter test helpers repeat 5.0/20**
+  modules/accounts/src/tests.rs:1850, modules/accounts/src/tests/hosted_login.rs:24 and
+  modules/accounts/src/tests/epic_browser.rs:60 should use `accountsapi::LOGIN_LIMIT_PER_SEC` and
+  `accountsapi::LOGIN_LIMIT_BURST`.
+  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
+  Being fixed by docs/plans/2026-11-26-1440-accounts-browser-fixes-plan.md Step 3.
+- [ ] **Proof redirect URIs repeat the gateway port by hand**
+  The split proof's `http://127.0.0.1:8082/...` callback URIs are written out at
+  tools/processctl/src/fleet.rs:999 and :1017, tools/processctl/src/fleet_tests.rs:335 and :374, and
+  tools/splitproof/src/accounts_browser_checks.rs:73, apart from the gateway port set at fleet.rs:863.
+  Source: docs/plans/2026-11-26-1352-oauth-drift-fixes-plan.md D5, owner answer ("ok 1,2 zrobic reszta do todo", 2026-11-26).
+  Being fixed by docs/plans/2026-11-26-1440-accounts-browser-fixes-plan.md Step 4.
 
 ## Open
 
@@ -48,11 +59,6 @@ _None._
 
 ### Known limits (google-browser-login step 4)
 
-- [ ] **Proof redirect URIs repeat the gateway port by hand**
-  The split proof's `http://127.0.0.1:8082/...` callback URIs are written out at
-  tools/processctl/src/fleet.rs:999 and :1017, tools/processctl/src/fleet_tests.rs:335 and :374, and
-  tools/splitproof/src/accounts_browser_checks.rs:73, apart from the gateway port set at fleet.rs:863.
-  Source: docs/plans/2026-11-26-1352-oauth-drift-fixes-plan.md D5, owner answer ("ok 1,2 zrobic reszta do todo", 2026-11-26).
 - [ ] **The browser callback's non-browser-intent 500 has no test**
   `browser_router` answers 500 for a state row with a non-browser intent
   (modules/accounts/src/oauth_flow.rs:332-333); no test reaches that arm.
@@ -65,9 +71,4 @@ _None._
 ### Known limits (accounts-browser-login step 8)
 
 - [ ] **The old `/accounts/epic` binding cookie can coexist for up to 10 minutes**
-  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
-- [ ] **Sign-in limiter test helpers repeat 5.0/20**
-  modules/accounts/src/tests.rs:1850, modules/accounts/src/tests/hosted_login.rs:24 and
-  modules/accounts/src/tests/epic_browser.rs:60 should use `accountsapi::LOGIN_LIMIT_PER_SEC` and
-  `accountsapi::LOGIN_LIMIT_BURST`.
   Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
