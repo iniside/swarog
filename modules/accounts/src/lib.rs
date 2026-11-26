@@ -1528,6 +1528,12 @@ impl Accounts {
         accounts
     }
 
+    /// The dev seed switch `migrate` passes on: what `init` read from `ACCOUNTS_DEV_SEED`, off
+    /// when `init` never ran.
+    fn dev_seed_on(&self) -> bool {
+        self.dev_seed.get().copied().unwrap_or(false)
+    }
+
     /// Creates this module's own schema and guarantees an active signing key that opens
     /// under the KEK. Idempotent. The KEK is the one register parsed, else `kek_env` (the value
     /// of `ACCOUNTS_SIGNING_KEK`, which must then be set), and it is resolved BEFORE the pool is
@@ -1621,7 +1627,7 @@ impl Accounts {
         }
         refuse_stale_oauth_states(pool, "accounts").await?;
         signing_keys::migrate_signing_keys(pool, SIGNING_KEYS_SCHEMA, &kek).await?;
-        clients::migrate_dev_seed(self.dev_seed.get().copied().unwrap_or(false), pool).await?;
+        clients::migrate_dev_seed(self.dev_seed_on(), pool).await?;
         Ok(())
     }
 

@@ -3,10 +3,17 @@
 use std::ffi::OsString;
 
 use accountsapi::{grant_types, DEV_GAME_CLIENT_ID, MAX_CLIENT_ID_BYTES, SWAROG_AUDIENCE};
+use lifecycle::Module as _;
 use testdb::test_pool;
 
 use super::{canonical_grants, dev_seed_from, migrate_dev_seed, new_client_id, seed_dev_client};
-use crate::tests::wired;
+use crate::tests::{dev_kek, wired, GHOST_PLAYER};
+use crate::Accounts;
+
+/// Held by every test here that touches the `dev-game` row, after `wired` (which takes
+/// `GHOST_PLAYER` for read): the migrate test deletes and reseeds it committed, which a
+/// rolled-back test would otherwise see mid-transaction.
+static DEV_CLIENT_ROW: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[test]
 fn dev_seed_is_on_only_for_an_explicitly_truthy_value() {
@@ -17,6 +24,17 @@ fn dev_seed_is_on_only_for_an_explicitly_truthy_value() {
     for on in ["1", "true", "TRUE", "on", "On"] {
         assert!(dev_seed_from(Some(OsString::from(on))), "{on:?} is on");
     }
+}
+
+#[test]
+fn migrate_passes_the_switch_init_read_and_off_when_init_never_ran() {
+    assert!(!Accounts::new().dev_seed_on(), "no init is off");
+    let off = Accounts::new();
+    off.dev_seed.set(false).unwrap();
+    assert!(!off.dev_seed_on(), "init read off");
+    let on = Accounts::new();
+    on.dev_seed.set(true).unwrap();
+    assert!(on.dev_seed_on(), "init read on");
 }
 
 #[test]
@@ -55,6 +73,7 @@ async fn the_dev_seed_inserts_the_dev_client_once_and_keeps_an_edited_row() {
     let Some(pool) = test_pool().await else { return };
     wired(&pool).await;
     let all: Vec<String> = grant_types::ALL.map(String::from).to_vec();
+    let _row = DEV_CLIENT_ROW.lock().await;
     let mut tx = pool.begin().await.unwrap();
     sqlx::query("DELETE FROM accounts.oidc_clients WHERE client_id = $1")
         .bind(DEV_GAME_CLIENT_ID)
@@ -84,6 +103,7 @@ async fn the_dev_seed_inserts_the_dev_client_once_and_keeps_an_edited_row() {
 async fn the_dev_seed_switch_inserts_the_dev_client_only_when_on() {
     let Some(pool) = test_pool().await else { return };
     wired(&pool).await;
+    let _row = DEV_CLIENT_ROW.lock().await;
     let mut tx = pool.begin().await.unwrap();
     sqlx::query("DELETE FROM accounts.oidc_clients WHERE client_id = $1")
         .bind(DEV_GAME_CLIENT_ID)
@@ -97,4 +117,28 @@ async fn the_dev_seed_switch_inserts_the_dev_client_only_when_on() {
     migrate_dev_seed(true, &mut *tx).await.unwrap();
     assert_eq!(dev_client(&mut tx).await.len(), 1, "the switch on seeds the dev client");
     tx.rollback().await.unwrap();
+}
+
+/// The real `migrate` of an `Accounts` whose `init` read the switch on reseeds a deleted dev
+/// client, which pins the value at the shipping call site. The delete is committed because
+/// `migrate` runs on its own connection; the row stays afterwards, as on every dev fleet. No
+/// off-direction twin: it would have to leave the shared database without the row.
+#[tokio::test]
+async fn migrate_with_the_switch_on_reseeds_a_deleted_dev_client() {
+    let Some(pool) = test_pool().await else { return };
+    let (ctx, _svc) = wired(&pool).await;
+    let _no_ghost = GHOST_PLAYER.write().await;
+    let _row = DEV_CLIENT_ROW.lock().await;
+    let mut conn = pool.acquire().await.unwrap();
+    sqlx::query("DELETE FROM accounts.oidc_clients WHERE client_id = $1")
+        .bind(DEV_GAME_CLIENT_ID)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    assert!(dev_client(&mut conn).await.is_empty());
+
+    let accounts = Accounts::with_signing_kek(dev_kek());
+    accounts.dev_seed.set(true).unwrap();
+    accounts.migrate(&ctx).await.unwrap();
+    assert_eq!(dev_client(&mut conn).await.len(), 1, "migrate with the switch on seeds the dev client");
 }
