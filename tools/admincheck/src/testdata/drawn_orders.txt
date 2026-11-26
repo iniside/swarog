@@ -58,6 +58,7 @@ row_action apirole | apikeys | role.edit | 10
 row_action apirole | apikeys | role.delete | 20
 row_action friendship | friends | friendship.remove | 0
 row_action holding | inventory | holding.revoke | 0
+row_action player | accounts | reset-password | 10
 row_action player | accounts | suspend | 20
 row_action player | accounts | delete-account | 30
 row_action player | wallet | currency.grant | 40
