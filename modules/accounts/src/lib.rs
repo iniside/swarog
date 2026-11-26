@@ -1631,7 +1631,11 @@ impl Module for Accounts {
         }
         let trusted = httpmw::parse_cidrs(&std::env::var("TRUSTED_PROXY_CIDRS").unwrap_or_default())
             .map_err(|e| anyhow::anyhow!("accounts: parse TRUSTED_PROXY_CIDRS: {e}"))?;
-        let web_limiter = httpmw::IpLimiter::new("accounts_login", 5.0, 20);
+        let web_limiter = httpmw::IpLimiter::new(
+            "accounts_login",
+            accountsapi::LOGIN_LIMIT_PER_SEC,
+            accountsapi::LOGIN_LIMIT_BURST,
+        );
         self.web_limiter
             .set(web_limiter.clone())
             .map_err(|_| anyhow::anyhow!("accounts.init ran twice"))?;

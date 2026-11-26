@@ -126,6 +126,17 @@ pub const PROOF_MAIL_FROM: &str = "dev@localhost";
 /// harness can watch a lease expire inside its budget; Development keeps the module default.
 pub const PROOF_PARTY_LEASE_SECS: &str = "10";
 
+/// gateway-svc's front-door HTTP rate (tokens a second per client IP) that the `Proof`
+/// flavor pins as `RATE_LIMIT_RPS`, and that `tools/splitproof` reasons about when it
+/// waits for that bucket to refill between sign-in bursts. Equal to gateway-svc's own
+/// `with_rate_limit_default`, so the proof runs the production front door; pinned so
+/// neither an ambient `RATE_LIMIT_RPS` nor a changed default can move it under the harness.
+pub const PROOF_GATEWAY_RATE_LIMIT_RPS: f64 = 20.0;
+
+/// The burst of the front-door bucket [`PROOF_GATEWAY_RATE_LIMIT_RPS`] refills, pinned
+/// as `RATE_LIMIT_BURST` on the `Proof` gateway-svc.
+pub const PROOF_GATEWAY_RATE_LIMIT_BURST: u32 = 40;
+
 /// The port [`PROOF_OIDC_ISSUER`] names, for the harness to bind.
 pub fn proof_oidc_port() -> u16 {
     PROOF_OIDC_ISSUER
@@ -942,6 +953,12 @@ pub fn game_backend_fleet_with_environment(
             // `gateway::PRESENCE`, spelled out here because only the two front composition
             // roots may depend on the `gateway` crate (archcheck's single-front-door rule).
             gateway.env.insert("PUSH_PRESENCE".into(), "1".into());
+            gateway
+                .env
+                .insert("RATE_LIMIT_RPS".into(), PROOF_GATEWAY_RATE_LIMIT_RPS.to_string());
+            gateway
+                .env
+                .insert("RATE_LIMIT_BURST".into(), PROOF_GATEWAY_RATE_LIMIT_BURST.to_string());
             for key in PROOF_UNCONFIGURED_PROVIDER_ENV {
                 accounts.env.remove(*key);
             }

@@ -4,7 +4,7 @@ use crate::{
     check_pg_session_floor, game_backend_fleet, game_backend_fleet_with_environment,
     game_backend_monolith, EnvironmentSnapshot, FleetError, FleetFlavor, FleetInputs, FleetSpec,
     PgSessionCapacity, PoolBudget, ServiceSpec, HARNESS_RESERVE, PG_SESSION_BUDGET,
-    REQUIRED_MAX_CONNECTIONS,
+    PROOF_GATEWAY_RATE_LIMIT_BURST, PROOF_GATEWAY_RATE_LIMIT_RPS, REQUIRED_MAX_CONNECTIONS,
 };
 #[cfg(windows)]
 use crate::build_environment;
@@ -212,6 +212,17 @@ fn proof_overlay_is_explicit_and_name_lookup_is_stable() {
         Some("1")
     );
     assert!(!development.service("gateway-svc").unwrap().env.contains_key("PUSH_PRESENCE"));
+    // The front-door rate splitproof's sign-in bursts wait out is the one the Proof
+    // gateway-svc actually runs with, not gateway-svc's default restated.
+    let proof_gateway = &proof.service("gateway-svc").unwrap().env;
+    assert_eq!(
+        proof_gateway.get("RATE_LIMIT_RPS").map(String::as_str),
+        Some(PROOF_GATEWAY_RATE_LIMIT_RPS.to_string().as_str())
+    );
+    assert_eq!(
+        proof_gateway.get("RATE_LIMIT_BURST").map(String::as_str),
+        Some(PROOF_GATEWAY_RATE_LIMIT_BURST.to_string().as_str())
+    );
     assert!(matches!(proof.service("missing"), Err(FleetError::UnknownService(_))));
 }
 

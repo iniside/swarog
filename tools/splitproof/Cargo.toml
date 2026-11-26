@@ -55,6 +55,9 @@ partyapi = { workspace = true }
 # envelope from the contract crate, so a cap or schema change breaks this build instead of
 # leaving a restated copy to drift.
 controlplane = { workspace = true }
+# `accountsapi::LOGIN_LIMIT_PER_SEC`/`LOGIN_LIMIT_BURST` time the [BR*] sign-in bursts: the rate
+# accounts builds its limiter from, so a change to it moves the proof's budget with it.
+accountsapi = { workspace = true }
 
 # The fleet-liveness tests drive processctl's production spawn path, which on unix
 # re-execs `current_exe --__processctl-guardian-v1`; only a `harness = false`

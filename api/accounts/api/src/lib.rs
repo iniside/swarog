@@ -37,6 +37,17 @@ pub const MAX_HANDLE_BYTES: usize = MAX_DISPLAY_NAME_BYTES + 5;
 /// on the work a single batched lookup can ask of the store.
 pub const MAX_LOOKUP_IDS: usize = 256;
 
+/// The per-client-IP sign-in admission rate, in tokens a second: ONE bucket per client
+/// IP, shared by the hosted sign-in form and `POST /accounts/epic/start`. Accounts builds
+/// its limiter from this and [`LOGIN_LIMIT_BURST`]; a harness timing that bucket reads
+/// the same values instead of restating them.
+pub const LOGIN_LIMIT_PER_SEC: f64 = 5.0;
+
+/// The burst of the per-client-IP sign-in bucket [`LOGIN_LIMIT_PER_SEC`] refills: the
+/// sign-in attempts (hosted form and Epic start together) one client IP may make back
+/// to back before accounts refuses it.
+pub const LOGIN_LIMIT_BURST: u32 = 20;
+
 /// The result of a successful register/login/refresh: the caller's product-scoped
 /// `player_id`, the short-lived opaque bearer token minted for it, and the refresh
 /// token that renews it. The serde field names are the public HTTP response shape

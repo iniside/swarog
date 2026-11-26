@@ -17,9 +17,11 @@
 //! the Epic start draw from one bucket as accounts wires it.
 //!
 //! Timing rule: the run after a refusal (`B_REQUESTS` back to back) is timed from the refusal, and
-//! a run that took `B_REQUESTS / REFILL_PER_SEC` seconds or longer, or met any gateway 429, could
-//! have been served by tokens refilled into the bucket that refused. Such a run proves neither
-//! separate buckets nor a shared one, so [BR1], [BR2] and [BR3] fail it as INCONCLUSIVE, never pass.
+//! a run that took `B_REQUESTS / REFILL_PER_SEC` seconds or longer (`REFILL_PER_SEC` being
+//! `accountsapi::LOGIN_LIMIT_PER_SEC`, the rate accounts builds the bucket from), or met any
+//! gateway 429, could have been served by tokens refilled into the bucket that refused. Such a run
+//! proves neither separate buckets nor a shared one, so [BR1], [BR2] and [BR3] fail it as
+//! INCONCLUSIVE, never pass.
 //!
 //! Break runs (each a full splitproof run, then reverted):
 //! - `"/accounts/oidc"` dropped from gateway-svc's passthrough prefixes (`cmd/gateway-svc/src/addrs.rs`):
@@ -72,11 +74,20 @@ const EPIC_B: &str = "203.0.113.74";
 const SHARED: &str = "203.0.113.75";
 /// Client B's requests, each of which must pass the bucket client A drained.
 const B_REQUESTS: usize = 5;
-/// The tokens a second accounts' sign-in bucket refills (`modules/accounts/src/lib.rs`, `IpLimiter::new("accounts_login", 5.0, 20)`).
-const REFILL_PER_SEC: f64 = 5.0;
+/// The tokens a second accounts' sign-in bucket refills: the rate accounts builds its limiter from.
+const REFILL_PER_SEC: f64 = accountsapi::LOGIN_LIMIT_PER_SEC;
+/// Slack on top of the front-door bucket's refill-from-empty time, for request latency and timer
+/// granularity.
+const GATEWAY_REFILL_MARGIN: Duration = Duration::from_millis(500);
+
 /// Long enough for gateway-svc's front-door bucket, keyed on this harness's loopback peer, to refill
-/// from empty (`cmd/gateway-svc/src/main.rs`, `with_rate_limit_default(20.0, 40)`: 40 tokens at 20 a second).
-const GATEWAY_REFILL: Duration = Duration::from_millis(2500);
+/// from empty: its burst at its rate, as the Proof fleet pins them on gateway-svc
+/// (`processctl::PROOF_GATEWAY_RATE_LIMIT_BURST` / `PROOF_GATEWAY_RATE_LIMIT_RPS`), plus
+/// `GATEWAY_REFILL_MARGIN`.
+fn gateway_refill() -> Duration {
+    let from_empty = f64::from(processctl::PROOF_GATEWAY_RATE_LIMIT_BURST) / processctl::PROOF_GATEWAY_RATE_LIMIT_RPS;
+    Duration::from_secs_f64(from_empty) + GATEWAY_REFILL_MARGIN
+}
 
 pub(super) async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &reqwest::Client, tag: &str) -> Result<()> {
     if let Err(e) = sign_in_checks(ctx, pool, p, front, admin, tag).await {
@@ -347,11 +358,11 @@ async fn two_clients(build: impl Fn(&str) -> reqwest::RequestBuilder, a: &str, b
 /// Sends until accounts refuses (`refusal` in a 429's body; at most 100 requests): the requests
 /// accounts answered, whether it refused, and the gateway's own 429s met. A 429 without `refusal`
 /// is the gateway's front-door limiter, not accounts': that request is sent again after a short
-/// pause and is not counted as sent. It first waits `GATEWAY_REFILL`, so the drain and the timed run
-/// after it (about 26 requests) start on a full gateway bucket instead of the one the previous
+/// pause and is not counted as sent. It first waits `gateway_refill()`, so the drain and the timed run
+/// after it (`accountsapi::LOGIN_LIMIT_BURST` + 1 + `B_REQUESTS` requests) start on a full gateway bucket instead of the one the previous
 /// burst emptied; a run that still meets a gateway 429 fails as inconclusive.
 async fn drain(build: impl Fn() -> reqwest::RequestBuilder, refusal: &str) -> Result<(u32, bool, u32)> {
-    tokio::time::sleep(GATEWAY_REFILL).await;
+    tokio::time::sleep(gateway_refill()).await;
     let (mut sent, mut limited, mut gateway) = (0u32, false, 0u32);
     while sent < 100 && !limited {
         match met(build(), refusal).await? {
@@ -504,4 +515,29 @@ async fn browser_sessions(pool: &PgPool, pid: &str) -> Result<i64> {
         .fetch_one(pool)
         .await
         .context("count the player's browser sessions")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{gateway_refill, run_budget_secs, B_REQUESTS};
+
+    /// The [BR*] timely budget is the time accounts' own bucket needs to refill `B_REQUESTS`
+    /// tokens at the rate accounts builds it from, so a faster refill shrinks the budget instead of
+    /// letting a shared bucket pass as two.
+    #[test]
+    fn timely_budget_is_b_requests_at_the_accounts_sign_in_rate() {
+        assert_eq!(run_budget_secs(), B_REQUESTS as f64 / accountsapi::LOGIN_LIMIT_PER_SEC);
+    }
+
+    /// The pause before each drain covers the Proof gateway-svc's front-door bucket refilling
+    /// from empty, with at least half a second to spare.
+    #[test]
+    fn gateway_refill_covers_the_proof_front_door_refill_from_empty() {
+        let from_empty = Duration::from_secs_f64(
+            f64::from(processctl::PROOF_GATEWAY_RATE_LIMIT_BURST) / processctl::PROOF_GATEWAY_RATE_LIMIT_RPS,
+        );
+        assert!(gateway_refill() >= from_empty + Duration::from_millis(500), "{:?} vs {from_empty:?}", gateway_refill());
+    }
 }
