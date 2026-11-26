@@ -456,12 +456,14 @@ impl Service {
     /// Mints the hosted pages' browser session through the password identity `verified`
     /// matched, stamping it used, only while that identity still stores the verified hash
     /// (the bearer mint's check, [`Store::stamp_identity_used_tx`]). A refusal, or a player
-    /// deleted meanwhile, is the wrong-password 401. Lock order as
+    /// deleted meanwhile, is the wrong-password 401. The same commit ends the session whose
+    /// digest is `replaces`, so a refusal leaves it alive. Lock order as
     /// [`Service::issue_session_tx`]: the insert's foreign key takes the player row
-    /// before the stamp takes the identity.
+    /// before the stamp takes the identity, and the replaced session's row comes last.
     pub(crate) async fn issue_password_browser_session(
         &self,
         verified: &VerifiedPassword,
+        replaces: Option<&[u8]>,
     ) -> Result<NewBrowserSession, Error> {
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
         let Some(minted) = self
@@ -485,6 +487,12 @@ impl Service {
             .map_err(internal)?;
         if !stamped {
             return Err(stamp_refused(Some(&verified.hash)));
+        }
+        if let Some(old) = replaces {
+            self.store
+                .delete_browser_session_digest_tx(&mut tx, old)
+                .await
+                .map_err(internal)?;
         }
         tx.commit().await.map_err(internal)?;
         Ok(minted)

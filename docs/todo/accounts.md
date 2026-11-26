@@ -4,11 +4,7 @@ Last updated: 2026-11-26
 
 ## In progress
 
-- [ ] **`login_submit` deletes the old browser session outside the transaction**
-  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
-- [ ] **`browser_sign_in` and `login_submit` delete then create without one transaction**
-  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
-  Being fixed by docs/plans/2026-11-26-1440-accounts-browser-fixes-plan.md Step 1.
+_None._
 
 ## Open
 

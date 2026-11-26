@@ -38,9 +38,7 @@ pub(crate) fn digest(token: &str) -> Vec<u8> {
 }
 
 impl Store {
-    /// Mints a browser session for `player_id`. `None` when there is no such player,
-    /// including one deleted while this insert waited on its row: the foreign key check
-    /// then fails instead of leaving a session behind the deletion.
+    #[cfg(test)]
     pub async fn create_browser_session(
         &self,
         player_id: &str,
@@ -49,8 +47,9 @@ impl Store {
         self.create_browser_session_tx(&mut conn, player_id).await
     }
 
-    /// [`Store::create_browser_session`] on the caller's connection, so a password sign-in
-    /// commits it with the identity check ([`crate::Service::issue_password_browser_session`]).
+    /// Mints a browser session for `player_id` on the caller's connection. `None` when there
+    /// is no such player, including one deleted while this insert waited on its row: the
+    /// foreign key check then fails instead of leaving a session behind the deletion.
     pub async fn create_browser_session_tx(
         &self,
         conn: &mut PgConnection,
@@ -136,14 +135,20 @@ impl Store {
         if !crate::session_token_within_cap(token) {
             return Ok(false);
         }
-        self.delete_browser_session_digest(&digest(token)).await
+        let mut conn = self.pool.acquire().await?;
+        self.delete_browser_session_digest_tx(&mut conn, &digest(token)).await
     }
 
-    /// Ends the session whose token hashes to `token_digest`, answering whether there was one.
-    pub async fn delete_browser_session_digest(&self, token_digest: &[u8]) -> Result<bool, sqlx::Error> {
+    /// Ends the session whose token hashes to `token_digest` on the caller's connection,
+    /// answering whether there was one.
+    pub async fn delete_browser_session_digest_tx(
+        &self,
+        conn: &mut PgConnection,
+        token_digest: &[u8],
+    ) -> Result<bool, sqlx::Error> {
         let res = sqlx::query("DELETE FROM accounts.browser_sessions WHERE token_digest = $1")
             .bind(token_digest)
-            .execute(&self.pool)
+            .execute(&mut *conn)
             .await?;
         Ok(res.rows_affected() > 0)
     }

@@ -1045,7 +1045,7 @@ async fn a_password_verified_before_a_reset_mints_no_session_after_it() {
     let admin = AccountsAdmin::new(Arc::clone(&svc));
     admin.invoke(revoke(RESET_PASSWORD, Some(&id), None)).await.unwrap();
     let bearer = svc.issue_password_session(&verified).await;
-    let browser = svc.issue_password_browser_session(&verified).await;
+    let browser = svc.issue_password_browser_session(&verified, None).await;
     let rows: (i64, i64, i64) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM accounts.refresh_tokens WHERE player_id = $1::uuid), \
                 (SELECT count(*) FROM accounts.sessions WHERE player_id = $1::uuid), \

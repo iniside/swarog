@@ -687,6 +687,28 @@ pub(crate) async fn cleanup_player(pool: &PgPool, player_id: &str) {
     let _ = asyncevents::testing::cleanup_events(pool, "player_id", player_id).await;
 }
 
+/// Polls until a backend waits on a lock held by `holder` and answers the query it runs;
+/// `None` when none does within about twenty seconds.
+pub(crate) async fn blocked_query(pool: &PgPool, holder: i32) -> Option<String> {
+    for _ in 0..4000 {
+        let query: Option<String> = sqlx::query_scalar(
+            "SELECT query FROM pg_stat_activity \
+              WHERE datname = current_database() AND wait_event_type = 'Lock' \
+                AND $1::int = ANY(pg_blocking_pids(pid)) \
+              LIMIT 1",
+        )
+        .bind(holder)
+        .fetch_optional(pool)
+        .await
+        .unwrap();
+        if query.is_some() {
+            return query;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    None
+}
+
 async fn registered_events(pool: &PgPool, player_id: &str) -> i64 {
     asyncevents::testing::events_count(pool, "player.registered", "player_id", player_id)
         .await

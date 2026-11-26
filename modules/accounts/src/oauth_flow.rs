@@ -59,8 +59,8 @@ pub(crate) enum Intent {
     Login,
     /// Attach the identity to the player behind this bearer session.
     Link { session_token: String },
-    /// Find or create the player, end the browser session whose digest is `replaces`,
-    /// mint a browser session and go to `return_to`.
+    /// Find or create the player, mint a browser session ending the one whose digest is
+    /// `replaces` in the same commit, and go to `return_to`.
     Browser { return_to: String, replaces: Option<Vec<u8>> },
 }
 
@@ -416,13 +416,14 @@ async fn browser_sign_in(
             return fail();
         }
     };
-    if let Some(old) = replaces {
-        if let Err(err) = svc.store.delete_browser_session_digest(old).await {
-            tracing::error!(%err, "replaced browser session delete failed");
+    let mut tx = match svc.store.pool.begin().await {
+        Ok(tx) => tx,
+        Err(err) => {
+            tracing::error!(%err, "browser session mint failed");
             return fail();
         }
-    }
-    let minted = match svc.store.create_browser_session(&player.id).await {
+    };
+    let minted = match svc.store.create_browser_session_tx(&mut tx, &player.id).await {
         Ok(Some(minted)) => minted,
         // The player was deleted between the find and the mint.
         Ok(None) => return fail(),
@@ -431,6 +432,18 @@ async fn browser_sign_in(
             return fail();
         }
     };
+    // After the insert, whose foreign key takes the player row first (lock order in
+    // `Store::kill_player_families_tx`), so a refused mint leaves the old session alive.
+    if let Some(old) = replaces {
+        if let Err(err) = svc.store.delete_browser_session_digest_tx(&mut tx, old).await {
+            tracing::error!(%err, "replaced browser session delete failed");
+            return fail();
+        }
+    }
+    if let Err(err) = tx.commit().await {
+        tracing::error!(%err, "browser session mint failed");
+        return fail();
+    }
     let mut resp = web::see_other(return_to);
     let h = resp.headers_mut();
     h.append(header::SET_COOKIE, web::session_cookie(flow.cookie_secure, &minted.token));

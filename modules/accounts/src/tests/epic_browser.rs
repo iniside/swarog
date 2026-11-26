@@ -403,3 +403,59 @@ async fn a_hosted_form_post_drains_the_json_epic_start_bucket() {
     assert_eq!(start.status(), 429, "the start shares the bucket the form emptied");
     assert_eq!(retry_after.as_deref(), Some("1"));
 }
+
+/// A federated sign-in whose player is deleted while the mint waits on the player row
+/// mints nothing and keeps the session the browser held.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sign_in_refused_at_the_mint_keeps_the_browsers_session() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let subject = format!("epic-refused-{}", suffix());
+    let base = serve(svc.clone(), mock_epic(&pool, &subject).await).await;
+    let (player, _) = svc.external_browser_login(crate::providers::EPIC, &subject, "Refused").await.unwrap();
+    let other = svc
+        .register(format!("epic-refused-{}@test.local", suffix().to_ascii_lowercase()), "pw".into(), "Other".into())
+        .await
+        .unwrap()
+        .player_id;
+    let held = svc.store.create_browser_session(&other).await.unwrap().unwrap().token;
+    let form = client().get(format!("{base}/accounts/oidc/login")).send().await.unwrap();
+    let csrf = cookie_value(&set_cookie(&form, web::LOGIN_CSRF_COOKIE));
+    let start = post_epic(&base, &csrf, Some(&held), web::LANDING).await;
+    let mut gate = pool.begin().await.unwrap();
+    let gate_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *gate).await.unwrap();
+    sqlx::query("SELECT 1 FROM accounts.players WHERE id = $1::uuid FOR UPDATE")
+        .bind(&player.id)
+        .execute(&mut *gate)
+        .await
+        .unwrap();
+    let signed_in = {
+        let base = base.clone();
+        tokio::spawn(async move { callback(&base, &start).await })
+    };
+    let parked = blocked_query(&pool, gate_pid).await;
+    sqlx::query("DELETE FROM accounts.players WHERE id = $1::uuid")
+        .bind(&player.id)
+        .execute(&mut *gate)
+        .await
+        .unwrap();
+    gate.commit().await.unwrap();
+    let resp = signed_in.await.unwrap();
+    let status = resp.status();
+    let to = location(&resp);
+    let minted = resp.headers().get_all("set-cookie").iter().any(|v| {
+        v.to_str().unwrap().starts_with(&format!("{}=", web::SESSION_COOKIE))
+    });
+    let held_after = svc.store.browser_session(&held).await.unwrap().map(|s| s.player_id);
+    cleanup_player(&pool, &player.id).await;
+    cleanup_player(&pool, &other).await;
+
+    assert!(
+        parked.as_deref().is_some_and(|q| q.contains("accounts.browser_sessions")),
+        "the callback must park on the mint's player row lock: {parked:?}"
+    );
+    assert_eq!(status, 303);
+    assert!(to.contains("=error"), "{to}");
+    assert!(!minted, "a refused sign-in sets no session cookie");
+    assert_eq!(held_after, Some(other), "the session the browser held survives the refusal");
+}

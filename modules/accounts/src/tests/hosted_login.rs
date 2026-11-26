@@ -245,6 +245,67 @@ async fn a_second_sign_in_ends_the_browsers_old_session() {
     assert!(new_after.is_some(), "the new session resolves");
 }
 
+/// A sign-in refused at its identity stamp keeps the session the browser held. A third
+/// transaction parks the sign-in at the stamp, then changes the password hash under it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sign_in_refused_at_the_stamp_keeps_the_browsers_session() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let (email, pid) = registered(&svc, "stamp").await;
+    let (_, other) = registered(&svc, "stamp-other").await;
+    let held = svc.store.create_browser_session(&other).await.unwrap().unwrap().token;
+    let base = serve_default(svc.clone()).await;
+    let csrf = login_csrf(&base).await;
+    let mut gate = pool.begin().await.unwrap();
+    let gate_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *gate).await.unwrap();
+    sqlx::query("SELECT 1 FROM accounts.identities WHERE player_id = $1::uuid FOR UPDATE")
+        .bind(&pid)
+        .execute(&mut *gate)
+        .await
+        .unwrap();
+    let login = {
+        let (base, csrf, email, held) = (base.clone(), csrf.clone(), email.clone(), held.clone());
+        tokio::spawn(async move {
+            client()
+                .post(format!("{base}/accounts/oidc/login"))
+                .header("Cookie", format!("{}={csrf}; {}={held}", web::LOGIN_CSRF_COOKIE, web::SESSION_COOKIE))
+                .form(&[("email", email.as_str()), ("password", "pw"), ("csrf", csrf.as_str()), ("return_to", "")])
+                .send()
+                .await
+                .unwrap()
+        })
+    };
+    let parked = blocked_query(&pool, gate_pid).await;
+    sqlx::query("UPDATE accounts.identities SET secret_hash = 'changed' WHERE player_id = $1::uuid")
+        .bind(&pid)
+        .execute(&mut *gate)
+        .await
+        .unwrap();
+    gate.commit().await.unwrap();
+    let resp = login.await.unwrap();
+    let status = resp.status();
+    let minted = resp.headers().get_all("set-cookie").iter().any(|v| {
+        v.to_str().unwrap().starts_with(&format!("{}=", web::SESSION_COOKIE))
+    });
+    let held_after = svc.store.browser_session(&held).await.unwrap().map(|s| s.player_id);
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM accounts.browser_sessions WHERE player_id = $1::uuid")
+        .bind(&pid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    cleanup_player(&pool, &pid).await;
+    cleanup_player(&pool, &other).await;
+
+    assert!(
+        parked.as_deref().is_some_and(|q| q.contains("accounts.identities")),
+        "the sign-in must park at its identity stamp: {parked:?}"
+    );
+    assert_eq!(status, 401);
+    assert!(!minted, "a refused sign-in sets no session cookie");
+    assert_eq!(held_after, Some(other), "the session the browser held survives the refusal");
+    assert_eq!(rows, 0, "the refused mint leaves no session");
+}
+
 /// A wrong password and an unknown email get the same 401 page, and the wrong password ends
 /// no session the browser held; a POST without the login-CSRF cookie is 403 and mints nothing.
 #[tokio::test(flavor = "multi_thread")]

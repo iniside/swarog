@@ -413,14 +413,9 @@ async fn login_submit(
             return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
         }
     };
-    // A browser already signed in gets a new session; the one it held ends here, not at expiry.
-    if let Some(old) = jar.get(SESSION_COOKIE) {
-        if let Err(e) = web.svc.store.delete_browser_session(old.value()).await {
-            tracing::error!(err = %e, "replaced browser session delete failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "sign-in failed").into_response();
-        }
-    }
-    let minted = match web.svc.issue_password_browser_session(&verified).await {
+    // A browser already signed in gets a new session; the one it held ends with the mint, not at expiry.
+    let replaces = held_session_digest(&jar);
+    let minted = match web.svc.issue_password_browser_session(&verified, replaces.as_deref()).await {
         Ok(minted) => minted,
         Err(e) if e.status == opsapi::Status::Unauthorized => {
             return web.render_login(&jar, StatusCode::UNAUTHORIZED, GENERIC_LOGIN_ERROR, return_to);
@@ -460,6 +455,15 @@ async fn google_start(
     oauth_start(&web, web.flows.google.as_deref(), peer, &headers, &jar, form).await
 }
 
+/// The digest of the session the browser holds, which a sign-in from it replaces; an
+/// over-cap cookie names no session.
+fn held_session_digest(jar: &CookieJar) -> Option<Vec<u8>> {
+    jar.get(SESSION_COOKIE)
+        .map(|c| c.value())
+        .filter(|token| crate::session_token_within_cap(token))
+        .map(session::digest)
+}
+
 /// The form start every provider shares: per-IP limiter, 404 when `flow` is not
 /// configured, login-CSRF double submit, then a `browser` state row and a 303 to the
 /// provider's authorize URL with the binding cookie.
@@ -483,11 +487,7 @@ async fn oauth_start(
         return web.render_login(jar, StatusCode::FORBIDDEN, EXPIRED_FORM_ERROR, return_to);
     }
     // The callback path never receives this cookie, so the state carries the session it replaces.
-    let replaces = jar
-        .get(SESSION_COOKIE)
-        .map(|c| c.value())
-        .filter(|token| crate::session_token_within_cap(token))
-        .map(session::digest);
+    let replaces = held_session_digest(jar);
     let binding = oauth_flow::browser_binding(jar);
     let intent = Intent::Browser { return_to: return_to.to_string(), replaces };
     let provider = flow.provider();
