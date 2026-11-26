@@ -226,6 +226,26 @@ fn proof_overlay_is_explicit_and_name_lookup_is_stable() {
     assert!(matches!(proof.service("missing"), Err(FleetError::UnknownService(_))));
 }
 
+/// The Proof gateway-svc keeps the front-door rate splitproof reasons about even when the
+/// operator's environment carries its own `RATE_LIMIT_*`.
+#[test]
+fn proof_gateway_rate_limit_survives_an_ambient_override() {
+    let environment = EnvironmentSnapshot::from_values([
+        ("RATE_LIMIT_RPS".into(), "1".into()),
+        ("RATE_LIMIT_BURST".into(), "1".into()),
+    ]);
+    let fleet = game_backend_fleet_with_environment(&inputs(), FleetFlavor::Proof, &environment);
+    let gateway = &fleet.service("gateway-svc").unwrap().env;
+    assert_eq!(
+        gateway.get("RATE_LIMIT_RPS").map(String::as_str),
+        Some(PROOF_GATEWAY_RATE_LIMIT_RPS.to_string().as_str())
+    );
+    assert_eq!(
+        gateway.get("RATE_LIMIT_BURST").map(String::as_str),
+        Some(PROOF_GATEWAY_RATE_LIMIT_BURST.to_string().as_str())
+    );
+}
+
 #[test]
 fn disk_drift_compares_names_not_order() {
     let fleet = game_backend_fleet(&inputs(), FleetFlavor::Proof);

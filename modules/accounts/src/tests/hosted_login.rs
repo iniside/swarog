@@ -318,6 +318,17 @@ async fn an_unsafe_return_to_lands_on_the_landing_page() {
     assert_eq!((b_status.as_u16(), b_to.as_str()), (303, web::LANDING));
 }
 
+/// The bucket accounts builds for sign-in admits one client exactly `accountsapi::LOGIN_LIMIT_BURST`
+/// requests back to back before its first refusal, so the burst a harness reads off the contract
+/// is the one the module runs.
+#[test]
+fn the_sign_in_bucket_admits_the_published_burst() {
+    let limiter = crate::login_ip_limiter();
+    let ip: std::net::IpAddr = "203.0.113.9".parse().unwrap();
+    let admitted = (0..accountsapi::LOGIN_LIMIT_BURST * 2).take_while(|_| limiter.allow(ip)).count();
+    assert_eq!(admitted, accountsapi::LOGIN_LIMIT_BURST as usize);
+}
+
 /// Behind a trusted proxy each forwarded client gets its own limiter bucket; the proxy's
 /// own address is not the key.
 #[tokio::test(flavor = "multi_thread")]

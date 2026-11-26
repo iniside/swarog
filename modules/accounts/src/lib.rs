@@ -1631,11 +1631,7 @@ impl Module for Accounts {
         }
         let trusted = httpmw::parse_cidrs(&std::env::var("TRUSTED_PROXY_CIDRS").unwrap_or_default())
             .map_err(|e| anyhow::anyhow!("accounts: parse TRUSTED_PROXY_CIDRS: {e}"))?;
-        let web_limiter = httpmw::IpLimiter::new(
-            "accounts_login",
-            accountsapi::LOGIN_LIMIT_PER_SEC,
-            accountsapi::LOGIN_LIMIT_BURST,
-        );
+        let web_limiter = login_ip_limiter();
         self.web_limiter
             .set(web_limiter.clone())
             .map_err(|_| anyhow::anyhow!("accounts.init ran twice"))?;
@@ -1773,6 +1769,12 @@ impl Module for Accounts {
             Err(error) => Err(anyhow::anyhow!("accounts limiter reaper failed: {error}")),
         }
     }
+}
+
+/// The one per-client-IP sign-in bucket the hosted form and the Epic start share, built from
+/// the rate and burst `accountsapi` publishes for a harness timing it.
+pub(crate) fn login_ip_limiter() -> Arc<httpmw::IpLimiter> {
+    httpmw::IpLimiter::new("accounts_login", accountsapi::LOGIN_LIMIT_PER_SEC, accountsapi::LOGIN_LIMIT_BURST)
 }
 
 /// Test-only: exposes this module's argon2 cost parameters so `cmd/server`'s

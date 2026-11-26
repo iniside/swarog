@@ -128,9 +128,8 @@ pub const PROOF_PARTY_LEASE_SECS: &str = "10";
 
 /// gateway-svc's front-door HTTP rate (tokens a second per client IP) that the `Proof`
 /// flavor pins as `RATE_LIMIT_RPS`, and that `tools/splitproof` reasons about when it
-/// waits for that bucket to refill between sign-in bursts. Equal to gateway-svc's own
-/// `with_rate_limit_default`, so the proof runs the production front door; pinned so
-/// neither an ambient `RATE_LIMIT_RPS` nor a changed default can move it under the harness.
+/// waits for that bucket to refill between sign-in bursts; pinned so neither an ambient
+/// `RATE_LIMIT_RPS` nor a changed gateway-svc default can move it under the harness.
 pub const PROOF_GATEWAY_RATE_LIMIT_RPS: f64 = 20.0;
 
 /// The burst of the front-door bucket [`PROOF_GATEWAY_RATE_LIMIT_RPS`] refills, pinned

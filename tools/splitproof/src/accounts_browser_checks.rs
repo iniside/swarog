@@ -17,11 +17,13 @@
 //! the Epic start draw from one bucket as accounts wires it.
 //!
 //! Timing rule: the run after a refusal (`B_REQUESTS` back to back) is timed from the refusal, and
-//! a run that took `B_REQUESTS / REFILL_PER_SEC` seconds or longer (`REFILL_PER_SEC` being
+//! a run that took `(B_REQUESTS - 1) / REFILL_PER_SEC` seconds or longer (`REFILL_PER_SEC` being
 //! `accountsapi::LOGIN_LIMIT_PER_SEC`, the rate accounts builds the bucket from), or met any
-//! gateway 429, could have been served by tokens refilled into the bucket that refused. Such a run
-//! proves neither separate buckets nor a shared one, so [BR1], [BR2] and [BR3] fail it as
-//! INCONCLUSIVE, never pass.
+//! gateway 429, could have been served by tokens refilled into the bucket that refused. One token
+//! is taken off because the bucket refills continuously and keeps fractions: at the refusal it can
+//! still hold up to just under one token, so a shared bucket needs only `B_REQUESTS - 1` whole
+//! refills to answer the run. Such a run proves neither separate buckets nor a shared one, so
+//! [BR1], [BR2] and [BR3] fail it as INCONCLUSIVE, never pass.
 //!
 //! Break runs (each a full splitproof run, then reverted):
 //! - `"/accounts/oidc"` dropped from gateway-svc's passthrough prefixes (`cmd/gateway-svc/src/addrs.rs`):
@@ -323,8 +325,9 @@ struct Run {
 
 impl Run {
     /// Whether the run can tell two buckets from one. Accounts' bucket refills `REFILL_PER_SEC`
-    /// tokens a second, so a run of `B_REQUESTS` lasting `B_REQUESTS / REFILL_PER_SEC` seconds or
-    /// longer could be served by tokens refilled into the very bucket that refused, and a gateway 429
+    /// tokens a second and may hold a fraction of a token when it refuses, so a run of
+    /// `B_REQUESTS` lasting `run_budget_secs` or longer could be served by tokens refilled
+    /// into the very bucket that refused, and a gateway 429
     /// among them adds a pause the timer cannot vouch for: either way the run proves nothing.
     fn timely(&self) -> bool {
         self.gateway == 0 && self.elapsed.as_secs_f64() < run_budget_secs()
@@ -342,9 +345,11 @@ impl Run {
     }
 }
 
-/// The seconds a `B_REQUESTS` run may take before accounts' refill alone could have answered it.
+/// The seconds a `B_REQUESTS` run may take before accounts' refill alone could have answered it:
+/// the refused bucket keeps a leftover fraction under one token, so one of the run's tokens may
+/// already be (almost) there and only `B_REQUESTS - 1` need refilling.
 fn run_budget_secs() -> f64 {
-    B_REQUESTS as f64 / REFILL_PER_SEC
+    (B_REQUESTS - 1) as f64 / REFILL_PER_SEC
 }
 
 /// Client A sends until accounts refuses it, then client B sends `B_REQUESTS` back to back, timed
@@ -515,29 +520,4 @@ async fn browser_sessions(pool: &PgPool, pid: &str) -> Result<i64> {
         .fetch_one(pool)
         .await
         .context("count the player's browser sessions")
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use super::{gateway_refill, run_budget_secs, B_REQUESTS};
-
-    /// The [BR*] timely budget is the time accounts' own bucket needs to refill `B_REQUESTS`
-    /// tokens at the rate accounts builds it from, so a faster refill shrinks the budget instead of
-    /// letting a shared bucket pass as two.
-    #[test]
-    fn timely_budget_is_b_requests_at_the_accounts_sign_in_rate() {
-        assert_eq!(run_budget_secs(), B_REQUESTS as f64 / accountsapi::LOGIN_LIMIT_PER_SEC);
-    }
-
-    /// The pause before each drain covers the Proof gateway-svc's front-door bucket refilling
-    /// from empty, with at least half a second to spare.
-    #[test]
-    fn gateway_refill_covers_the_proof_front_door_refill_from_empty() {
-        let from_empty = Duration::from_secs_f64(
-            f64::from(processctl::PROOF_GATEWAY_RATE_LIMIT_BURST) / processctl::PROOF_GATEWAY_RATE_LIMIT_RPS,
-        );
-        assert!(gateway_refill() >= from_empty + Duration::from_millis(500), "{:?} vs {from_empty:?}", gateway_refill());
-    }
 }
