@@ -394,9 +394,9 @@ where
     }
 }
 
-/// BROWSER flow: find or create the player without a player session, end the session
-/// the browser held when it started (its cookie is not sent to this path), mint a
-/// browser session and follow `return_to`.
+/// BROWSER flow: find or create the player without a player session, mint a browser
+/// session and end the session the browser held when it started (its cookie is not sent
+/// to this path) in the same commit, then follow `return_to`.
 async fn browser_sign_in(
     flow: &OAuthFlow,
     svc: &Service,
