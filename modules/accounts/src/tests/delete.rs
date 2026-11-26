@@ -44,6 +44,7 @@ impl Drop for DbGuard {
 fn unreachable_service() -> Arc<Service> {
     let pool = sqlx::PgPool::connect_lazy("postgres://nope:nope@127.0.0.1:1/nonexistent").unwrap();
     Arc::new(Service {
+        tokens: test_tokens(&pool),
         store: Store { pool },
         bus: Arc::new(Bus::new()),
         open_registration: true,

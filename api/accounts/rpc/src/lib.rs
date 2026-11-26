@@ -22,6 +22,7 @@ use accountsapi::*;
 use opsapi::{Error, Identity};
 
 accountsapi::accounts_sessions_meta!(rpc_macro::generate_glue);
+accountsapi::accounts_token_state_meta!(rpc_macro::generate_glue);
 accountsapi::accounts_auth_meta!(rpc_macro::generate_glue);
 accountsapi::accounts_directory_meta!(rpc_macro::generate_glue);
 
@@ -33,6 +34,8 @@ accountsapi::accounts_directory_meta!(rpc_macro::generate_glue);
 ///   - `accounts.sessions` — the [`Sessions`] client, the capability the gateway's
 ///     verifier adapter resolves so bearer verification crosses the mTLS edge to
 ///     accounts-svc (closing the `DevSessionVerifier` trust hole in the split),
+///   - `accounts.token_state` — the [`TokenState`] client, the capability a gateway's
+///     access-token verifier pulls its keys and revocations through,
 ///   - `accounts.auth` — the [`Auth`] client, PLUS the auth ops'
 ///     `route_bindings()` into the gateway slots (no `LOCAL_SLOT` — no in-process
 ///     invoker exists, so the front dispatches every `Auth` op remotely),
@@ -41,6 +44,7 @@ accountsapi::accounts_directory_meta!(rpc_macro::generate_glue);
 pub fn remote_factories() -> Vec<remote::RemoteFactory> {
     vec![
         Box::new(|ctx, caller| sessions_rpc::provide_remote(ctx.registry(), caller)),
+        Box::new(|ctx, caller| token_state_rpc::provide_remote(ctx.registry(), caller)),
         Box::new(|ctx, caller| directory_rpc::provide_remote(ctx.registry(), caller)),
         Box::new(|ctx, caller| {
             auth_rpc::provide_remote(ctx.registry(), caller);
@@ -55,9 +59,9 @@ pub fn remote_factories() -> Vec<remote::RemoteFactory> {
 /// The accounts provider's CAPABILITY-ONLY client-registration closures for a
 /// data-driven front door (the D2 routing-as-data path). Dials the peer over the edge
 /// EXACTLY as [`remote_factories`] does (same registry key, same generated `Client`),
-/// but provides ONLY the capability the gateway resolves as a SYNC dep —
-/// `accounts.sessions`, the [`Sessions`] client its bearer-verifier adapter `require`s —
-/// and contributes NO `#[http]` route bindings.
+/// but provides ONLY the capabilities the gateway resolves as SYNC deps —
+/// `accounts.sessions` and `accounts.token_state`, the [`Sessions`] and [`TokenState`]
+/// clients its bearer verifier `require`s — and contributes NO `#[http]` route bindings.
 ///
 /// Why a distinct entry point: a D2 gateway rebuilds its route table from each svc's
 /// runtime `describe()`, so a factory that ALSO re-contributed the auth ops' static
@@ -69,9 +73,10 @@ pub fn remote_factories() -> Vec<remote::RemoteFactory> {
 /// [`remote_factories`] (provide + routes); this is ADDITIVE, not a replacement. (As of D2
 /// `cmd/gateway-svc` is a describe consumer and calls THIS entry point.)
 pub fn provide_factories() -> Vec<remote::RemoteFactory> {
-    vec![Box::new(|ctx, caller| {
-        sessions_rpc::provide_remote(ctx.registry(), caller)
-    })]
+    vec![
+        Box::new(|ctx, caller| sessions_rpc::provide_remote(ctx.registry(), caller)),
+        Box::new(|ctx, caller| token_state_rpc::provide_remote(ctx.registry(), caller)),
+    ]
 }
 
 #[cfg(test)]

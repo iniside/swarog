@@ -67,6 +67,7 @@ fn dead_guest_service() -> Arc<Service> {
     let providers = OnceLock::new();
     providers.set(Arc::new(registry)).ok().unwrap();
     Arc::new(Service {
+        tokens: test_tokens(&pool),
         store: Store { pool },
         bus: Arc::new(Bus::new()),
         open_registration: true,

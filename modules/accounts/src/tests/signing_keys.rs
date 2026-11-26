@@ -433,7 +433,7 @@ async fn the_jwks_lists_the_live_public_keys_and_each_verifies_its_own_signature
     let retired = NewKey::generate(&dev_kek()).unwrap();
     insert_key(&pool, &schema, &retired, "retired", &retired.public_jwk).await;
     let rows = key_rows(&pool, &schema).await;
-    let set = SigningKeys::new(pool.clone(), &schema).jwks().await;
+    let set = SigningKeys::with_clock(pool.clone(), &schema, Arc::new(Instant::now)).jwks().await;
     drop_schema(&pool, &schema).await;
 
     let set = serde_json::to_value(&*set.unwrap()).unwrap();

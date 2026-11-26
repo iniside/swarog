@@ -384,6 +384,19 @@ macro_rules! granting_families {
     };
 }
 
+/// How long a revocation row is kept: past it, every token it could refuse has expired.
+const REVOCATION_LIFETIME_SECS: i64 = (accountsapi::ACCESS_TTL_MINUTES * 60
+    + accountsapi::ACCESS_EXP_LEEWAY.as_secs()
+    + accountsapi::REVOCATION_SKEW_MARGIN.as_secs()) as i64;
+
+/// The subject of one `token_revocations` row: every token of a family, or the tokens of a
+/// player or client issued at or before the row's `revoked_at`.
+pub(crate) enum Revocation<'a> {
+    Family(&'a str),
+    Player(&'a str),
+    Client(&'a str),
+}
+
 pub(crate) struct Store {
     pub pool: PgPool,
 }
@@ -1039,19 +1052,64 @@ impl Store {
 
     /// Revokes one token FAMILY on the caller's tx: its family row, whose deletion takes
     /// every refresh token and access session descended from that login by cascade, and
-    /// nothing belonging to the player's other logins. Deletion, not a flag: with the
-    /// rows gone every token of the family answers as unknown, so a replay can never
-    /// resurrect the family through the grace window.
+    /// nothing belonging to the player's other logins, plus a family revocation when the row
+    /// existed. Deletion, not a flag: with the rows gone every token of the family answers
+    /// as unknown, so a replay can never resurrect the family through the grace window.
     pub async fn kill_family_tx(
         &self,
         conn: &mut PgConnection,
         family_id: &str,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM accounts.token_families WHERE id = $1::uuid")
+        if self.delete_family_tx(conn, family_id).await? {
+            self.insert_revocation_tx(conn, Revocation::Family(family_id)).await?;
+        }
+        Ok(())
+    }
+
+    /// Whether the family row existed; deleting it takes its tokens by cascade.
+    async fn delete_family_tx(&self, conn: &mut PgConnection, family_id: &str) -> Result<bool, sqlx::Error> {
+        let deleted = sqlx::query("DELETE FROM accounts.token_families WHERE id = $1::uuid")
             .bind(family_id)
             .execute(&mut *conn)
             .await?;
+        Ok(deleted.rows_affected() > 0)
+    }
+
+    /// Writes one `token_revocations` row on the caller's tx. `revoked_at` is
+    /// `clock_timestamp()`, read after the locks the caller's revoke holds, so every mint
+    /// that committed before them has `iat <= revoked_at`.
+    pub(crate) async fn insert_revocation_tx(
+        &self,
+        conn: &mut PgConnection,
+        revocation: Revocation<'_>,
+    ) -> Result<(), sqlx::Error> {
+        let (family, player, client) = match revocation {
+            Revocation::Family(id) => (Some(id), None, None),
+            Revocation::Player(id) => (None, Some(id), None),
+            Revocation::Client(id) => (None, None, Some(id)),
+        };
+        sqlx::query(
+            "INSERT INTO accounts.token_revocations \
+                    (family_id, player_id, client_id, revoked_at, expires_at) \
+             SELECT $1::uuid, $2::uuid, $3, t, t + $4::bigint * interval '1 second' \
+               FROM (SELECT clock_timestamp() AS t) stamp",
+        )
+        .bind(family)
+        .bind(player)
+        .bind(client)
+        .bind(REVOCATION_LIFETIME_SECS)
+        .execute(&mut *conn)
+        .await?;
         Ok(())
+    }
+
+    /// Deletes every revocation past its `expires_at` on the delivery tx: no token it could
+    /// refuse is still accepted.
+    pub async fn prune_expired_revocations(&self, conn: &mut PgConnection) -> Result<u64, sqlx::Error> {
+        let res = sqlx::query("DELETE FROM accounts.token_revocations WHERE expires_at <= now()")
+            .execute(&mut *conn)
+            .await?;
+        Ok(res.rows_affected())
     }
 
     /// Takes the player row FOR UPDATE on the caller's tx, answering whether the player
@@ -1091,7 +1149,8 @@ impl Store {
     }
 
     /// Revokes every token family of a player on the caller's tx: all its family rows (and
-    /// by cascade their refresh tokens and access sessions) and browser sessions. `None`
+    /// by cascade their refresh tokens and access sessions), its browser sessions, and every
+    /// access token issued so far through one player revocation. `None`
     /// when there is no such player; otherwise a "did anything end" signal only: deleted
     /// family rows (expired ones included) plus the browser sessions that were still live.
     /// Not a session count.
@@ -1117,6 +1176,7 @@ impl Store {
         .bind(player_id)
         .execute(&mut *conn)
         .await?;
+        self.insert_revocation_tx(conn, Revocation::Player(player_id)).await?;
         let families = sqlx::query("DELETE FROM accounts.token_families WHERE player_id = $1::uuid")
             .bind(player_id)
             .execute(&mut *conn)
@@ -1176,7 +1236,8 @@ impl Store {
     }
 
     /// Revokes every family of a player that still grants access
-    /// ([`Store::revocable_families_tx`]) and every browser session on the caller's tx:
+    /// ([`Store::revocable_families_tx`]), every browser session, and every access token
+    /// issued so far through one player revocation, on the caller's tx:
     /// `None` when there is no such player, otherwise how many families and live browser
     /// sessions it revoked. The set it counts is the set it deletes, read after the player
     /// row lock ([`Store::lock_player_row_tx`], the lock order of
@@ -1193,8 +1254,9 @@ impl Store {
         }
         let families = self.revocable_families_tx(conn, player_id).await?;
         for family in &families {
-            self.kill_family_tx(conn, family).await?;
+            self.delete_family_tx(conn, family).await?;
         }
+        self.insert_revocation_tx(conn, Revocation::Player(player_id)).await?;
         let browsers = self.delete_player_browser_sessions_tx(conn, player_id).await?;
         Ok(Some(families.len() + browsers as usize))
     }

@@ -140,6 +140,7 @@ fn epic_service(verifier: OidcVerifier) -> Arc<Service> {
     let providers = OnceLock::new();
     providers.set(Arc::new(registry)).ok().unwrap();
     Arc::new(Service {
+        tokens: crate::tests::test_tokens(&PgPool::connect_lazy(DSN).unwrap()),
         store: Store {
             pool: PgPool::connect_lazy(DSN).unwrap(),
         },

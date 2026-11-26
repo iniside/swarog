@@ -10,7 +10,7 @@ use rand::RngCore as _;
 use sqlx::PgConnection;
 
 use crate::providers;
-use crate::store::Store;
+use crate::store::{Revocation, Store};
 
 pub(crate) const DEV_SEED_ENV: &str = "ACCOUNTS_DEV_SEED";
 
@@ -178,7 +178,8 @@ impl Store {
 
     /// Whether a row was deleted. Lock order: the client row first, so no login adds a
     /// family under it after the next lock, then its families in ascending id (the order of
-    /// [`Store::kill_player_families_tx`]), then the delete, whose cascade takes them.
+    /// [`Store::kill_player_families_tx`]), then one client revocation and the delete, whose
+    /// cascade takes the families.
     pub(crate) async fn delete_client(&self, client_id: &str) -> sqlx::Result<bool> {
         let mut tx = self.pool.begin().await?;
         let found: Option<(i32,)> =
@@ -193,6 +194,7 @@ impl Store {
             .bind(client_id)
             .execute(&mut *tx)
             .await?;
+        self.insert_revocation_tx(&mut tx, Revocation::Client(client_id)).await?;
         sqlx::query("DELETE FROM accounts.oidc_clients WHERE client_id = $1")
             .bind(client_id)
             .execute(&mut *tx)

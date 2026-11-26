@@ -139,6 +139,12 @@ fn service_without_providers() -> Service {
 
 fn service_on(pool: PgPool) -> Service {
     Service {
+        tokens: crate::jwt::Tokens::new(
+            pool.clone(),
+            "accounts",
+            accountsapi::DEFAULT_OIDC_ISSUER.to_string(),
+            Arc::default(),
+        ),
         store: Store { pool },
         bus: Arc::new(bus::Bus::new()),
         open_registration: false,

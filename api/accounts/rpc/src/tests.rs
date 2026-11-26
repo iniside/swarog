@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use accountsapi::{Auth, Sessions};
+use accountsapi::{Auth, Sessions, TokenState};
 use lifecycle::Context;
 use opsapi::{Caller, Error, RetryMode};
 
@@ -52,6 +52,12 @@ fn provide_factories_provides_sessions_without_contributing_routes() {
             .is_some(),
         "accounts.sessions must resolve to an Arc<dyn Sessions> on the provide-only path"
     );
+    assert!(
+        ctx.registry()
+            .try_require::<dyn TokenState>(&registry::key("accounts", "token_state"))
+            .is_some(),
+        "accounts.token_state must resolve to an Arc<dyn TokenState> on the provide-only path"
+    );
 
     // (2) NO #[http] routes contributed — the collision-avoidance for the D2 describe pass.
     let ops: Vec<opsapi::Operation> = ctx.contributions(opsapi::SLOT);
@@ -85,6 +91,12 @@ fn remote_factories_still_bundles_provide_and_auth_routes() {
             .try_require::<dyn Sessions>(&registry::key("accounts", "sessions"))
             .is_some(),
         "bundled path still provides accounts.sessions"
+    );
+    assert!(
+        ctx.registry()
+            .try_require::<dyn TokenState>(&registry::key("accounts", "token_state"))
+            .is_some(),
+        "bundled path provides accounts.token_state"
     );
     assert!(
         ctx.registry()

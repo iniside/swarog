@@ -11,6 +11,7 @@ use accountsapi::auth_rpc::{METHOD_LOGIN, METHOD_LOGIN_FEDERATED, METHOD_ME, MET
 /// before any DB access.
 fn gated_service(open_registration: bool) -> Arc<Service> {
     Arc::new(Service {
+        tokens: test_tokens(&PgPool::connect_lazy(DEFAULT_DSN).unwrap()),
         store: Store {
             pool: PgPool::connect_lazy(DEFAULT_DSN).unwrap(),
         },
@@ -108,6 +109,7 @@ async fn login_and_verify_session_work_without_open_registration() {
     let sess = svc.register(email.clone(), "pw".into(), "G".into(), test_client()).await.unwrap();
 
     let closed = Arc::new(Service {
+        tokens: test_tokens(&pool),
         store: Store { pool: pool.clone() },
         bus: Arc::new(Bus::new()),
         open_registration: false,

@@ -18,6 +18,7 @@ mod prune;
 mod refresh;
 mod registration_gate;
 mod signing_keys;
+mod tokens;
 use crate::oauth_flow::Intent;
 use crate::oidc::{IssuerMatch, OidcVerifier};
 use crate::password::verify_password;
@@ -241,6 +242,7 @@ fn dead_service_at(dsn: &str, verifier: Arc<dyn PasswordVerifier>) -> Arc<Servic
 
 fn lazy_service_with_pool(pool: PgPool, verifier: Arc<dyn PasswordVerifier>) -> Arc<Service> {
     Arc::new(Service {
+        tokens: test_tokens(&pool),
         store: Store { pool },
         bus: Arc::new(Bus::new()),
         open_registration: true,
@@ -667,6 +669,16 @@ pub(crate) fn dev_kek() -> crate::signing_keys::SigningKek {
     crate::signing_keys::SigningKek::parse(testdb::DEV_ACCOUNTS_SIGNING_KEK).unwrap()
 }
 
+/// The access tokens of schema `accounts` under [`dev_kek`] and the default issuer.
+pub(crate) fn test_tokens(pool: &PgPool) -> crate::jwt::Tokens {
+    crate::jwt::Tokens::new(
+        pool.clone(),
+        "accounts",
+        accountsapi::DEFAULT_OIDC_ISSUER.to_string(),
+        Arc::new(OnceLock::from(dev_kek())),
+    )
+}
+
 async fn ensure_schema(pool: &PgPool) {
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
     asyncevents::Plane::new(pool.clone(), dsn)
@@ -761,6 +773,7 @@ async fn wired_with_verifier(
     // Registration forced open without the env, on the ctx's transport-backed bus so
     // `register`'s durable `emit_tx` lands in the shared event log.
     let svc = Arc::new(Service {
+        tokens: test_tokens(pool),
         store: Store { pool: pool.clone() },
         bus: ctx.bus().clone(),
         open_registration: true,
@@ -829,6 +842,7 @@ async fn wired_with_failing_bus(pool: &PgPool) -> Arc<Service> {
     ensure_schema(pool).await;
     let ctx = Context::with_db_and_transport(pool.clone(), asyncevents::testing::failing_transport());
     Arc::new(Service {
+        tokens: test_tokens(pool),
         store: Store { pool: pool.clone() },
         bus: ctx.bus().clone(),
         open_registration: true,

@@ -238,6 +238,7 @@ fn dead_directory_service() -> Arc<Service> {
         .connect_lazy("postgres://gamebackend:gamebackend@127.0.0.1:1/accounts-directory-dead")
         .unwrap();
     Arc::new(Service {
+        tokens: test_tokens(&pool),
         store: Store { pool },
         bus: Arc::new(Bus::new()),
         open_registration: true,

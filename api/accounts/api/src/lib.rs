@@ -73,6 +73,21 @@ pub const DEV_GAME_CLIENT_ID: &str = "dev-game";
 /// is `c_` and 22 base64url characters.
 pub const MAX_CLIENT_ID_BYTES: usize = 64;
 
+/// Maximum accepted access token (JWT) size in bytes. accounts fails to boot when a token
+/// with its configured issuer and the longest claims would be larger.
+pub const MAX_ACCESS_TOKEN_BYTES: usize = 1024;
+
+/// An access token's lifetime: `exp - iat`.
+pub const ACCESS_TTL_MINUTES: u64 = 15;
+
+/// How long past `exp` a verifier still accepts an access token, for clock skew between
+/// accounts and the verifying process.
+pub const ACCESS_EXP_LEEWAY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long a revocation outlives the last token it can refuse: it expires
+/// [`ACCESS_TTL_MINUTES`] + [`ACCESS_EXP_LEEWAY`] + this after it was written.
+pub const REVOCATION_SKEW_MARGIN: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// The grant types an OIDC client lists: the ways a token may be minted for it.
 pub mod grant_types {
     /// Email and password register and login.
@@ -242,6 +257,53 @@ pub trait Directory: Send + Sync {
 pub trait Sessions: Send + Sync {
     #[retry_safe]
     async fn verify_session(&self, token: String) -> Result<Option<String>, Error>;
+}
+
+/// The public half of an ES256 signing key as a JWK (RFC 7517); it has no member a private
+/// key could fill.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicJwk {
+    pub kty: String,
+    pub crv: String,
+    pub x: String,
+    pub y: String,
+    pub kid: String,
+    #[serde(rename = "use")]
+    pub use_: String,
+    pub alg: String,
+}
+
+/// A player or client cut-off: it refuses that subject's access tokens whose `iat` is at
+/// or before `revoked_at_unix`, the revocation time in Unix seconds rounded up.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Revoked {
+    pub id: String,
+    pub revoked_at_unix: i64,
+}
+
+/// What a verifier needs to check a player access token without calling accounts per
+/// request. Every list holds only revocations that can still refuse an unexpired token.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenStateSnapshot {
+    /// The `iss` of every access token.
+    pub issuer: String,
+    /// The signing keys a token's `kid` may name.
+    pub keys: Vec<PublicJwk>,
+    /// Token families (`sid`) whose every token is refused.
+    pub revoked_families: Vec<String>,
+    /// Cut-offs by player (`sub`).
+    pub revoked_players: Vec<Revoked>,
+    /// Cut-offs by client (`client_id`).
+    pub revoked_clients: Vec<Revoked>,
+}
+
+/// The verification state of player access tokens, which a verifier pulls and refreshes.
+/// WIRE-ONLY like [`Sessions`]: no leading `Identity` and no `#[http]`.
+#[rpc(prefix = "accounts")]
+#[async_trait]
+pub trait TokenState: Send + Sync {
+    #[retry_safe]
+    async fn token_state(&self) -> Result<TokenStateSnapshot, Error>;
 }
 
 /// The accounts module's player-facing capability: the operations that establish or

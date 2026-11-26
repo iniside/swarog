@@ -37,6 +37,7 @@ pub mod conformance;
 mod discovery;
 mod epic_oauth;
 mod guest;
+mod jwt;
 mod oauth_flow;
 mod oidc;
 mod ops;
@@ -274,6 +275,18 @@ CREATE TABLE IF NOT EXISTS accounts.refresh_tokens (
 	used_at     timestamptz,
 	replaced_by text
 );
+
+-- Access-token revocations, read by every verifier. No foreign keys: a deleted player's or
+-- client's row must outlive the cascade until every token it refuses has expired.
+CREATE TABLE IF NOT EXISTS accounts.token_revocations (
+	id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+	family_id  uuid,
+	player_id  uuid,
+	client_id  text,
+	revoked_at timestamptz NOT NULL,
+	expires_at timestamptz NOT NULL,
+	CHECK (num_nonnulls(family_id, player_id, client_id) = 1)
+);
 "#;
 
 /// The web-OAuth in-flight redemption store, shared by every provider's flow. Shared, NOT
@@ -445,6 +458,7 @@ pub struct Service {
     login_slots: Arc<Semaphore>,
     /// The injectable verify seam — [`ArgonVerifier`] in production, fakes in tests.
     verifier: Arc<dyn PasswordVerifier>,
+    pub(crate) tokens: jwt::Tokens,
 }
 
 impl Service {
@@ -1289,6 +1303,13 @@ impl accountsapi::Sessions for Service {
 }
 
 #[async_trait]
+impl accountsapi::TokenState for Service {
+    async fn token_state(&self) -> Result<accountsapi::TokenStateSnapshot, Error> {
+        self.tokens.snapshot().await.map_err(|e| internal(format!("{e:#}")))
+    }
+}
+
+#[async_trait]
 impl accountsapi::Auth for Service {
     /// Password self-registration (AuthNone): creates a player + password identity
     /// and appends the `player.registered` durable event in ONE tx, then mints a session.
@@ -1630,6 +1651,11 @@ impl TxHandler for PruneHandler {
                 .prune_expired_browser_sessions(conn)
                 .await
                 .map_err(BusError::transport)?;
+            self.svc
+                .store
+                .prune_expired_revocations(conn)
+                .await
+                .map_err(BusError::transport)?;
             Ok(())
         })
     }
@@ -1651,7 +1677,7 @@ pub struct Accounts {
     svc: OnceLock<Arc<Service>>,
     web_limiter: OnceLock<Arc<httpmw::IpLimiter>>,
     web_limiter_reaper: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    signing_kek: OnceLock<signing_keys::SigningKek>,
+    signing_kek: Arc<OnceLock<signing_keys::SigningKek>>,
     issuer: OnceLock<String>,
     dev_seed: OnceLock<bool>,
 }
@@ -1668,7 +1694,7 @@ impl Accounts {
             svc: OnceLock::new(),
             web_limiter: OnceLock::new(),
             web_limiter_reaper: std::sync::Mutex::new(None),
-            signing_kek: OnceLock::new(),
+            signing_kek: Arc::new(OnceLock::new()),
             issuer: OnceLock::new(),
             dev_seed: OnceLock::new(),
         }
@@ -1698,7 +1724,10 @@ impl Accounts {
     ) -> anyhow::Result<()> {
         let kek = match self.signing_kek.get() {
             Some(kek) => kek.clone(),
-            None => signing_keys::required_kek(kek_env)?,
+            None => {
+                let kek = signing_keys::required_kek(kek_env)?;
+                self.signing_kek.get_or_init(|| kek).clone()
+            }
         };
         let pool = ctx
             .db()
@@ -1766,6 +1795,10 @@ impl Accounts {
             .index(
                 "accounts.oauth_states_created_idx",
                 "CREATE INDEX oauth_states_created_idx ON accounts.oauth_states(created_at)",
+            )
+            .index(
+                "accounts.token_revocations_expires_idx",
+                "CREATE INDEX token_revocations_expires_idx ON accounts.token_revocations(expires_at)",
             )
             .run()
             .await?;
@@ -1875,8 +1908,7 @@ impl Accounts {
         }
         let flows = web::Flows { epic: epic_flow, google: google_flow };
         ctx.mount(web::hosted_browser_router(svc.clone(), cookie_secure, login_limiter, flows)?);
-        let signing_keys = signing_keys::SigningKeys::new(svc.store.pool.clone(), SIGNING_KEYS_SCHEMA);
-        ctx.mount(discovery::router(issuer, Arc::new(signing_keys)));
+        ctx.mount(discovery::router(issuer, svc.tokens.keys()));
         svc.providers
             .set(Arc::new(config.providers(&svc.store.pool)))
             .map_err(|_| anyhow::anyhow!("accounts.init ran twice"))?;
@@ -1917,6 +1949,7 @@ impl Accounts {
             edge::EDGE_SLOT,
             edge::EdgeReg::new(move |server| {
                 accountsrpc::sessions_rpc::register_server(server, svc.clone());
+                accountsrpc::token_state_rpc::register_server(server, svc.clone());
                 accountsrpc::directory_rpc::register_server(server, svc.clone());
                 accountsrpc::auth_rpc::register_server(server, svc);
             }),
@@ -1934,6 +1967,7 @@ impl Accounts {
             opsapi::DescribeManifest::concat([
                 accountsrpc::auth_rpc::describe(),
                 accountsrpc::sessions_rpc::describe(),
+                accountsrpc::token_state_rpc::describe(),
                 accountsrpc::directory_rpc::describe(),
             ]),
         );
@@ -1948,12 +1982,13 @@ impl Module for Accounts {
     }
 
     /// Phase 1, BEFORE any `init`: builds the store-backed service and offers it
-    /// under all three capability keys — `accounts.sessions` (the gateway's verifier
-    /// resolves it), `accounts.auth` and `accounts.directory` — so a dependent's
+    /// under all four capability keys — `accounts.sessions` (the gateway's verifier
+    /// resolves it), `accounts.token_state`, `accounts.auth` and `accounts.directory` —
+    /// so a dependent's
     /// `require` resolves regardless of registration order.
     fn register(&self, ctx: &Context) -> anyhow::Result<()> {
         let issuer = signing_keys::oidc_issuer(std::env::var_os(signing_keys::ISSUER_ENV))?;
-        self.issuer.get_or_init(|| issuer);
+        let issuer = self.issuer.get_or_init(|| issuer).clone();
         if let Some(kek) = signing_keys::kek_from(std::env::var_os(signing_keys::KEK_ENV))? {
             self.signing_kek.get_or_init(|| kek);
         }
@@ -1962,7 +1997,7 @@ impl Module for Accounts {
             .ok_or_else(|| anyhow::anyhow!("accounts requires a DB pool"))?
             .clone();
         let svc = Arc::new(Service {
-            store: Store { pool },
+            store: Store { pool: pool.clone() },
             bus: ctx.bus().clone(),
             open_registration: env_bool("ACCOUNTS_OPEN_REGISTRATION", false),
             providers: OnceLock::new(),
@@ -1971,6 +2006,7 @@ impl Module for Accounts {
             argon_permits: Arc::new(Semaphore::new(2)),
             login_slots: Arc::new(Semaphore::new(32)),
             verifier: Arc::new(ArgonVerifier),
+            tokens: jwt::Tokens::new(pool, SIGNING_KEYS_SCHEMA, issuer, self.signing_kek.clone()),
         });
         self.svc
             .set(svc.clone())
@@ -1978,6 +2014,10 @@ impl Module for Accounts {
 
         ctx.registry().provide::<dyn accountsapi::Sessions>(
             registry::key("accounts", "sessions"),
+            svc.clone(),
+        );
+        ctx.registry().provide::<dyn accountsapi::TokenState>(
+            registry::key("accounts", "token_state"),
             svc.clone(),
         );
         ctx.registry()
@@ -2027,6 +2067,7 @@ impl Module for Accounts {
     /// `spawn_blocking` thread, so the first unknown-user login never pays the
     /// 64 MiB argon2id init cost on an async Tokio worker.
     async fn start(&self, _ctx: &Context) -> anyhow::Result<()> {
+        self.svc().tokens.check_token_size().await?;
         tokio::task::spawn_blocking(|| {
             std::sync::LazyLock::force(&DUMMY_HASH);
         })
