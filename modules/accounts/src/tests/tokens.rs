@@ -45,13 +45,14 @@ async fn a_signed_token_round_trips_and_one_past_exp_and_leeway_is_refused() {
     let tokens = &svc.tokens;
     let (sub, sid) = (random_uuid(&pool).await, random_uuid(&pool).await);
     let now = Tokens::unix_now();
+    let mut conn = pool.acquire().await.unwrap();
 
     let fresh = tokens.claims(&sub, accountsapi::SWAROG_AUDIENCE, TEST_CLIENT_ID, &sid, now);
-    let token = tokens.sign(&fresh).await.unwrap();
+    let token = tokens.sign(&mut conn, &fresh).await.unwrap();
     assert_eq!(tokens.verify_access(&token).await.unwrap(), Some(fresh.clone()));
 
     let stale = tokens.claims(&sub, accountsapi::SWAROG_AUDIENCE, TEST_CLIENT_ID, &sid, now - 3600);
-    let expired = tokens.sign(&stale).await.unwrap();
+    let expired = tokens.sign(&mut conn, &stale).await.unwrap();
     assert_eq!(tokens.verify_access(&expired).await.unwrap(), None, "a token an hour old verified");
 
     let snapshot = tokens.snapshot().await.unwrap();
@@ -255,16 +256,17 @@ async fn token_state_serves_the_keys_and_the_live_revocations() {
 
     let tokens = &svc.tokens;
     let sid = random_uuid(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
     for (sub, client_id, cut) in [(&player, TEST_CLIENT_ID, base + 1), (&sid, client.as_str(), base)] {
         let at_cut = tokens.claims(sub, accountsapi::SWAROG_AUDIENCE, client_id, &sid, cut);
-        let refused = tokens.sign(&at_cut).await.unwrap();
+        let refused = tokens.sign(&mut conn, &at_cut).await.unwrap();
         assert_eq!(Tokens::verify_against(&state, &refused, cut), None, "iat == revoked_at verified");
         let after = tokens.claims(sub, accountsapi::SWAROG_AUDIENCE, client_id, &sid, cut + 1);
-        let accepted = tokens.sign(&after).await.unwrap();
+        let accepted = tokens.sign(&mut conn, &after).await.unwrap();
         assert_eq!(Tokens::verify_against(&state, &accepted, cut + 1), Some(after), "iat > revoked_at refused");
     }
     let in_family = tokens.claims(&sid, accountsapi::SWAROG_AUDIENCE, TEST_CLIENT_ID, &family, base + 10);
-    let revoked_family = tokens.sign(&in_family).await.unwrap();
+    let revoked_family = tokens.sign(&mut conn, &in_family).await.unwrap();
     assert_eq!(Tokens::verify_against(&state, &revoked_family, base + 10), None, "a revoked family verified");
 
     sqlx::query(
@@ -277,4 +279,54 @@ async fn token_state_serves_the_keys_and_the_live_revocations() {
     .execute(&pool)
     .await
     .unwrap();
+}
+
+/// A pool of one connection, so a mint that asked the pool for a second connection while
+/// holding its transaction's would wait out `acquire_timeout` and fail. The register reads
+/// the empty key cache and the refresh one stale past the cache TTL; both read it on their
+/// own transaction.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mint_and_a_refresh_read_a_stale_signing_key_on_their_own_connection() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    let Some(pool) = test_pool().await else { return };
+    let (ctx, _svc) = wired(&pool).await;
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let one = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect(&dsn)
+        .await
+        .unwrap();
+    let base = Instant::now();
+    let elapsed = Arc::new(AtomicU64::new(0));
+    let clock: crate::signing_keys::Clock = {
+        let elapsed = elapsed.clone();
+        Arc::new(move || base + Duration::from_secs(elapsed.load(Ordering::SeqCst)))
+    };
+    let svc = Service {
+        tokens: Tokens::with_clock(
+            one.clone(),
+            "accounts",
+            accountsapi::DEFAULT_OIDC_ISSUER.to_string(),
+            Arc::new(OnceLock::from(dev_kek())),
+            clock,
+        ),
+        store: Store { pool: one },
+        bus: ctx.bus().clone(),
+        open_registration: true,
+        providers: OnceLock::new(),
+        argon_permits: Arc::new(Semaphore::new(2)),
+        login_slots: Arc::new(Semaphore::new(32)),
+        verifier: Arc::new(ArgonVerifier),
+    };
+
+    let sess = svc
+        .register(format!("one-conn-{}@test.local", suffix()), "pw".into(), "oneconn".into(), test_client())
+        .await
+        .unwrap();
+    elapsed.store(crate::jwt::ACTIVE_KEY_CACHE_TTL.as_secs() + 1, Ordering::SeqCst);
+    let next = svc.refresh(sess.refresh_token.clone()).await.unwrap();
+    assert!(svc.tokens.verify_access(&next.token).await.unwrap().is_some(), "the refreshed token did not verify");
 }

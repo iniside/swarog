@@ -10,7 +10,7 @@ use accountsapi::{
 };
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 use crate::signing_keys::{self, Clock, SigningKek, SigningKeys, KEK_ENV};
 
@@ -103,15 +103,18 @@ impl Tokens {
         }
     }
 
-    pub(crate) async fn sign(&self, claims: &AccessClaims) -> anyhow::Result<String> {
-        let active = self.active_key().await?;
+    /// Signs `claims` with the active key. A cache refresh reads the key on `conn`, never on
+    /// a second pool connection: a mint signing inside its transaction passes that
+    /// transaction's connection, so it cannot wait on the pool while holding one of its own.
+    pub(crate) async fn sign(&self, conn: &mut PgConnection, claims: &AccessClaims) -> anyhow::Result<String> {
+        let active = self.active_key(conn).await?;
         let mut header = Header::new(Algorithm::ES256);
         header.typ = Some(ACCESS_TOKEN_TYP.to_string());
         header.kid = Some(active.kid.clone());
         Ok(jsonwebtoken::encode(&header, claims, &active.key)?)
     }
 
-    async fn active_key(&self) -> anyhow::Result<Arc<ActiveKey>> {
+    async fn active_key(&self, conn: &mut PgConnection) -> anyhow::Result<Arc<ActiveKey>> {
         let mut cached = self.active.lock().await;
         let now = (self.now)();
         if let Some((read_at, key)) = cached.as_ref() {
@@ -119,12 +122,12 @@ impl Tokens {
                 return Ok(key.clone());
             }
         }
-        let key = Arc::new(self.read_active_key().await?);
+        let key = Arc::new(self.read_active_key(conn).await?);
         *cached = Some((now, key.clone()));
         Ok(key)
     }
 
-    async fn read_active_key(&self) -> anyhow::Result<ActiveKey> {
+    async fn read_active_key(&self, conn: &mut PgConnection) -> anyhow::Result<ActiveKey> {
         let kek = self
             .kek
             .get()
@@ -133,7 +136,7 @@ impl Tokens {
             "SELECT kid, sealed_key, nonce FROM {}.signing_keys WHERE status = 'active'",
             self.schema
         ))
-        .fetch_one(&self.pool)
+        .fetch_one(conn)
         .await?;
         let der = signing_keys::open(kek, &kid, &nonce, &sealed).ok_or_else(|| {
             anyhow::anyhow!("accounts: the active signing key {kid} does not open under {KEK_ENV}")
@@ -147,7 +150,8 @@ impl Tokens {
         let uuid = "ffffffff-ffff-ffff-ffff-ffffffffffff";
         let client_id = "x".repeat(MAX_CLIENT_ID_BYTES);
         let longest = self.claims(uuid, SWAROG_AUDIENCE, &client_id, uuid, i64::MAX - ACCESS_TTL_SECS);
-        let token = self.sign(&longest).await?;
+        let mut conn = self.pool.acquire().await?;
+        let token = self.sign(&mut conn, &longest).await?;
         if token.len() > MAX_ACCESS_TOKEN_BYTES {
             anyhow::bail!(
                 "accounts: an access token for issuer {} can be {} bytes, over the {MAX_ACCESS_TOKEN_BYTES} \

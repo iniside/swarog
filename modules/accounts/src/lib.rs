@@ -517,7 +517,7 @@ impl Service {
         } else {
             String::new()
         };
-        let token = self.sign_access(&p.id, client_id, &family_id).await?;
+        let token = self.sign_access(conn, &p.id, client_id, &family_id).await?;
         let stamped = self
             .store
             .stamp_identity_used_tx(conn, provider, subject, &p.id, secret_hash)
@@ -534,11 +534,18 @@ impl Service {
         })
     }
 
-    /// Signs an access token of family `family_id` for `player_id` and `client_id`, issued now.
-    async fn sign_access(&self, player_id: &str, client_id: &str, family_id: &str) -> Result<String, Error> {
+    /// Signs an access token of family `family_id` for `player_id` and `client_id`, issued now,
+    /// reading a stale signing key on `conn`, the caller's transaction.
+    async fn sign_access(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        client_id: &str,
+        family_id: &str,
+    ) -> Result<String, Error> {
         let iat = jwt::Tokens::unix_now();
         let claims = self.tokens.claims(player_id, accountsapi::SWAROG_AUDIENCE, client_id, family_id, iat);
-        self.tokens.sign(&claims).await.map_err(|e| internal(format!("{e:#}")))
+        self.tokens.sign(conn, &claims).await.map_err(|e| internal(format!("{e:#}")))
     }
 
     /// Mints a fresh bearer token through the password identity `verified` matched, in its
@@ -1103,7 +1110,7 @@ impl Service {
             .touch_family_tx(conn, family_id)
             .await
             .map_err(internal)?;
-        let token = self.sign_access(player_id, &client_id, family_id).await?;
+        let token = self.sign_access(conn, player_id, &client_id, family_id).await?;
         Ok(accountsapi::Session {
             player_id: player_id.to_string(),
             token,
