@@ -4,7 +4,11 @@ Last updated: 2026-11-26
 
 ## In progress
 
-_None._
+- [ ] **`login_submit` deletes the old browser session outside the transaction**
+  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
+- [ ] **`browser_sign_in` and `login_submit` delete then create without one transaction**
+  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
+  Being fixed by docs/plans/2026-11-26-1440-accounts-browser-fixes-plan.md Step 1.
 
 ## Open
 
@@ -77,10 +81,6 @@ _None._
 
 ### Known limits (accounts-browser-login step 8)
 
-- [ ] **`login_submit` deletes the old browser session outside the transaction**
-  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
-- [ ] **`browser_sign_in` and `login_submit` delete then create without one transaction**
-  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
 - [ ] **The old `/accounts/epic` binding cookie can coexist for up to 10 minutes**
   Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
 - [ ] **Sign-in limiter test helpers repeat 5.0/20**
