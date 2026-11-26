@@ -7,12 +7,19 @@
 //! `X-Forwarded-For`. Cookies are carried by hand (no cookie store), so each request states exactly
 //! which `swarog_session` it presents and a cookie the browser was told to forget can be replayed.
 //!
-//! The bucket checks ([BR1], [BR2]) run last: with accounts-svc not trusting gateway-svc's host
+//! The bucket checks ([BR1], [BR2], [BR3]) run last: with accounts-svc not trusting gateway-svc's host
 //! every request it meets is one client, so a burst before the sign-in checks would refuse them.
-//! Each burst names its two clients by `X-Forwarded-For` addresses from TEST-NET-3 that no other check
+//! Each burst names its clients by `X-Forwarded-For` addresses from TEST-NET-3 that no other check
 //! uses, and the gateway's own front-door limiter (keyed on this harness's loopback peer, its
 //! answer "rate limit exceeded") is told apart from accounts' by the body, never counted as either
-//! client's answer.
+//! client's answer. [BR1] and [BR2] show a second client passing the bucket the first drained; [BR3]
+//! drains one client on the hosted form and shows its next Epic starts refused, so the form and
+//! the Epic start draw from one bucket as accounts wires it.
+//!
+//! Timing rule: the run after a refusal (`B_REQUESTS` back to back) is timed from the refusal, and
+//! a run that took `B_REQUESTS / REFILL_PER_SEC` seconds or longer, or met any gateway 429, could
+//! have been served by tokens refilled into the bucket that refused. Such a run proves neither
+//! separate buckets nor a shared one, so [BR1], [BR2] and [BR3] fail it as INCONCLUSIVE, never pass.
 //!
 //! Break runs (each a full splitproof run, then reverted):
 //! - `"/accounts/oidc"` dropped from gateway-svc's passthrough prefixes (`cmd/gateway-svc/src/addrs.rs`):
@@ -25,7 +32,7 @@
 //!   second client's requests 429; the cookie minted before the reset still 200 with its row kept),
 //!   BL1-BL5 and BL7 green (2026-11-26, step 7).
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use reqwest::header::{COOKIE, LOCATION, SET_COOKIE};
@@ -54,8 +61,15 @@ const HOSTED_A: &str = "203.0.113.71";
 const HOSTED_B: &str = "203.0.113.72";
 const EPIC_A: &str = "203.0.113.73";
 const EPIC_B: &str = "203.0.113.74";
+/// The one client of [BR3], drained on the hosted form then sent to the Epic start.
+const SHARED: &str = "203.0.113.75";
 /// Client B's requests, each of which must pass the bucket client A drained.
 const B_REQUESTS: usize = 5;
+/// The tokens a second accounts' sign-in bucket refills (`modules/accounts/src/lib.rs`, `IpLimiter::new("accounts_login", 5.0, 20)`).
+const REFILL_PER_SEC: f64 = 5.0;
+/// Long enough for gateway-svc's front-door bucket, keyed on this harness's loopback peer, to refill
+/// from empty (`cmd/gateway-svc/src/main.rs`, `with_rate_limit_default(20.0, 40)`: 40 tokens at 20 a second).
+const GATEWAY_REFILL: Duration = Duration::from_millis(2500);
 
 pub(super) async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &reqwest::Client, tag: &str) -> Result<()> {
     if let Err(e) = sign_in_checks(ctx, pool, p, front, admin, tag).await {
@@ -238,65 +252,132 @@ async fn bucket_checks(ctx: &Ctx, p: &mut Proof, front: &str, tag: &str) -> Resu
     };
     let br1 = two_clients(hosted, HOSTED_A, HOSTED_B, HOSTED_REFUSAL).await?;
     p.check(
-        &format!("[BR1{tag}] a burst on POST {LOGIN} from one X-Forwarded-For client -> 429, a second client's posts -> 403 (bucket passed)"),
-        br1.limited && br1.b.iter().all(|code| *code == 403),
+        &format!("[BR1{tag}] a burst on POST {LOGIN} from one X-Forwarded-For client -> 429, a second client's posts -> 403 (bucket passed) within the refill budget"),
+        br1.limited && br1.b.timely() && br1.b.codes.iter().all(|code| *code == 403),
         br1.detail(),
     );
 
     // [BR2] the JSON Epic start draws from the same bucket kind, per client: A refused, B's
     // starts all answered (200 with an authorize_url).
     let epic = |client: &str| ctx.http_noredirect.post(format!("{front}{EPIC_START}")).header("X-Forwarded-For", client);
-    let br2 = two_clients(epic, EPIC_A, EPIC_B, EPIC_REFUSAL).await?;
+    let br2 = two_clients(&epic, EPIC_A, EPIC_B, EPIC_REFUSAL).await?;
     p.check(
-        &format!("[BR2{tag}] a burst on POST {EPIC_START} from one X-Forwarded-For client -> 429, a second client's starts -> 200"),
-        br2.limited && br2.b.iter().all(|code| *code == 200),
+        &format!("[BR2{tag}] a burst on POST {EPIC_START} from one X-Forwarded-For client -> 429, a second client's starts -> 200 within the refill budget"),
+        br2.limited && br2.b.timely() && br2.b.codes.iter().all(|code| *code == 200),
         br2.detail(),
+    );
+
+    // [BR3] the hosted form and the Epic start share ONE bucket per client: a client drained on the
+    // form is refused on its very next Epic starts. A separate Epic limiter would grant this client
+    // a fresh burst, so every start would answer 200.
+    let (drained, refused, gateway) = drain(|| hosted(SHARED), HOSTED_REFUSAL).await?;
+    let starts = run(|| epic(SHARED), EPIC_REFUSAL).await?;
+    p.check(
+        &format!("[BR3{tag}] one X-Forwarded-For client refused on POST {LOGIN} -> its next POST {EPIC_START} -> 429 (one shared bucket) within the refill budget"),
+        refused && starts.timely() && starts.codes.contains(&429),
+        format!("form_sent={drained} form_limited={refused} form_gateway_429={gateway} epic {}", starts.detail()),
     );
     Ok(())
 }
 
 /// One two-client burst: how many requests client A sent until accounts refused it, the
-/// gateway's own 429s met on the way, and client B's answers.
+/// gateway's own 429s met on the way, and client B's run after A's refusal.
 struct Burst {
     a_sent: u32,
     limited: bool,
     gateway: u32,
-    b: Vec<u16>,
+    b: Run,
 }
 
 impl Burst {
     fn detail(&self) -> String {
-        format!("a_sent={} a_limited={} gateway_429={} b={:?}", self.a_sent, self.limited, self.gateway, self.b)
+        format!("a_sent={} a_limited={} a_gateway_429={} {}", self.a_sent, self.limited, self.gateway, self.b.detail())
     }
 }
 
-/// Client A sends until accounts refuses it (`refusal` in a 429's body; at most 100), then client B
-/// sends `B_REQUESTS` back to back. A 429 without `refusal` is the gateway's front-door limiter,
-/// not accounts': that request is sent again after a short pause and counts for neither client.
+/// Requests sent back to back right after a client was refused: accounts' answers, the gateway's own
+/// 429s met among them, and the time from the refusal to the last answer.
+struct Run {
+    codes: Vec<u16>,
+    gateway: u32,
+    elapsed: Duration,
+}
+
+impl Run {
+    /// Whether the run can tell two buckets from one. Accounts' bucket refills `REFILL_PER_SEC`
+    /// tokens a second, so a run of `B_REQUESTS` lasting `B_REQUESTS / REFILL_PER_SEC` seconds or
+    /// longer could be served by tokens refilled into the very bucket that refused, and a gateway 429
+    /// among them adds a pause the timer cannot vouch for: either way the run proves nothing.
+    fn timely(&self) -> bool {
+        self.gateway == 0 && self.elapsed.as_secs_f64() < run_budget_secs()
+    }
+
+    fn detail(&self) -> String {
+        let verdict = if self.timely() { "" } else { " INCONCLUSIVE: the run met a gateway 429 or outlasted the refill budget" };
+        format!(
+            "codes={:?} run_ms={} budget_ms={} run_gateway_429={}{verdict}",
+            self.codes,
+            self.elapsed.as_millis(),
+            (run_budget_secs() * 1000.0) as u64,
+            self.gateway,
+        )
+    }
+}
+
+/// The seconds a `B_REQUESTS` run may take before accounts' refill alone could have answered it.
+fn run_budget_secs() -> f64 {
+    B_REQUESTS as f64 / REFILL_PER_SEC
+}
+
+/// Client A sends until accounts refuses it, then client B sends `B_REQUESTS` back to back, timed
+/// from A's refusal.
 async fn two_clients(build: impl Fn(&str) -> reqwest::RequestBuilder, a: &str, b: &str, refusal: &str) -> Result<Burst> {
-    let mut burst = Burst { a_sent: 0, limited: false, gateway: 0, b: Vec::new() };
-    while burst.a_sent < 100 && !burst.limited {
-        match met(build(a), refusal).await? {
-            None => burst.gateway += 1,
+    let (a_sent, limited, gateway) = drain(|| build(a), refusal).await?;
+    let run = run(|| build(b), refusal).await?;
+    Ok(Burst { a_sent, limited, gateway, b: run })
+}
+
+/// Sends until accounts refuses (`refusal` in a 429's body; at most 100 requests): the requests
+/// accounts answered, whether it refused, and the gateway's own 429s met. A 429 without `refusal`
+/// is the gateway's front-door limiter, not accounts': that request is sent again after a short
+/// pause and is not counted as sent. It first waits `GATEWAY_REFILL`, so the drain and the timed run
+/// after it (about 26 requests) start on a full gateway bucket instead of the one the previous
+/// burst emptied; a run that still meets a gateway 429 fails as inconclusive.
+async fn drain(build: impl Fn() -> reqwest::RequestBuilder, refusal: &str) -> Result<(u32, bool, u32)> {
+    tokio::time::sleep(GATEWAY_REFILL).await;
+    let (mut sent, mut limited, mut gateway) = (0u32, false, 0u32);
+    while sent < 100 && !limited {
+        match met(build(), refusal).await? {
+            None => gateway += 1,
             Some(code) => {
-                burst.a_sent += 1;
-                burst.limited = code == 429;
+                sent += 1;
+                limited = code == 429;
             }
         }
-        if burst.gateway > 50 {
-            bail!("the gateway's front door refused {} requests: {}", burst.gateway, burst.detail());
+        if gateway > 50 {
+            bail!("the gateway's front door refused {gateway} requests while draining (sent={sent} limited={limited})");
         }
     }
-    while burst.b.len() < B_REQUESTS {
-        match met(build(b), refusal).await? {
-            None => burst.gateway += 1,
-            Some(code) => burst.b.push(code),
+    Ok((sent, limited, gateway))
+}
+
+/// `B_REQUESTS` requests accounts answered, sent back to back and timed from the call (the
+/// refusal just before it). A gateway 429 is retried as in `drain` and counted.
+async fn run(build: impl Fn() -> reqwest::RequestBuilder, refusal: &str) -> Result<Run> {
+    let started = Instant::now();
+    let mut run = Run { codes: Vec::new(), gateway: 0, elapsed: Duration::ZERO };
+    while run.codes.len() < B_REQUESTS {
+        match met(build(), refusal).await? {
+            None => run.gateway += 1,
+            Some(code) => run.codes.push(code),
         }
-        if burst.gateway > 50 {
-            bail!("the gateway's front door refused {} requests: {}", burst.gateway, burst.detail());
+        if run.gateway > 50 {
+            run.elapsed = started.elapsed();
+            bail!("the gateway's front door refused {} requests: {}", run.gateway, run.detail());
         }
     }
-    Ok(burst)
+    run.elapsed = started.elapsed();
+    Ok(run)
 }
 
 /// The status accounts answered, or none when the gateway's own limiter answered 429 (after a
