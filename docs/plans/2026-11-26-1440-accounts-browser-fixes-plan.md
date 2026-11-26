@@ -1,6 +1,7 @@
 # Accounts browser sign-in fixes and cleanups
 
-Status: waiting for approval
+Status: approved by the owner 2026-11-26 ("ok, mozesz zaczync z rekomendacjami"); runs after the
+oidc-signing-keys Step 1 review fixes, before its Step 2.
 Date: 2026-11-26
 Source: owner, on the Known limits list in docs/todo/accounts.md: "cos mi sie wydaje, ze czesc z nich to
 zwyczajnie bugi to naprawy" and "ok to zrob plan razem z cleanupem" (2026-11-26).
@@ -136,7 +137,8 @@ Verify: `cargo test -p accounts`, `cargo clippy -p accounts --all-targets`.
 
 D6. After oidc-signing-keys Step 1 has landed. Files: tools/processctl/src/fleet.rs,
 tools/processctl/src/fleet_tests.rs, tools/processctl/src/lib.rs, tools/splitproof/src/accounts_browser_checks.rs
-and any other processctl or splitproof copy of the origin a fresh grep for `8082` finds (comments, log strings
+the Development split issuer that the oidc-signing-keys Step 1 review fix adds (its E1), and any other
+processctl or splitproof copy of the origin a fresh grep for `8082` finds (comments, log strings
 and demoseed help text are not consumers).
 Invariant: the fleet env and the proof constants are byte-identical to today's.
 Verify: `cargo test -p processctl`, `cargo clippy -p processctl -p splitproof --all-targets`.

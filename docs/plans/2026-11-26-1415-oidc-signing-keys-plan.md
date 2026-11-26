@@ -9,7 +9,31 @@ Owner answers (2026-11-26): 1 encrypt the private keys (option b) unless much mo
 guarantees a key.
 Plan review: core-reviewer (opus), ACCEPT with changes; P1-P9 folded in below.
 Sequencing: after docs/plans/2026-11-26-1352-oauth-drift-fixes-plan.md (both edit
-`tools/processctl/src/fleet.rs` env lists).
+`tools/processctl/src/fleet.rs` env lists). Owner (2026-11-26, "ok, mozesz zaczync z rekomendacjami"):
+docs/plans/2026-11-26-1440-accounts-browser-fixes-plan.md runs after Step 1's review fixes and before Step 2.
+
+## Amendments after Step 1 review (owner, 2026-11-26)
+
+Step 1 landed as bcd91a64; its core-reviewer and proof-auditor found the following, and the owner took
+every recommendation. The review-fix commit for Step 1 carries E1-E4; Step 2 carries E5 and E6.
+- E1 (amends D4, D7). Every launcher that boots accounts sets `ACCOUNTS_OIDC_ISSUER` to its own front
+  door, not only the proofs: the devctl Development split and `weles/fleet.split.toml` to the gateway on
+  8082 (port 8080 is `characters-svc` there, fleet.rs:838, weles/fleet.split.toml:118), the C# stage to
+  its `HTTP_PORT` (csharp.rs:26), compose.dev to the port compose publishes (`SWAROG_HTTP_PORT`,
+  compose.yaml:47). The fleet test asserts the Development split issuer instead of `None`.
+- E2 (amends D2b). processctl gets no testdb dev-dependency: the KEK pin moves to a crate that already
+  depends on testdb and calls `test_pool` (devctl or verifyctl), and asserts the accounts env the public
+  fleet builders produce equals `testdb::DEV_ACCOUNTS_SIGNING_KEK` in both topologies. The drift-gate
+  exemption in tools/testdb/src/drift.rs and its test are reverted.
+- E3. `cmd/server/tests/tls_front.rs` (boots the monolith on the shared DSN) sets the dev KEK.
+- E4. The weles KEK pin finds its targets (every `weles/fleet*.toml`, services selected by package or
+  provider, at least one per file) instead of naming two files and two services; a test pins that
+  `compose.yaml` passes both keys through to `server`.
+- E5. Step 2 replaces tools/testdb/src/tests.rs `the_dev_signing_kek_is_standard_base64_of_32_bytes` with
+  an accounts test that runs the constant through the real KEK parser, and deletes the testdb copy.
+- E6. After the accounts-browser-fixes plan, `init` is split into an env half and a body (its D3): Steps 2
+  and 3 put new env reads in the env half and new routes in the body. The `init` anchors in Facts
+  (lib.rs:1627-1655) predate that split; re-anchor before dispatch.
 
 ## Problem
 
