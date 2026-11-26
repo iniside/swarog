@@ -403,8 +403,6 @@ input goldens. Also (added in review of Step 2):
 - the admin Sessions panel's Client column (admin.rs:1186) reads `oidc_clients.display_name` through
   `token_families.client_id`; it replaces `fake_client`, which is production view code, not only a test
   helper;
-- the expired refresh-token prune locks its rows in ascending family id, the order every multi-family
-  delete uses since 6e3c5b8f, so it cannot deadlock with a family cascade.
 (b) Closes the second cut. After it there is one token path.
 (c) Diff every blessed file: only session lines go and cap lines change. Then the workspace suite and
 the same verifyctl stages as Step 3 in one rollout.
