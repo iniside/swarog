@@ -29,7 +29,8 @@
 //! ## No `--all-targets` — another named gap
 //!
 //! `processctl` is ring-free only in NORMAL deps; its `[dev-dependencies]`
-//! (`asyncevents`/`invalidation`/`scheduler`/`accountsapi`, the anti-drift mirrors) pull `ring`
+//! (`asyncevents`/`invalidation`/`scheduler`, whose constants the fleet mirrors, and
+//! `accountsapi`, whose provider key lists the fleet allowlists are pinned to) may pull `ring`
 //! back in. `cargo check --target` WITHOUT `--all-targets` does not build
 //! dev-deps. The cost, stated rather than hidden: **test code is not typechecked
 //! cross-target**, so rot inside a `cfg`-gated test module (e.g.

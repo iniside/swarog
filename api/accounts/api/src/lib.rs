@@ -51,8 +51,8 @@ pub const LOGIN_LIMIT_BURST: u32 = 20;
 /// Epic's whole environment surface: every variable accounts' provider parse reads for
 /// epic. Presence of ANY of these means the operator is configuring epic, including the
 /// browser-flow keys, so accounts rejects a malformed browser-flow endpoint even when
-/// nothing else about epic is set. A harness that forwards or clears provider
-/// configuration reads this list instead of restating it.
+/// nothing else about epic is set. A harness that forwards provider configuration keeps
+/// its own copy of these keys and pins that copy to this list in a test.
 pub const EPIC_ENV_KEYS: &[&str] = &[
     "EPIC_CLIENT_ID",
     "EPIC_JWKS_URL",
