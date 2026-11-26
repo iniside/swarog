@@ -479,6 +479,10 @@ impl Fixture {
             .bind(&players)
             .execute(&self.pool)
             .await;
+        let _ = sqlx::query("DELETE FROM party.purged_players WHERE player_id = ANY($1::uuid[])")
+            .bind(&players)
+            .execute(&self.pool)
+            .await;
     }
 }
 

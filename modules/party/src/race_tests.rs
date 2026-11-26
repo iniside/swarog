@@ -55,9 +55,10 @@ async fn create_losing_to_an_uncommitted_join_is_conflict_not_internal() {
 }
 
 /// Once-wrong branch: the `23505` mapping in `accept` (the other direction). `accept` is held
-/// at its party lock, the same player's `create` commits first, and the released accept's
-/// `join_tx` insert hits the PK: `Conflict`, with the accept's invite consume rolled back and
-/// nothing pushed by the loser.
+/// at its party lock, a writer that does NOT take the player lock (the production `create_tx`
+/// run bare: `create` itself would now park behind the accept's player lock) commits the same
+/// player's party first, and the released accept's `join_tx` insert hits the PK: `Conflict`,
+/// with the accept's invite consume rolled back and nothing pushed by the loser.
 #[tokio::test(flavor = "multi_thread")]
 async fn accept_losing_to_a_create_is_conflict_and_keeps_its_invite() {
     let Some(pool) = test_pool().await else { return };
@@ -73,14 +74,16 @@ async fn accept_losing_to_a_create_is_conflict_and_keeps_its_invite() {
         let accept = tokio::spawn(async move { svc.accept(who(&p), i).await });
         wait_blocked(&fx.pool, &racer.app).await;
 
-        let created = fx.svc.create(who(&player)).await.unwrap();
+        let mut other = fx.pool.begin().await.unwrap();
+        let (created, _) = fx.svc.store.create_tx(&mut other, &player, 60).await.unwrap();
+        other.commit().await.unwrap();
         tx.rollback().await.unwrap();
 
         let err = finish("accept", accept).await.expect_err("the PK loser must fail");
         assert_eq!(err.status, Status::Conflict, "23505 must map to Conflict, got {err:?}");
         assert_eq!(err.msg, ALREADY_IN_PARTY);
         assert!(invite_exists(&fx.pool, &invite).await, "the failed accept rolled its consume back");
-        assert_eq!(party_of(&fx.pool, &player).await.as_deref(), Some(created.party_id.as_str()));
+        assert_eq!(party_of(&fx.pool, &player).await.as_deref(), Some(created.as_str()));
         assert_eq!(fx.sink.states_to(&leader).len(), 1, "the loser pushed nothing to the party it failed to join");
     }).await;
 }

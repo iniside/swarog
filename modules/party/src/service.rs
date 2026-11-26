@@ -278,9 +278,27 @@ impl Service {
         Ok(view_of(&mine, &summaries))
     }
 
-    /// Applies the leave rule for a deleted player on the delivery connection: stamps the
-    /// party, drops every invite to or from the player and the player's revision row. No
-    /// push — this runs inside the delivery transaction.
+    /// Takes the caller's player lock and answers `NotFound(what)` when the deletion tombstone is
+    /// committed, so a deleted player's still-verifying token cannot create or join a party. The
+    /// lock is held to the end of `tx`, ahead of any party lock the caller takes next; dropping
+    /// `tx` on the refusal rolls it back.
+    async fn refuse_purged_tx(
+        &self,
+        tx: &mut Transaction<'static, Postgres>,
+        me: &str,
+        what: &'static str,
+    ) -> Result<(), Error> {
+        self.store.lock_player_tx(tx, me).await.map_err(internal)?;
+        if self.store.is_player_purged_tx(tx, me).await.map_err(internal)? {
+            return Err(Error::not_found(what));
+        }
+        Ok(())
+    }
+
+    /// Applies the leave rule for a deleted player on the delivery connection: plants the
+    /// permanent `party.purged_players` tombstone under the player lock (so `create` and `accept`
+    /// refuse the player from then on), stamps the party, drops every invite to or from the
+    /// player and the player's revision row. No push — this runs inside the delivery transaction.
     pub(crate) async fn purge_player_tx(
         &self,
         conn: &mut PgConnection,
@@ -292,6 +310,8 @@ impl Service {
         }
         let player_id = player_id.to_ascii_lowercase();
         let db = bus::Error::transport;
+        self.store.lock_player_tx(conn, &player_id).await.map_err(db)?;
+        self.store.plant_purged_player_tx(conn, &player_id).await.map_err(db)?;
         if let Some(party_id) = self.store.party_of_tx(conn, &player_id).await.map_err(db)? {
             self.store
                 .lock_party_tx(conn, &party_id)
@@ -367,6 +387,7 @@ impl Player for Service {
     async fn create(&self, identity: Identity) -> Result<PartyView, Error> {
         let me = Service::caller(&identity)?;
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
+        self.refuse_purged_tx(&mut tx, &me, NOT_FOUND).await?;
         let (party_id, _) = self
             .store
             .create_tx(&mut tx, &me, self.lease_secs)
@@ -497,6 +518,7 @@ impl Player for Service {
             .ok_or_else(|| Error::not_found(INVITE_NOT_FOUND))?;
 
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
+        self.refuse_purged_tx(&mut tx, &me, INVITE_NOT_FOUND).await?;
         self.store
             .lock_party_tx(&mut tx, &party_id)
             .await

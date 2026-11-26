@@ -63,6 +63,10 @@ CREATE TABLE IF NOT EXISTS party.invites (
     invitee_id  uuid        NOT NULL,
     expires_at  timestamptz NOT NULL,
     UNIQUE (party_id, invitee_id)
+);
+CREATE TABLE IF NOT EXISTS party.purged_players (
+    player_id uuid        PRIMARY KEY,
+    purged_at timestamptz NOT NULL DEFAULT now()
 );"#;
 
 /// The durable purge subscription: a contract, renaming it abandons the checkpoint.

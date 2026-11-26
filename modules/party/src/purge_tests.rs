@@ -9,6 +9,7 @@ use accountsapi::Directory;
 use asyncevents::testing::TestTransport;
 use bus::AnyTx;
 use lifecycle::{Context, Module};
+use opsapi::Status;
 use partyapi::Player as _;
 use sqlx::PgPool;
 
@@ -155,5 +156,76 @@ async fn purge_ignores_a_non_uuid_id_and_is_idempotent_on_redelivery() {
         fx.svc.purge_player_tx(&mut conn, &member).await.expect("a redelivery is a no-op");
         assert_eq!(members_of(&fx.pool, &party).await, vec![leader.clone()]);
         assert_eq!(player_rev(&fx.pool, &member).await, None);
+    }).await;
+}
+
+/// Once-wrong branch: a deleted player's token still verifies until the gateway's next pull, so
+/// after a DELIVERED `player.deleted` both create paths refuse the caller with `NotFound` and
+/// leave no membership. The invite is issued AFTER the purge (the purge drops earlier ones), so
+/// `accept` reaches the guard rather than the missing invite. Another player is unaffected.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_purged_player_can_neither_create_nor_accept() {
+    let Some(pool) = test_pool().await else { return };
+    let _db = DB_LOCK.lock().await;
+    let _env = ENV_LOCK.lock().await;
+    let guard = EnvGuard::take();
+    guard.unset();
+    Fixture::new(&pool).await.run(|fx| async move {
+        let (ctx, _module, transport) = wired(&fx).await;
+        let [doomed, host, bystander] = fx.players();
+        let host_party = create_party(&fx, &host).await;
+
+        emit_deleted(&ctx, &fx.pool, &doomed).await;
+        deliver_until(&transport, || async { purged(&fx.pool, &doomed).await }).await;
+
+        assert_status(fx.svc.create(who(&doomed)).await, Status::NotFound, "create by a purged player");
+        assert!(party_of(&fx.pool, &doomed).await.is_none());
+
+        let invite = invite_id(&fx, &host, &doomed).await;
+        assert_status(
+            fx.svc.accept(who(&doomed), invite.clone()).await,
+            Status::NotFound,
+            "accept by a purged player",
+        );
+        assert!(party_of(&fx.pool, &doomed).await.is_none());
+        assert_eq!(members_of(&fx.pool, &host_party).await, vec![host.clone()]);
+        assert!(invite_exists(&fx.pool, &invite).await, "the refused accept leaves the invite");
+
+        fx.svc.create(who(&bystander)).await.expect("a player never deleted still creates");
+    }).await;
+}
+
+/// `true` once `player` has a committed `party.purged_players` row.
+async fn purged(pool: &PgPool, player: &str) -> bool {
+    sqlx::query_scalar::<_, i32>("SELECT 1 FROM party.purged_players WHERE player_id = $1::uuid")
+        .bind(player)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+        .is_some()
+}
+
+/// Once-wrong branch: the check-then-insert race. A purge holds the player lock with the
+/// tombstone written but uncommitted; a `create` that arrives meanwhile must park on the player
+/// lock (a check without the lock would read no tombstone and insert the member), and once the
+/// purge commits it sees the tombstone and answers `NotFound`.
+#[tokio::test(flavor = "multi_thread")]
+async fn create_parked_behind_an_uncommitted_purge_sees_the_tombstone() {
+    let Some(pool) = test_pool().await else { return };
+    Fixture::new(&pool).await.run(|fx| async move {
+        let player = fx.player();
+        let mut purge = fx.pool.begin().await.unwrap();
+        fx.svc.store.lock_player_tx(&mut purge, &player).await.unwrap();
+        fx.svc.store.plant_purged_player_tx(&mut purge, &player).await.unwrap();
+
+        let racer = fx.racer(2);
+        let svc = racer.svc.clone();
+        let p = player.clone();
+        let create = tokio::spawn(async move { svc.create(who(&p)).await });
+        wait_blocked(&fx.pool, &racer.app).await;
+        purge.commit().await.unwrap();
+
+        assert_status(finish("create", create).await, Status::NotFound, "create behind the purge");
+        assert!(party_of(&fx.pool, &player).await.is_none());
     }).await;
 }

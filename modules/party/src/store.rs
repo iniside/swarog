@@ -11,16 +11,29 @@ pub(crate) fn is_unique_violation(e: &sqlx::Error) -> bool {
 /// by this transaction. The id is normalized to Postgres's uuid-equality form before hashing
 /// because the row SQL binds `$1::uuid`.
 fn party_lock_key(party_id: &str) -> i64 {
+    lock_key(b"party.party/", party_id)
+}
+
+/// Per-PLAYER lock key: `create` and `accept` hold it across the purged-player check and the
+/// members insert, and the purge handler holds it across the tombstone insert, so a create
+/// either commits before the purge runs (and is removed by it) or sees the tombstone. Always
+/// taken BEFORE a party lock, never after one.
+fn player_lock_key(player_id: &str) -> i64 {
+    lock_key(b"party.player/", player_id)
+}
+
+/// FNV-1a over `namespace` plus the uuid normalized to Postgres's uuid-equality form.
+fn lock_key(namespace: &[u8], id: &str) -> i64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let hex: Vec<u8> = party_id
+    let hex: Vec<u8> = id
         .bytes()
         .filter(u8::is_ascii_hexdigit)
         .map(|b| b.to_ascii_lowercase())
         .collect();
-    let normalized: &[u8] = if hex.len() == 32 { &hex } else { party_id.as_bytes() };
+    let normalized: &[u8] = if hex.len() == 32 { &hex } else { id.as_bytes() };
     let mut h = OFFSET_BASIS;
-    for b in b"party.party/".iter().copied().chain(normalized.iter().copied()) {
+    for b in namespace.iter().copied().chain(normalized.iter().copied()) {
         h ^= b as u64;
         h = h.wrapping_mul(PRIME);
     }
@@ -182,6 +195,50 @@ impl Store {
             .bind(party_lock_key(party_id))
             .execute(&mut *conn)
             .await?;
+        Ok(())
+    }
+
+    /// Taken ON THE TX CONNECTION and released at commit/rollback. Before any party lock.
+    pub(crate) async fn lock_player_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(player_lock_key(player_id))
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
+    }
+
+    /// `true` once this player's deletion tombstone is committed. A plain read: its caller
+    /// holds [`Store::lock_player_tx`] first, so the purge either committed before the read or
+    /// waits for the caller's transaction.
+    pub(crate) async fn is_player_purged_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let found: Option<i32> =
+            sqlx::query_scalar("SELECT 1 FROM party.purged_players WHERE player_id = $1::uuid")
+                .bind(player_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+        Ok(found.is_some())
+    }
+
+    /// The permanent deletion tombstone; a redelivery is a no-op.
+    pub(crate) async fn plant_purged_player_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO party.purged_players (player_id) VALUES ($1::uuid) ON CONFLICT DO NOTHING",
+        )
+        .bind(player_id)
+        .execute(&mut *conn)
+        .await?;
         Ok(())
     }
 
