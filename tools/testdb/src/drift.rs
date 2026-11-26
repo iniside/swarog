@@ -35,6 +35,10 @@ const EAGER_CONNECT: [&str; 3] = ["PgPool::connect(", "PgConnection::connect(", 
 /// The sanctioned source of a test's pool.
 const AUTHORITY_CALL: &str = "testdb::test_pool";
 
+/// The items this crate exports that are not about a database, so a crate may dev-depend
+/// on `testdb` for one of them without routing a DB test through [`AUTHORITY_CALL`].
+const NON_DATABASE_ITEMS: [&str; 1] = ["testdb::DEV_ACCOUNTS_SIGNING_KEK"];
+
 /// The one spelling of the opt-out (`testdb::SKIP_ENV`); the literal belongs to no one else.
 const OPT_OUT_MARKER: &str = "TESTDB_ALLOW_SKIP";
 
@@ -153,6 +157,9 @@ pub fn crate_findings(
     let routes = test_files
         .iter()
         .any(|(_, body)| body.contains(AUTHORITY_CALL));
+    let names_a_non_database_item = test_files
+        .iter()
+        .any(|(_, body)| NON_DATABASE_ITEMS.iter().any(|item| body.contains(item)));
 
     if !connects.is_empty() && !dev_deps_testdb {
         findings.push(Finding {
@@ -176,13 +183,14 @@ pub fn crate_findings(
             ),
         });
     }
-    if dev_deps_testdb && !routes {
+    if dev_deps_testdb && !routes && !names_a_non_database_item {
         findings.push(Finding {
             path: format!("{normalized}/Cargo.toml"),
             line: 0,
             what: format!(
-                "dev-depends on `testdb` but no test file calls `{AUTHORITY_CALL}` — the \
-                 authority was bypassed, or the dependency is stale"
+                "dev-depends on `testdb` but no test file calls `{AUTHORITY_CALL}` or names \
+                 one of {NON_DATABASE_ITEMS:?} — the authority was bypassed, or the \
+                 dependency is stale"
             ),
         });
     }

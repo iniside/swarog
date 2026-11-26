@@ -27,6 +27,12 @@ pub const SKIP_ENV: &str = "TESTDB_ALLOW_SKIP";
 /// How long a connect may take before the suite decides Postgres is not there.
 pub const CONNECT_BOUND: Duration = Duration::from_secs(3);
 
+/// The `ACCOUNTS_SIGNING_KEK` (standard base64 of exactly 32 bytes) every accounts test and
+/// every dev and proof launcher seals signing keys with; dev/test only, never a deployment's.
+/// They all share one `accounts.signing_keys` table on the default DSN, and a row sealed under
+/// another KEK fails accounts' boot, so one value keeps them from locking each other out.
+pub const DEV_ACCOUNTS_SIGNING_KEK: &str = "c3dhcm9nLWRldi1hY2NvdW50cy1zaWduaW5nLWtlayE=";
+
 /// The DSN the live tests target.
 pub fn dsn() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string())

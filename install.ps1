@@ -65,4 +65,8 @@ Write-Host "      proxy set PLAYER_TLS_CERT_PATH and PLAYER_TLS_KEY_PATH instead
 Write-Host "  - ADMIN_HTTP_ADDR=0.0.0.0:8085   (bind the admin process publicly / behind the proxy)."
 Write-Host "  - TRUSTED_PROXY_CIDRS=<proxy-hop-cidr>   so the login lockout sees the real client IP,"
 Write-Host "      not the gateway. Required whenever admin runs behind a reverse proxy."
+Write-Host "  - ACCOUNTS_SIGNING_KEK=<openssl rand -base64 32>   on the process hosting accounts: the key"
+Write-Host "      that seals its token-signing keys. Keep it; a changed KEK refuses boot until"
+Write-Host "      accounts.signing_keys is dropped, which invalidates every issued token."
+Write-Host "  - ACCOUNTS_OIDC_ISSUER=https://<your-domain>/accounts/oidc   (the public issuer URL)."
 Write-Host "  - Log in at https://<your-domain>/admin with the credentials you just set."

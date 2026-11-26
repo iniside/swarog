@@ -51,5 +51,9 @@ Admin user '$USERNAME' is ready. Next steps for a public deployment:
   - ADMIN_HTTP_ADDR=0.0.0.0:8085   (bind the admin process publicly / behind the proxy).
   - TRUSTED_PROXY_CIDRS=<proxy-hop-cidr>   so the login lockout sees the real client IP,
       not the gateway. Required whenever admin runs behind a reverse proxy.
+  - ACCOUNTS_SIGNING_KEK=<openssl rand -base64 32>   on the process hosting accounts: the key
+      that seals its token-signing keys. Keep it; a changed KEK refuses boot until
+      accounts.signing_keys is dropped, which invalidates every issued token.
+  - ACCOUNTS_OIDC_ISSUER=https://<your-domain>/accounts/oidc   (the public issuer URL).
   - Log in at https://<your-domain>/admin with the credentials you just set.
 EOF

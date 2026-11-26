@@ -4,11 +4,12 @@ use crate::{
     check_pg_session_floor, game_backend_fleet, game_backend_fleet_with_environment,
     game_backend_monolith, EnvironmentSnapshot, FleetError, FleetFlavor, FleetInputs, FleetSpec,
     PgSessionCapacity, PoolBudget, ServiceSpec, HARNESS_RESERVE, PG_SESSION_BUDGET,
-    PROOF_GATEWAY_RATE_LIMIT_BURST, PROOF_GATEWAY_RATE_LIMIT_RPS, PROOF_GOOGLE_CLIENT_ID,
+    PROOF_ACCOUNTS_ISSUER_MONOLITH, PROOF_ACCOUNTS_ISSUER_SPLIT, PROOF_GATEWAY_RATE_LIMIT_BURST, PROOF_GATEWAY_RATE_LIMIT_RPS, PROOF_GOOGLE_CLIENT_ID,
     PROOF_OIDC_CLIENT_ID, PROOF_OIDC_ISSUER, PROOF_OIDC_JWKS_URL, REQUIRED_MAX_CONNECTIONS,
 };
 use crate::fleet::{
-    ACCOUNTS_OVERRIDEABLE_ENV, EPIC_ENV_PREFIX, GOOGLE_ENV_PREFIX, MONOLITH_OVERRIDEABLE_ENV,
+    ACCOUNTS_OVERRIDEABLE_ENV, DEV_ACCOUNTS_SIGNING_KEK, EPIC_ENV_PREFIX, GOOGLE_ENV_PREFIX,
+    MONOLITH_OVERRIDEABLE_ENV,
 };
 use accountsapi::{EPIC_ENV_KEYS, GOOGLE_ENV_KEYS};
 #[cfg(windows)]
@@ -93,6 +94,47 @@ fn proof_fleet_accounts_trusts_the_gateway_host() {
     assert_eq!(accounts.env.get("ACCOUNTS_COOKIE_SECURE").map(String::as_str), Some("0"));
     // [BR2] bursts the JSON Epic start, which accounts mounts only with the confidential client.
     assert!(accounts.env.contains_key("EPIC_CLIENT_SECRET"));
+}
+
+#[test]
+fn the_fleet_dev_signing_kek_is_the_testdb_one() {
+    assert_eq!(DEV_ACCOUNTS_SIGNING_KEK, testdb::DEV_ACCOUNTS_SIGNING_KEK);
+}
+
+fn signing_env(env: &BTreeMap<String, String>) -> (Option<&str>, Option<&str>) {
+    (
+        env.get("ACCOUNTS_SIGNING_KEK").map(String::as_str),
+        env.get("ACCOUNTS_OIDC_ISSUER").map(String::as_str),
+    )
+}
+
+/// Development fleets seal with the dev KEK unless the operator's shell overrides it or the
+/// issuer; Proof fleets pin both over any ambient value, each topology its own issuer.
+#[test]
+fn accounts_signing_env_in_both_topologies() {
+    const KEK: &str = "ambient-kek";
+    const ISSUER: &str = "https://ambient.example/accounts/oidc";
+    let bare = EnvironmentSnapshot::from_values([]);
+    let ambient = EnvironmentSnapshot::from_values([
+        ("ACCOUNTS_SIGNING_KEK".into(), KEK.into()),
+        ("ACCOUNTS_OIDC_ISSUER".into(), ISSUER.into()),
+    ]);
+    let dev = Some(DEV_ACCOUNTS_SIGNING_KEK);
+    let split = Some(PROOF_ACCOUNTS_ISSUER_SPLIT);
+    let mono = Some(PROOF_ACCOUNTS_ISSUER_MONOLITH);
+    let cases = [
+        (&bare, FleetFlavor::Development, (dev, None), (dev, None)),
+        (&ambient, FleetFlavor::Development, (Some(KEK), Some(ISSUER)), (Some(KEK), Some(ISSUER))),
+        (&bare, FleetFlavor::Proof, (dev, split), (dev, mono)),
+        (&ambient, FleetFlavor::Proof, (dev, split), (dev, mono)),
+    ];
+    for (environment, flavor, want_split, want_monolith) in cases {
+        let fleet = game_backend_fleet_with_environment(&inputs(), flavor, environment);
+        let accounts = fleet.service("accounts-svc").unwrap();
+        assert_eq!(signing_env(&accounts.env), want_split, "split {flavor:?}");
+        let monolith = game_backend_monolith(&inputs(), flavor, environment);
+        assert_eq!(signing_env(&monolith.env), want_monolith, "monolith {flavor:?}");
+    }
 }
 
 #[cfg(windows)]
