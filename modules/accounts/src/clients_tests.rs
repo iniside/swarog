@@ -6,12 +6,14 @@ use accountsapi::{grant_types, DEV_GAME_CLIENT_ID, MAX_CLIENT_ID_BYTES, SWAROG_A
 use lifecycle::Module as _;
 use testdb::test_pool;
 
-use super::{canonical_grants, dev_seed_from, migrate_dev_seed, new_client_id, seed_dev_client};
+use super::{
+    canonical_grants, dev_seed_from, migrate_dev_seed, new_client_id, seed_dev_client, DEV_SEED_ENV,
+};
 use crate::tests::{dev_kek, wired, GHOST_PLAYER};
 use crate::Accounts;
 
 /// Held by every test here that touches the `dev-game` row, after `wired` (which takes
-/// `GHOST_PLAYER` for read): the migrate test deletes and reseeds it committed, which a
+/// `GHOST_PLAYER` for read): the migrate tests delete and reseed it committed, which a
 /// rolled-back test would otherwise see mid-transaction.
 static DEV_CLIENT_ROW: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -27,7 +29,7 @@ fn dev_seed_is_on_only_for_an_explicitly_truthy_value() {
 }
 
 #[test]
-fn migrate_passes_the_switch_init_read_and_off_when_init_never_ran() {
+fn dev_seed_on_is_what_init_read_and_off_when_init_never_ran() {
     assert!(!Accounts::new().dev_seed_on(), "no init is off");
     let off = Accounts::new();
     off.dev_seed.set(false).unwrap();
@@ -35,6 +37,19 @@ fn migrate_passes_the_switch_init_read_and_off_when_init_never_ran() {
     let on = Accounts::new();
     on.dev_seed.set(true).unwrap();
     assert!(on.dev_seed_on(), "init read on");
+}
+
+/// `init` reads `ACCOUNTS_DEV_SEED` into the switch `migrate` passes; no test process sets it,
+/// so a real `register` + `init` on a fresh `wired` context leaves the switch off.
+#[tokio::test]
+async fn init_with_the_env_unset_reads_the_dev_seed_off() {
+    let Some(pool) = test_pool().await else { return };
+    assert!(std::env::var_os(DEV_SEED_ENV).is_none(), "the test process must not set {DEV_SEED_ENV}");
+    let (ctx, _svc) = wired(&pool).await;
+    let accounts = Accounts::with_signing_kek(dev_kek());
+    accounts.register(&ctx).unwrap();
+    accounts.init(&ctx).unwrap();
+    assert!(!accounts.dev_seed_on(), "init with the env unset reads the switch off");
 }
 
 #[test]
@@ -121,8 +136,7 @@ async fn the_dev_seed_switch_inserts_the_dev_client_only_when_on() {
 
 /// The real `migrate` of an `Accounts` whose `init` read the switch on reseeds a deleted dev
 /// client, which pins the value at the shipping call site. The delete is committed because
-/// `migrate` runs on its own connection; the row stays afterwards, as on every dev fleet. No
-/// off-direction twin: it would have to leave the shared database without the row.
+/// `migrate` runs on its own connection; the row stays afterwards, as on every dev fleet.
 #[tokio::test]
 async fn migrate_with_the_switch_on_reseeds_a_deleted_dev_client() {
     let Some(pool) = test_pool().await else { return };
@@ -141,4 +155,27 @@ async fn migrate_with_the_switch_on_reseeds_a_deleted_dev_client() {
     accounts.dev_seed.set(true).unwrap();
     accounts.migrate(&ctx).await.unwrap();
     assert_eq!(dev_client(&mut conn).await.len(), 1, "migrate with the switch on seeds the dev client");
+}
+
+/// The real `migrate` of an `Accounts` whose `init` never ran passes the switch off and leaves
+/// a deleted dev client deleted. The delete is committed like the test above's; the row is
+/// reseeded before the assertion, so a failure never leaves the shared database without it.
+#[tokio::test]
+async fn migrate_with_the_switch_off_leaves_a_deleted_dev_client_deleted() {
+    let Some(pool) = test_pool().await else { return };
+    let (ctx, _svc) = wired(&pool).await;
+    let _no_ghost = GHOST_PLAYER.write().await;
+    let _row = DEV_CLIENT_ROW.lock().await;
+    let mut conn = pool.acquire().await.unwrap();
+    sqlx::query("DELETE FROM accounts.oidc_clients WHERE client_id = $1")
+        .bind(DEV_GAME_CLIENT_ID)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+
+    let migrated = Accounts::with_signing_kek(dev_kek()).migrate(&ctx).await;
+    let after = dev_client(&mut conn).await;
+    seed_dev_client(&mut *conn).await.unwrap();
+    migrated.unwrap();
+    assert!(after.is_empty(), "migrate with the switch off seeds nothing");
 }
