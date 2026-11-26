@@ -74,6 +74,15 @@ _None._
 
   Source: researcher for the admin-second-pass follow-ups (2026-11-24).
 
+- [ ] **Launcher KEK and issuer pins may be over-built**
+  Each launcher copy of the dev `ACCOUNTS_SIGNING_KEK` and of each `ACCOUNTS_OIDC_ISSUER` has its own
+  anti-drift test: tools/verifyctl/tests/dev_signing_kek.rs (weles tomls, compose files, fleet builders),
+  tools/verifyctl/src/stages/csharp_tests.rs, tools/processctl/src/fleet_tests.rs
+  `accounts_signing_env_in_both_topologies`, weles/master/src/manifest_tests.rs. oidc-signing-keys Step 1
+  took three review-fix rounds over them. Check whether generating the copies from one source (or fewer
+  copies) replaces the pins. Related: PROCESSCTL-09.
+  Source: owner, after oidc-signing-keys Step 1 ("cos tu jest przekombinowane, zbadamy to pozniej", 2026-11-26).
+
 ### Known limits (admin-control-plane-redesign step 15)
 
 - [ ] **The dev database wipe waits on an idle-in-transaction connection**
