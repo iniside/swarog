@@ -212,6 +212,7 @@ fn stage_env(database_url: &str) -> Vec<(&'static str, String)> {
         ("PLAYER_EDGE_ADDR", format!(":{PLAYER_PORT}")),
         ("DATABASE_URL", database_url.into()),
         ("APIKEYS_DEV_SEED", "1".into()),
+        ("ACCOUNTS_DEV_SEED", "1".into()),
         ("ACCOUNTS_OPEN_REGISTRATION", "1".into()),
         ("ACCOUNTS_COOKIE_SECURE", "0".into()),
         ("ACCOUNTS_SIGNING_KEK", testdb::DEV_ACCOUNTS_SIGNING_KEK.into()),

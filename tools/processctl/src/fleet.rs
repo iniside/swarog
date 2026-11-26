@@ -23,8 +23,8 @@ pub const SERVICE_ENV_ALLOWLIST: &[&str] = &[
 /// `runtime_environment` is allowlist-filtered, so a value absent from this list is a
 /// value `EPIC_*`/`GOOGLE_*` in the operator's shell can never reach accounts with.
 pub(crate) const ACCOUNTS_OVERRIDEABLE_ENV: &[&str] = &[
-    "ACCOUNTS_OPEN_REGISTRATION", "ACCOUNTS_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS",
-    "ACCOUNTS_SIGNING_KEK", "ACCOUNTS_OIDC_ISSUER",
+    "ACCOUNTS_DEV_SEED", "ACCOUNTS_OPEN_REGISTRATION", "ACCOUNTS_COOKIE_SECURE",
+    "TRUSTED_PROXY_CIDRS", "ACCOUNTS_SIGNING_KEK", "ACCOUNTS_OIDC_ISSUER",
     "EPIC_CLIENT_ID", "EPIC_JWKS_URL", "EPIC_ISSUER_PREFIX", "EPIC_CLIENT_SECRET",
     "EPIC_REDIRECT_URI", "EPIC_AUTHORIZE_URL", "EPIC_TOKEN_URL",
     "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL", "GOOGLE_CLIENT_SECRET", "GOOGLE_OAUTH_CLIENT_ID",
@@ -45,8 +45,8 @@ const MAIL_OVERRIDEABLE_ENV: &[&str; 10] = &[
 /// other than mail's — one process hosts accounts, so the provider keys are read from
 /// the same env map. [`MONOLITH_OVERRIDEABLE_ENV`] appends [`MAIL_OVERRIDEABLE_ENV`] to
 /// this at compile time, so the mail keys themselves are written out exactly once.
-const MONOLITH_BASE_ENV: &[&str; 25] = &[
-    "APIKEYS_DEV_SEED", "ACCOUNTS_OPEN_REGISTRATION", "ACCOUNTS_COOKIE_SECURE",
+const MONOLITH_BASE_ENV: &[&str; 26] = &[
+    "APIKEYS_DEV_SEED", "ACCOUNTS_DEV_SEED", "ACCOUNTS_OPEN_REGISTRATION", "ACCOUNTS_COOKIE_SECURE",
     "ACCOUNTS_SIGNING_KEK", "ACCOUNTS_OIDC_ISSUER",
     "INVENTORY_DEV_GRANT", "WALLET_DEV_SEED",
     "ADMIN_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS", "NOTIFICATIONS_RETENTION_DAYS",
@@ -56,27 +56,27 @@ const MONOLITH_BASE_ENV: &[&str; 25] = &[
     "GOOGLE_REDIRECT_URI", "GOOGLE_AUTHORIZE_URL", "GOOGLE_TOKEN_URL", "ADMIN_DEPLOYMENT_NAME",
 ];
 
-/// Concatenates [`MONOLITH_BASE_ENV`] (25 keys) and [`MAIL_OVERRIDEABLE_ENV`] (10 keys)
+/// Concatenates [`MONOLITH_BASE_ENV`] (26 keys) and [`MAIL_OVERRIDEABLE_ENV`] (10 keys)
 /// at compile time into [`MONOLITH_OVERRIDEABLE_ENV_ARR`] — const generics cannot
 /// express `N + M` as an array length on stable Rust (no `generic_const_exprs`), so this
 /// is monomorphic to the two callers' concrete sizes rather than generic; a length
 /// mismatch at either input is a compile error here, never a silent truncation.
-const fn concat_env_25_10(a: &[&'static str; 25], b: &[&'static str; 10]) -> [&'static str; 35] {
-    let mut out = [""; 35];
+const fn concat_env_26_10(a: &[&'static str; 26], b: &[&'static str; 10]) -> [&'static str; 36] {
+    let mut out = [""; 36];
     let mut i = 0;
-    while i < 25 {
+    while i < 26 {
         out[i] = a[i];
         i += 1;
     }
     let mut j = 0;
     while j < 10 {
-        out[25 + j] = b[j];
+        out[26 + j] = b[j];
         j += 1;
     }
     out
 }
 
-const MONOLITH_OVERRIDEABLE_ENV_ARR: [&str; 35] = concat_env_25_10(MONOLITH_BASE_ENV, MAIL_OVERRIDEABLE_ENV);
+const MONOLITH_OVERRIDEABLE_ENV_ARR: [&str; 36] = concat_env_26_10(MONOLITH_BASE_ENV, MAIL_OVERRIDEABLE_ENV);
 pub(crate) const MONOLITH_OVERRIDEABLE_ENV: &[&str] = &MONOLITH_OVERRIDEABLE_ENV_ARR;
 
 /// The prefix of every google key accounts reads (`accountsapi::GOOGLE_ENV_KEYS`). Both
@@ -981,6 +981,7 @@ pub fn game_backend_fleet_with_environment(
     accounts
         .env
         .insert("TRUSTED_PROXY_CIDRS".into(), "127.0.0.1/32".into());
+    accounts.env.insert("ACCOUNTS_DEV_SEED".into(), "1".into());
     apikeys.env.insert("APIKEYS_DEV_SEED".into(), "1".into());
     inventory.env.insert("INVENTORY_DEV_GRANT".into(), "1".into());
     wallet.env.insert("WALLET_DEV_SEED".into(), "1".into());
@@ -1057,6 +1058,7 @@ pub fn game_backend_fleet_with_environment(
             accounts
                 .env
                 .insert("EPIC_TOKEN_URL".into(), "http://127.0.0.1:1/token".into());
+            accounts.env.insert("ACCOUNTS_DEV_SEED".into(), "1".into());
             apikeys.env.insert("APIKEYS_DEV_SEED".into(), "1".into());
             scheduler.env.insert("SCHEDULER_ENABLED".into(), "1".into());
             inventory.env.insert("INVENTORY_DEV_GRANT".into(), "1".into());
@@ -1093,6 +1095,7 @@ pub fn game_backend_monolith(
         ("EDGE_CA_CERT", inputs.edge_ca_cert.display().to_string()),
         ("EDGE_CA_KEY", inputs.edge_ca_key.display().to_string()),
         ("APIKEYS_DEV_SEED", "1".into()),
+        ("ACCOUNTS_DEV_SEED", "1".into()),
         ("ACCOUNTS_OPEN_REGISTRATION", "1".into()),
         ("ACCOUNTS_COOKIE_SECURE", "0".into()),
         ("ACCOUNTS_SIGNING_KEK", DEV_ACCOUNTS_SIGNING_KEK.into()),
@@ -1127,6 +1130,7 @@ pub fn game_backend_monolith(
         env.insert("EPIC_JWKS_URL".into(), PROOF_OIDC_JWKS_URL.into());
         env.insert("EPIC_ISSUER_PREFIX".into(), PROOF_OIDC_ISSUER.into());
         env.insert("APIKEYS_DEV_SEED".into(), "1".into());
+        env.insert("ACCOUNTS_DEV_SEED".into(), "1".into());
         env.insert("INVENTORY_DEV_GRANT".into(), "1".into());
         env.insert("WALLET_DEV_SEED".into(), "1".into());
         env.insert("PARTY_LEASE_SECS".into(), PROOF_PARTY_LEASE_SECS.into());

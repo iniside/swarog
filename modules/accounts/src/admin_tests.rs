@@ -14,8 +14,8 @@ use testdb::test_pool;
 
 use super::{
     fake_client, fake_ip, mask, session_rows, thousands, AccountsAdmin, CREATE_ACCOUNT,
-    FIELD_DISPLAY_NAME, FIELD_EMAIL, MAX_NEEDLE_BYTES, PAGE_SIZE, RESET_PASSWORD, REVOKE_ALL,
-    REVOKE_SESSION, SESSIONS_SHOWN,
+    CREATE_CLIENT, DELETE_CLIENT, FIELD_DISPLAY_NAME, FIELD_EMAIL, FIELD_GRANTS, MAX_NEEDLE_BYTES,
+    PAGE_SIZE, RESET_PASSWORD, REVOKE_ALL, REVOKE_SESSION, SESSIONS_SHOWN,
 };
 use crate::store::FamilyRow;
 use crate::web::session::BrowserSessionRow;
@@ -1183,4 +1183,76 @@ fn create_account_caps_refuse_one_byte_over_and_pass_at_the_cap() {
     assert!(!email(crate::MAX_EMAIL_BYTES) && email(crate::MAX_EMAIL_BYTES + 1));
     let cap = accountsapi::MAX_DISPLAY_NAME_BYTES;
     assert!(!display(cap) && display(cap + 1));
+}
+
+fn create_client_call(display: &str, grants: Option<&str>) -> InvokeCall {
+    let mut input = BTreeMap::from([(FIELD_DISPLAY_NAME.to_string(), display.to_string())]);
+    if let Some(grants) = grants {
+        input.insert(FIELD_GRANTS.to_string(), grants.to_string());
+    }
+    InvokeCall { input, ..revoke(CREATE_CLIENT, None, None) }
+}
+
+fn delete_client_call(id: &str) -> InvokeCall {
+    InvokeCall {
+        entity: Some(EntityRef { kind: "oidc_client".to_string(), id: id.to_string() }),
+        ..revoke(DELETE_CLIENT, None, None)
+    }
+}
+
+#[tokio::test]
+async fn create_client_refuses_a_blank_name_and_no_grants_with_a_field_error() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let admin = AccountsAdmin::new(svc);
+    let all = r#"["password"]"#;
+    let refused = [
+        (create_client_call("", Some(all)), FIELD_DISPLAY_NAME),
+        (create_client_call("   ", Some(all)), FIELD_DISPLAY_NAME),
+        (create_client_call(&format!("no-grants-{}", suffix()), None), FIELD_GRANTS),
+        (create_client_call(&format!("no-grants-{}", suffix()), Some("")), FIELD_GRANTS),
+        (create_client_call(&format!("no-grants-{}", suffix()), Some("[]")), FIELD_GRANTS),
+        (
+            create_client_call(&format!("bad-grant-{}", suffix()), Some(r#"["implicit"]"#)),
+            FIELD_GRANTS,
+        ),
+    ];
+    for (call, key) in refused {
+        let input = call.input.clone();
+        match admin.invoke(call).await.unwrap() {
+            InvokeOutcome::FieldErrors(errors) => {
+                assert_eq!(errors.keys().collect::<Vec<_>>(), [key], "{input:?}");
+            }
+            other => panic!("a refused create is a field error on {key}: {input:?} gave {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn create_client_stores_a_swarog_client_and_delete_removes_it_once() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let admin = AccountsAdmin::new(svc);
+    let name = format!("admin-client-{}", suffix());
+    let call = create_client_call(&format!("  {name}  "), Some(r#"["refresh_token","password"]"#));
+    let created = admin.invoke(call).await.unwrap();
+    let InvokeOutcome::Ok { message, reveal: None, redirect: None } = created else {
+        panic!("a create answers a message: {created:?}");
+    };
+    let id = message.strip_prefix("Client created — ").expect("the message names the id");
+    let id = id.to_string();
+    assert!(id.starts_with("c_") && id.len() == 24, "a generated c_ id: {id}");
+    let row = admin.svc.store.client(&id).await.unwrap().expect("the created client is stored");
+    assert_eq!(row.display_name, name, "the name is trimmed");
+    assert_eq!(row.audience, accountsapi::SWAROG_AUDIENCE);
+    assert_eq!(row.grant_types, ["password", "refresh_token"], "grants in grant_types::ALL order");
+
+    let deleted = admin.invoke(delete_client_call(&id)).await.unwrap();
+    let InvokeOutcome::Ok { message, .. } = deleted else {
+        panic!("a delete answers a message: {deleted:?}");
+    };
+    assert_eq!(message, "Client deleted");
+    assert!(admin.svc.store.client(&id).await.unwrap().is_none(), "the row is gone");
+    let again = admin.invoke(delete_client_call(&id)).await.unwrap_err();
+    assert_eq!(again.status, Status::NotFound, "a repeat delete names no client");
 }
