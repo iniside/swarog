@@ -154,13 +154,22 @@ fn a_sealed_key_opens_only_with_its_kek_kid_nonce_and_ciphertext() {
     assert_ne!(nonce, again, "every seal draws a fresh nonce");
 }
 
-/// Without a KEK from register, migrate requires the variable's value and names it; a KEK
-/// register parsed wins over it.
-#[test]
-fn migrate_without_a_kek_fails_naming_the_variable() {
-    let err = Accounts::new().migrate_kek(None).unwrap_err().to_string();
+/// `migrate` resolves the KEK before it touches the pool: with no KEK from register and none
+/// in the env value, a context with no pool still fails naming the variable, not the pool; a KEK
+/// register parsed wins over the missing value and gets as far as the pool.
+#[tokio::test]
+async fn migrate_resolves_the_kek_before_the_pool() {
+    let ctx = Context::new();
+    let err = Accounts::new().migrate_with(&ctx, None).await.unwrap_err().to_string();
     assert!(err.contains("ACCOUNTS_SIGNING_KEK is required"), "{err}");
-    assert!(Accounts::with_signing_kek(dev_kek()).migrate_kek(None).is_ok());
+    assert!(!err.contains("DB pool"), "the pool was reached before the KEK: {err}");
+
+    let err = Accounts::with_signing_kek(dev_kek())
+        .migrate_with(&ctx, None)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("DB pool"), "a register-parsed KEK did not win: {err}");
 }
 
 /// First boot inserts one active key whose JWK is the opened private key's public half and

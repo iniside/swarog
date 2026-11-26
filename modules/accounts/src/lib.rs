@@ -1508,16 +1508,99 @@ impl Accounts {
         accounts
     }
 
-    /// The KEK migrate seals with: the one register parsed, else `kek_env`, the value of
-    /// `ACCOUNTS_SIGNING_KEK`, which must then be set.
-    fn migrate_kek(
+    /// Creates this module's own schema and guarantees an active signing key that opens
+    /// under the KEK. Idempotent. The KEK is the one register parsed, else `kek_env` (the value
+    /// of `ACCOUNTS_SIGNING_KEK`, which must then be set), and it is resolved BEFORE the pool is
+    /// touched so a missing key fails loudly even where no pool is wired.
+    pub(crate) async fn migrate_with(
         &self,
+        ctx: &Context,
         kek_env: Option<std::ffi::OsString>,
-    ) -> anyhow::Result<signing_keys::SigningKek> {
-        match self.signing_kek.get() {
-            Some(kek) => Ok(kek.clone()),
-            None => signing_keys::required_kek(kek_env),
+    ) -> anyhow::Result<()> {
+        let kek = match self.signing_kek.get() {
+            Some(kek) => kek.clone(),
+            None => signing_keys::required_kek(kek_env)?,
+        };
+        let pool = ctx
+            .db()
+            .ok_or_else(|| anyhow::anyhow!("accounts requires a DB pool"))?;
+        Ddl::new(pool)
+            .sql(SCHEMA_DDL)
+            .sql(OAUTH_STATES_DDL.as_str())
+            // A second, DB-level constraint on `players` itself (see the claim-coverage
+            // check below): `accounts.handles` decides freeness at mint time, this index
+            // backs `player_by_handle`'s lookup and still refuses a duplicate pair.
+            .index(
+                "accounts.accounts_handle_idx",
+                "CREATE UNIQUE INDEX accounts_handle_idx \
+                 ON accounts.players (lower(display_name), discriminator)",
+            )
+            .index(
+                "accounts.identities_player_idx",
+                "CREATE INDEX identities_player_idx ON accounts.identities(player_id)",
+            )
+            .index(
+                "accounts.sessions_player_idx",
+                "CREATE INDEX sessions_player_idx ON accounts.sessions(player_id)",
+            )
+            .index(
+                "accounts.sessions_expires_idx",
+                "CREATE INDEX sessions_expires_idx ON accounts.sessions(expires_at)",
+            )
+            .index(
+                "accounts.sessions_family_idx",
+                "CREATE INDEX sessions_family_idx ON accounts.sessions(family_id)",
+            )
+            .index(
+                "accounts.refresh_family_idx",
+                "CREATE INDEX refresh_family_idx ON accounts.refresh_tokens(family_id)",
+            )
+            .index(
+                "accounts.refresh_player_idx",
+                "CREATE INDEX refresh_player_idx ON accounts.refresh_tokens(player_id)",
+            )
+            .index(
+                "accounts.refresh_expires_idx",
+                "CREATE INDEX refresh_expires_idx ON accounts.refresh_tokens(expires_at)",
+            )
+            .index(
+                "accounts.browser_sessions_player_idx",
+                "CREATE INDEX browser_sessions_player_idx ON accounts.browser_sessions(player_id)",
+            )
+            .index(
+                "accounts.browser_sessions_expires_idx",
+                "CREATE INDEX browser_sessions_expires_idx ON accounts.browser_sessions(expires_at)",
+            )
+            .index(
+                "accounts.oauth_states_created_idx",
+                "CREATE INDEX oauth_states_created_idx ON accounts.oauth_states(created_at)",
+            )
+            .run()
+            .await?;
+
+        // `CREATE TABLE IF NOT EXISTS` is silent on a schema that predates
+        // `accounts.handles`, leaving `accounts_handle_idx` as a SECOND uniqueness
+        // authority the mint loop cannot see: a draw the claim table accepts then trips
+        // 23505 on the players INSERT and aborts the caller's whole transaction.
+        let unclaimed: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM accounts.players p \
+             WHERE NOT EXISTS (SELECT 1 FROM accounts.handles h \
+                                WHERE h.display_name_lower = lower(p.display_name) \
+                                  AND h.discriminator = p.discriminator)",
+        )
+        .fetch_one(pool)
+        .await?;
+        if unclaimed != 0 {
+            anyhow::bail!(
+                "accounts: {unclaimed} player(s) have no accounts.handles claim, so \
+                 accounts_handle_idx can refuse a handle the claim table just granted and \
+                 abort a register/login transaction. Remedy: DROP SCHEMA accounts CASCADE; \
+                 and reboot. NOT a backfill: wipe is this phase's migration strategy, and a \
+                 backfill would mint reservations for handles nothing ever claimed."
+            );
         }
+        refuse_stale_oauth_states(pool, "accounts").await?;
+        signing_keys::migrate_signing_keys(pool, "accounts", &kek).await
     }
 
     fn svc(&self) -> Arc<Service> {
@@ -1707,90 +1790,8 @@ impl Module for Accounts {
         Ok(())
     }
 
-    /// Creates this module's own schema and guarantees an active signing key that opens
-    /// under the KEK. Idempotent.
     async fn migrate(&self, ctx: &Context) -> anyhow::Result<()> {
-        let kek = self.migrate_kek(std::env::var_os(signing_keys::KEK_ENV))?;
-        let pool = ctx
-            .db()
-            .ok_or_else(|| anyhow::anyhow!("accounts requires a DB pool"))?;
-        Ddl::new(pool)
-            .sql(SCHEMA_DDL)
-            .sql(OAUTH_STATES_DDL.as_str())
-            // A second, DB-level constraint on `players` itself (see the claim-coverage
-            // check below): `accounts.handles` decides freeness at mint time, this index
-            // backs `player_by_handle`'s lookup and still refuses a duplicate pair.
-            .index(
-                "accounts.accounts_handle_idx",
-                "CREATE UNIQUE INDEX accounts_handle_idx \
-                 ON accounts.players (lower(display_name), discriminator)",
-            )
-            .index(
-                "accounts.identities_player_idx",
-                "CREATE INDEX identities_player_idx ON accounts.identities(player_id)",
-            )
-            .index(
-                "accounts.sessions_player_idx",
-                "CREATE INDEX sessions_player_idx ON accounts.sessions(player_id)",
-            )
-            .index(
-                "accounts.sessions_expires_idx",
-                "CREATE INDEX sessions_expires_idx ON accounts.sessions(expires_at)",
-            )
-            .index(
-                "accounts.sessions_family_idx",
-                "CREATE INDEX sessions_family_idx ON accounts.sessions(family_id)",
-            )
-            .index(
-                "accounts.refresh_family_idx",
-                "CREATE INDEX refresh_family_idx ON accounts.refresh_tokens(family_id)",
-            )
-            .index(
-                "accounts.refresh_player_idx",
-                "CREATE INDEX refresh_player_idx ON accounts.refresh_tokens(player_id)",
-            )
-            .index(
-                "accounts.refresh_expires_idx",
-                "CREATE INDEX refresh_expires_idx ON accounts.refresh_tokens(expires_at)",
-            )
-            .index(
-                "accounts.browser_sessions_player_idx",
-                "CREATE INDEX browser_sessions_player_idx ON accounts.browser_sessions(player_id)",
-            )
-            .index(
-                "accounts.browser_sessions_expires_idx",
-                "CREATE INDEX browser_sessions_expires_idx ON accounts.browser_sessions(expires_at)",
-            )
-            .index(
-                "accounts.oauth_states_created_idx",
-                "CREATE INDEX oauth_states_created_idx ON accounts.oauth_states(created_at)",
-            )
-            .run()
-            .await?;
-
-        // `CREATE TABLE IF NOT EXISTS` is silent on a schema that predates
-        // `accounts.handles`, leaving `accounts_handle_idx` as a SECOND uniqueness
-        // authority the mint loop cannot see: a draw the claim table accepts then trips
-        // 23505 on the players INSERT and aborts the caller's whole transaction.
-        let unclaimed: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM accounts.players p \
-             WHERE NOT EXISTS (SELECT 1 FROM accounts.handles h \
-                                WHERE h.display_name_lower = lower(p.display_name) \
-                                  AND h.discriminator = p.discriminator)",
-        )
-        .fetch_one(pool)
-        .await?;
-        if unclaimed != 0 {
-            anyhow::bail!(
-                "accounts: {unclaimed} player(s) have no accounts.handles claim, so \
-                 accounts_handle_idx can refuse a handle the claim table just granted and \
-                 abort a register/login transaction. Remedy: DROP SCHEMA accounts CASCADE; \
-                 and reboot. NOT a backfill: wipe is this phase's migration strategy, and a \
-                 backfill would mint reservations for handles nothing ever claimed."
-            );
-        }
-        refuse_stale_oauth_states(pool, "accounts").await?;
-        signing_keys::migrate_signing_keys(pool, "accounts", &kek).await
+        self.migrate_with(ctx, std::env::var_os(signing_keys::KEK_ENV)).await
     }
 
     /// Only wires up — no I/O (#8). Reads the env gates, parses and validates the
