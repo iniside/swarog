@@ -371,3 +371,32 @@ async fn a_guest_only_client_serves_guests_but_not_passwords() {
     assert_eq!(e.status, opsapi::Status::Unauthorized);
     assert_eq!(e.msg, "invalid client");
 }
+
+/// A client without the guest grant mints no guest and logs no guest back in; an
+/// unknown client is refused the guest login too.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_without_the_guest_grant_serves_no_guest() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired_with_guest(&pool).await;
+    let client = insert_client(&pool, &[accountsapi::grant_types::PASSWORD]).await;
+    let unknown = format!("t-unknown-{}", suffix());
+    let minted = svc.create_guest(test_client()).await.unwrap();
+
+    let refused_mint = svc.create_guest(client.clone()).await;
+    let refused_login = svc.login_federated(GUEST.to_string(), minted.device_secret.clone(), client.clone()).await;
+    let unknown_login = svc.login_federated(GUEST.to_string(), minted.device_secret.clone(), unknown).await;
+    if let Ok(m) = &refused_mint {
+        cleanup_player(&pool, &m.player_id).await;
+    }
+    cleanup_player(&pool, &minted.player_id).await;
+    delete_client(&pool, &client).await;
+
+    for (what, e) in [
+        ("create_guest", refused_mint.map(|_| ()).unwrap_err()),
+        ("guest login", refused_login.map(|_| ()).unwrap_err()),
+        ("unknown client", unknown_login.map(|_| ()).unwrap_err()),
+    ] {
+        assert_eq!(e.status, opsapi::Status::Unauthorized, "{what}: {e:?}");
+        assert_eq!(e.msg, "invalid client", "{what}");
+    }
+}

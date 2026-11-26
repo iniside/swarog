@@ -484,6 +484,35 @@ async fn register_rejects_effective_display_cap_before_argon_or_db() {
     );
 }
 
+/// An over-cap `client_id` answers `invalid client` at each login op's entry: before the
+/// closed Argon semaphore (register), the password verifier (login), the provider
+/// (login_federated) and the dead store (all four), each of which answers otherwise.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_over_cap_client_id_is_refused_before_argon_the_provider_or_the_db() {
+    const DEAD_DSN: &str = "postgres://gamebackend:gamebackend@127.0.0.1:1/client-id-cap-test";
+    let verifier = Arc::new(RecordingVerifier::default());
+    let svc = dead_service_at(DEAD_DSN, verifier.clone());
+    svc.argon_permits.close();
+    let mut registry = Providers::default();
+    registry.insert(GUEST, crate::guest::guest_credentials(Store { pool: svc.store.pool.clone() }));
+    svc.providers.set(Arc::new(registry)).ok().unwrap();
+    let over = "c".repeat(accountsapi::MAX_CLIENT_ID_BYTES + 1);
+    let credential = crate::guest::mint_ticket().credential;
+
+    let refused = [
+        ("register", svc.register("a@x.io".into(), "pw".into(), String::new(), over.clone()).await.map(|_| ())),
+        ("login", svc.login("a@x.io".into(), "pw".into(), over.clone()).await.map(|_| ())),
+        ("login_federated", svc.login_federated(GUEST.to_string(), credential, over.clone()).await.map(|_| ())),
+        ("create_guest", svc.create_guest(over).await.map(|_| ())),
+    ];
+    for (op, result) in refused {
+        let e = result.unwrap_err();
+        assert_eq!(e.status, opsapi::Status::Unauthorized, "{op}: {e:?}");
+        assert_eq!(e.msg, "invalid client", "{op}");
+    }
+    assert!(verifier.calls.lock().unwrap().is_empty(), "no password verify ran");
+}
+
 /// Invalid login input (over-cap email) still performs exactly ONE verify — against
 /// the DECOY hash with the FIXED decoy candidate (never the caller's password) —
 /// and answers the same generic 401. DB-free: invalid input skips the identity

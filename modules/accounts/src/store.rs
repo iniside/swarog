@@ -1020,26 +1020,20 @@ impl Store {
     }
 
     /// Revokes one token FAMILY on the caller's tx: its family row, whose deletion takes
-    /// every refresh token descended from that login by cascade, and its access sessions,
-    /// and nothing belonging to the player's other logins. Deletion, not a flag: with the
+    /// every refresh token and access session descended from that login by cascade, and
+    /// nothing belonging to the player's other logins. Deletion, not a flag: with the
     /// rows gone every token of the family answers as unknown, so a replay can never
     /// resurrect the family through the grace window.
-    ///
-    /// Answers how many family and session rows it deleted: 0 when the family held nothing.
     pub async fn kill_family_tx(
         &self,
         conn: &mut PgConnection,
         family_id: &str,
-    ) -> Result<u64, sqlx::Error> {
-        let families = sqlx::query("DELETE FROM accounts.token_families WHERE id = $1::uuid")
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM accounts.token_families WHERE id = $1::uuid")
             .bind(family_id)
             .execute(&mut *conn)
             .await?;
-        let sessions = sqlx::query("DELETE FROM accounts.sessions WHERE family_id = $1::uuid")
-            .bind(family_id)
-            .execute(&mut *conn)
-            .await?;
-        Ok(families.rows_affected() + sessions.rows_affected())
+        Ok(())
     }
 
     /// Takes the player row FOR UPDATE on the caller's tx, answering whether the player
@@ -1079,10 +1073,10 @@ impl Store {
     }
 
     /// Revokes every token family of a player on the caller's tx: all its family rows (and
-    /// by cascade their refresh tokens), access sessions and browser sessions. `None` when
-    /// there is no such player; otherwise a "did anything end" signal only: deleted family
-    /// and session rows (expired ones included) plus the browser sessions that were still
-    /// live. Not a session count.
+    /// by cascade their refresh tokens and access sessions) and browser sessions. `None`
+    /// when there is no such player; otherwise a "did anything end" signal only: deleted
+    /// family rows (expired ones included) plus the browser sessions that were still live.
+    /// Not a session count.
     ///
     /// Lock order: the player row first ([`Store::lock_player_row_tx`]), then its token
     /// and session rows — the order every login and refresh takes them (FOR KEY SHARE on
@@ -1101,12 +1095,8 @@ impl Store {
             .bind(player_id)
             .execute(&mut *conn)
             .await?;
-        let sessions = sqlx::query("DELETE FROM accounts.sessions WHERE player_id = $1::uuid")
-            .bind(player_id)
-            .execute(&mut *conn)
-            .await?;
         let browsers = self.delete_player_browser_sessions_tx(conn, player_id).await?;
-        Ok(Some(families.rows_affected() + sessions.rows_affected() + browsers))
+        Ok(Some(families.rows_affected() + browsers))
     }
 
     /// Deletes every browser session of a player, expired ones included, on the caller's

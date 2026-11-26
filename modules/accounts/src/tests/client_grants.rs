@@ -166,3 +166,39 @@ async fn a_refresh_moves_the_familys_access_expiry() {
     refreshed.unwrap();
     assert!(!online_refreshed.is_empty(), "the refresh's access token extends the family");
 }
+
+#[tokio::test]
+async fn deleting_a_client_ends_the_access_tokens_it_was_issued() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let client = insert_client(&pool, &[PASSWORD, REFRESH_TOKEN]).await;
+    let email = format!("delcl-{}@test.local", suffix().to_lowercase());
+    let reg = svc.register(email, "pw".into(), "DelCl".into(), client.clone()).await.unwrap();
+    let before = svc.store.player_by_session(&reg.token).await.unwrap().map(|p| p.id);
+
+    let deleted = svc.store.delete_client(&client).await.unwrap();
+    let after = svc.store.player_by_session(&reg.token).await.unwrap();
+    let refreshed = svc.refresh(reg.refresh_token.clone()).await;
+    cleanup_player(&pool, &reg.player_id).await;
+
+    assert_eq!(before, Some(reg.player_id.clone()), "the bearer verifies while its client exists");
+    assert!(deleted);
+    assert!(after.is_none(), "a deleted client's bearer no longer verifies");
+    assert_eq!(refreshed.unwrap_err().status, opsapi::Status::Unauthorized);
+}
+
+#[tokio::test]
+async fn an_external_login_needs_only_an_existing_client() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let client = insert_client(&pool, &[REFRESH_TOKEN]).await;
+    let sub = format!("epic-{}", suffix());
+
+    let session = svc.external_login("epic", &sub, "epic:grantless", None, &client).await.map(|(s, _)| s);
+    if let Ok(s) = &session {
+        cleanup_player(&pool, &s.player_id).await;
+    }
+    delete_client(&pool, &client).await;
+
+    session.expect("a client listing neither password nor guest still serves an external login");
+}

@@ -221,16 +221,6 @@ CREATE TABLE IF NOT EXISTS accounts.identities (
 	PRIMARY KEY (provider, subject)
 );
 
-CREATE TABLE IF NOT EXISTS accounts.sessions (
-	token      text PRIMARY KEY,
-	player_id  uuid        NOT NULL REFERENCES accounts.players(id) ON DELETE CASCADE,
-	created_at timestamptz NOT NULL DEFAULT now(),
-	expires_at timestamptz NOT NULL,
-	-- The refresh family this access token was minted under: what scopes a revocation
-	-- to one compromised login instead of every device the player owns.
-	family_id  uuid
-);
-
 -- The hosted login pages' signed-in browsers: the cookie's opaque token is stored only as
 -- its SHA-256 digest, and `player_by_session` never reads this table, so a browser cookie
 -- never authenticates an operation.
@@ -261,6 +251,16 @@ CREATE TABLE IF NOT EXISTS accounts.token_families (
 	created_at        timestamptz NOT NULL DEFAULT now(),
 	-- The newest access token's expiry, moved forward by every mint in the family.
 	access_expires_at timestamptz NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS accounts.sessions (
+	token      text PRIMARY KEY,
+	player_id  uuid        NOT NULL REFERENCES accounts.players(id) ON DELETE CASCADE,
+	created_at timestamptz NOT NULL DEFAULT now(),
+	expires_at timestamptz NOT NULL,
+	-- The refresh family this access token was minted under: a revoked family, or one
+	-- whose client is deleted, takes its access tokens with it.
+	family_id  uuid        NOT NULL REFERENCES accounts.token_families(id) ON DELETE CASCADE
 );
 
 -- Rotating refresh tokens. A consumed row is KEPT (until it expires) with the successor
@@ -334,21 +334,25 @@ async fn refuse_stale_oauth_states(pool: &sqlx::PgPool, schema: &str) -> anyhow:
     Ok(())
 }
 
-/// Refuses an `accounts.refresh_tokens` that predates `accounts.token_families`: `CREATE
-/// TABLE IF NOT EXISTS` keeps the old table, whose tokens would outlive a deleted family.
-async fn refuse_unfamilied_refresh_tokens(pool: &sqlx::PgPool) -> anyhow::Result<()> {
-    let linked: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM pg_constraint \
-                         WHERE conrelid = 'accounts.refresh_tokens'::regclass AND contype = 'f' \
-                           AND confrelid = 'accounts.token_families'::regclass)",
-    )
-    .fetch_one(pool)
-    .await?;
-    if !linked {
-        anyhow::bail!(
-            "accounts: accounts.refresh_tokens has no foreign key to accounts.token_families. \
-             Remedy: DROP SCHEMA accounts CASCADE; and reboot."
-        );
+/// Refuses an `accounts.refresh_tokens` or `accounts.sessions` that predates
+/// `accounts.token_families`: `CREATE TABLE IF NOT EXISTS` keeps the old table, whose
+/// tokens would outlive a deleted family.
+async fn refuse_unfamilied_tokens(pool: &sqlx::PgPool) -> anyhow::Result<()> {
+    for table in ["accounts.refresh_tokens", "accounts.sessions"] {
+        let linked: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_constraint \
+                             WHERE conrelid = $1::regclass AND contype = 'f' \
+                               AND confrelid = 'accounts.token_families'::regclass)",
+        )
+        .bind(table)
+        .fetch_one(pool)
+        .await?;
+        if !linked {
+            anyhow::bail!(
+                "accounts: {table} has no foreign key to accounts.token_families. \
+                 Remedy: DROP SCHEMA accounts CASCADE; and reboot."
+            );
+        }
     }
     Ok(())
 }
@@ -447,7 +451,8 @@ impl Service {
     /// inside it, on the caller's transaction, and stamps the identity `(provider,
     /// subject)` it was minted through as last used. The client must exist and list the
     /// grant [`clients::grant_for_provider`] names, else nothing is minted and the answer
-    /// is [`invalid_client`]. With `secret_hash` (a password sign-in) the identity
+    /// is [`invalid_client`]; every caller has already capped `client_id` at its op's
+    /// entry ([`client_id_within_cap`]). With `secret_hash` (a password sign-in) the identity
     /// must still store the hash that was verified, else nothing is minted and the answer
     /// is the wrong-password 401. All three commit with whatever else that
     /// transaction carries (the player row, the `player.registered` append); a refresh
@@ -469,12 +474,11 @@ impl Service {
         client_id: &str,
         token: String,
     ) -> Result<accountsapi::Session, Error> {
-        if !client_id_within_cap(client_id)
-            || !self
-                .store
-                .client_allows_tx(conn, client_id, clients::grant_for_provider(provider))
-                .await
-                .map_err(internal)?
+        if !self
+            .store
+            .client_allows_tx(conn, client_id, clients::grant_for_provider(provider))
+            .await
+            .map_err(internal)?
         {
             return Err(invalid_client());
         }
@@ -1272,6 +1276,9 @@ impl accountsapi::Auth for Service {
         if !email_within_cap(&email) || !password_within_cap(&password) {
             return Err(Error::invalid("email or password too long"));
         }
+        if !client_id_within_cap(&client_id) {
+            return Err(invalid_client());
+        }
         let display = if display_name.is_empty() {
             email.clone()
         } else {
@@ -1299,6 +1306,9 @@ impl accountsapi::Auth for Service {
         password: String,
         client_id: String,
     ) -> Result<accountsapi::Session, Error> {
+        if !client_id_within_cap(&client_id) {
+            return Err(invalid_client());
+        }
         let email = normalize_email(&email);
         let verified = self.verify_password(&email, password).await?;
         self.issue_password_session(&verified, &client_id).await
@@ -1318,6 +1328,9 @@ impl accountsapi::Auth for Service {
         credential: String,
         client_id: String,
     ) -> Result<accountsapi::Session, Error> {
+        if !client_id_within_cap(&client_id) {
+            return Err(invalid_client());
+        }
         let verified = self.verify_credential(&provider, &credential).await?;
         let (session, _created) = self
             .external_login(&provider, &verified.subject, &verified.display_name, None, &client_id)
@@ -1332,6 +1345,9 @@ impl accountsapi::Auth for Service {
     /// else: `guest::mint_ticket` is the only place the plaintext exists, and the
     /// store keeps only its SHA-256 digest.
     async fn create_guest(&self, client_id: String) -> Result<accountsapi::GuestSession, Error> {
+        if !client_id_within_cap(&client_id) {
+            return Err(invalid_client());
+        }
         let ticket = guest::mint_ticket();
         let display_name = format!("{GUEST}:{}", oidc::short_id(&ticket.subject));
         let (session, _created) = self
@@ -1746,7 +1762,7 @@ impl Accounts {
             );
         }
         refuse_stale_oauth_states(pool, "accounts").await?;
-        refuse_unfamilied_refresh_tokens(pool).await?;
+        refuse_unfamilied_tokens(pool).await?;
         signing_keys::migrate_signing_keys(pool, SIGNING_KEYS_SCHEMA, &kek).await?;
         clients::migrate_dev_seed(self.dev_seed_on(), pool).await?;
         Ok(())

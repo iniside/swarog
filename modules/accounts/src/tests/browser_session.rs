@@ -78,7 +78,7 @@ async fn killing_a_players_families_ends_its_browser_sessions() {
     cleanup_player(&pool, &pid).await;
     cleanup_player(&pool, &other).await;
 
-    assert_eq!(killed, Some(3), "token, access session and browser session");
+    assert_eq!(killed, Some(2), "the token family and the browser session");
     assert_eq!(left, 0);
     assert!(read.is_none());
     assert_eq!(kept, 1, "another player's browser session is untouched");

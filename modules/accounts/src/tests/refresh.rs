@@ -212,6 +212,32 @@ async fn replay_inside_grace_returns_the_recorded_successor_and_kills_nothing() 
     cleanup_player(&pool, &pid).await;
 }
 
+/// A replay inside the grace window is refused once the family's client no longer lists
+/// `refresh_token`, and mints nothing.
+#[tokio::test]
+async fn replay_inside_grace_is_refused_once_the_client_drops_refresh_token() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let grants = [accountsapi::grant_types::PASSWORD, accountsapi::grant_types::REFRESH_TOKEN];
+    let client = insert_client(&pool, &grants).await;
+    let email = format!("grace-drop-{}@test.local", suffix());
+    let sess = svc.register(email, "pw".into(), "GraceDrop".into(), client.clone()).await.unwrap();
+    svc.refresh(sess.refresh_token.clone()).await.unwrap();
+    set_used_at_offset(&pool, &sess.refresh_token, -5.0).await;
+    let family = refresh_row(&pool, &sess.refresh_token).await.unwrap().family_id;
+
+    set_client_grants(&pool, &client, &[accountsapi::grant_types::PASSWORD]).await;
+    let replay = svc.refresh(sess.refresh_token.clone()).await;
+    let sessions = family_session_count(&pool, &family).await;
+    cleanup_player(&pool, &sess.player_id).await;
+    delete_client(&pool, &client).await;
+
+    let e = replay.unwrap_err();
+    assert_eq!(e.status, opsapi::Status::Unauthorized, "{e:?}");
+    assert_eq!(e.msg, "invalid client");
+    assert_eq!(sessions, 2, "the refused replay mints no access session");
+}
+
 /// An expired refresh token is `RefreshVerdict::Deny` via the `row.expired` branch.
 #[tokio::test]
 async fn expired_refresh_token_is_unauthorized() {

@@ -8,16 +8,27 @@
 
 use super::*;
 
-/// Inserts a session row for `player_id` with an explicit `expires_at` relative to now
-/// (positive = future/live, negative = past/expired), returning its token.
-async fn insert_session(pool: &PgPool, player_id: &str, offset_days: i32) -> String {
+/// The token family `refresh_token` belongs to.
+async fn family_of(pool: &PgPool, refresh_token: &str) -> String {
+    sqlx::query_scalar("SELECT family_id::text FROM accounts.refresh_tokens WHERE token = $1")
+        .bind(refresh_token)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Inserts a session row for `player_id` in family `family_id` with an explicit
+/// `expires_at` relative to now (positive = future/live, negative = past/expired),
+/// returning its token.
+async fn insert_session(pool: &PgPool, player_id: &str, family_id: &str, offset_days: i32) -> String {
     let token = store::new_token();
     sqlx::query(
-        "INSERT INTO accounts.sessions (token, player_id, expires_at) \
-         VALUES ($1, $2::uuid, now() + make_interval(days => $3))",
+        "INSERT INTO accounts.sessions (token, player_id, family_id, expires_at) \
+         VALUES ($1, $2::uuid, $3::uuid, now() + make_interval(days => $4))",
     )
     .bind(&token)
     .bind(player_id)
+    .bind(family_id)
     .bind(offset_days)
     .execute(pool)
     .await
@@ -61,9 +72,10 @@ async fn prune_deletes_only_expired_sessions_for_prune_name() {
     let email = format!("prune-{}@test.local", suffix());
     let sess = svc.register(email, "pw".into(), "Prune".into(), test_client()).await.unwrap();
     let pid = sess.player_id.clone();
+    let family = family_of(&pool, &sess.refresh_token).await;
 
-    let expired = insert_session(&pool, &pid, -1).await; // expires_at 1 day in the past
-    let live = insert_session(&pool, &pid, 30).await; // still valid
+    let expired = insert_session(&pool, &pid, &family, -1).await; // expires_at 1 day in the past
+    let live = insert_session(&pool, &pid, &family, 30).await; // still valid
 
     let handler = PruneHandler { svc: svc.clone() };
 
@@ -157,7 +169,8 @@ async fn foreign_schedule_name_is_a_committed_noop() {
     let email = format!("noop-{}@test.local", suffix());
     let sess = svc.register(email, "pw".into(), "Noop".into(), test_client()).await.unwrap();
     let pid = sess.player_id.clone();
-    let expired = insert_session(&pool, &pid, -1).await;
+    let family = family_of(&pool, &sess.refresh_token).await;
+    let expired = insert_session(&pool, &pid, &family, -1).await;
 
     let handler = PruneHandler { svc: svc.clone() };
     // Succeeds (no panic/err) AND leaves the expired row intact.
@@ -208,49 +221,40 @@ async fn prune_deletes_expired_browser_session_keeps_live_one() {
 }
 
 /// The token-family leg of the prune reaction: a family whose access lapsed and whose
-/// refresh tokens all expired goes; one still holding a live refresh token stays.
+/// refresh tokens all expired goes; one still holding a live refresh token stays, and so
+/// does one whose access token is still live though its refresh tokens expired.
 #[tokio::test(flavor = "multi_thread")]
 async fn prune_deletes_a_family_only_once_nothing_in_it_grants_access() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("prune-fam-{}@test.local", suffix());
     let dead = svc.register(email.clone(), "pw".into(), "PruneFam".into(), test_client()).await.unwrap();
-    let refreshable = svc.login(email, "pw".into(), test_client()).await.unwrap();
+    let refreshable = svc.login(email.clone(), "pw".into(), test_client()).await.unwrap();
+    let live_access = svc.login(email, "pw".into(), test_client()).await.unwrap();
     let pid = dead.player_id.clone();
-    let family_of = |token: String| {
-        let pool = pool.clone();
-        async move {
-            sqlx::query_scalar::<_, String>(
-                "SELECT family_id::text FROM accounts.refresh_tokens WHERE token = $1",
-            )
-            .bind(token)
-            .fetch_one(&pool)
-            .await
-            .unwrap()
-        }
-    };
-    let (dead_family, refreshable_family) =
-        (family_of(dead.refresh_token.clone()).await, family_of(refreshable.refresh_token.clone()).await);
+    let dead_family = family_of(&pool, &dead.refresh_token).await;
+    let refreshable_family = family_of(&pool, &refreshable.refresh_token).await;
+    let live_access_family = family_of(&pool, &live_access.refresh_token).await;
     sqlx::query(
         "UPDATE accounts.token_families SET access_expires_at = now() - interval '1 minute' \
-          WHERE player_id = $1::uuid",
+          WHERE id = ANY($1::text[]::uuid[])",
     )
-    .bind(&pid)
+    .bind(&[dead_family.as_str(), refreshable_family.as_str()][..])
     .execute(&pool)
     .await
     .unwrap();
     sqlx::query(
         "UPDATE accounts.refresh_tokens SET expires_at = now() - interval '1 minute' \
-          WHERE family_id = $1::uuid",
+          WHERE family_id = ANY($1::text[]::uuid[])",
     )
-    .bind(&dead_family)
+    .bind(&[dead_family.as_str(), live_access_family.as_str()][..])
     .execute(&pool)
     .await
     .unwrap();
 
     let handler = PruneHandler { svc: svc.clone() };
     deliver_prune(&pool, &handler, PRUNE_SCHEDULE_NAME).await;
-    let left: Vec<String> = sqlx::query_scalar(
+    let mut left: Vec<String> = sqlx::query_scalar(
         "SELECT id::text FROM accounts.token_families WHERE player_id = $1::uuid",
     )
     .bind(&pid)
@@ -259,5 +263,8 @@ async fn prune_deletes_a_family_only_once_nothing_in_it_grants_access() {
     .unwrap();
     cleanup_player(&pool, &pid).await;
 
-    assert_eq!(left, vec![refreshable_family], "only the family with nothing live is pruned");
+    left.sort();
+    let mut kept = vec![refreshable_family, live_access_family];
+    kept.sort();
+    assert_eq!(left, kept, "only the family with nothing live is pruned");
 }

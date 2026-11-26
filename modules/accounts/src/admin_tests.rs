@@ -19,7 +19,7 @@ use super::{
 };
 use crate::store::FamilyRow;
 use crate::web::session::BrowserSessionRow;
-use crate::tests::{cleanup_player, suffix, test_client, wired, TEST_CLIENT_ID};
+use crate::tests::{cleanup_player, insert_client, suffix, test_client, wired, TEST_CLIENT_ID};
 
 /// A canonical uuid no registration mints: registrations are v4, this is v0.
 const NO_PLAYER: &str = "00000000-0000-0000-0000-000000000000";
@@ -891,7 +891,7 @@ async fn a_login_racing_revoke_all_waits_and_survives_whole() {
     let left = player_rows(&pool, &id).await;
     cleanup_player(&pool, &id).await;
 
-    assert_eq!(killed, Some(2), "the registration's token and session are revoked");
+    assert_eq!(killed, Some(1), "the registration's family is revoked");
     assert!(waited, "the login must wait on Revoke all's player row lock");
     session.unwrap();
     assert_eq!(left, 2, "the login after the revoke survives whole: token and session");
@@ -1259,4 +1259,103 @@ async fn create_client_stores_a_swarog_client_and_delete_removes_it_once() {
     assert!(admin.svc.store.client(&id).await.unwrap().is_none(), "the row is gone");
     let again = admin.invoke(delete_client_call(&id)).await.unwrap_err();
     assert_eq!(again.status, Status::NotFound, "a repeat delete names no client");
+}
+
+async fn client_families(pool: &PgPool, client_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM accounts.token_families WHERE client_id = $1")
+        .bind(client_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// A login holding its client row (FOR KEY SHARE) when the client is deleted: the delete
+/// waits for it, then takes the login's family by cascade. The real `login` is parked at
+/// its identity stamp by a third transaction holding the identity row.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_delete_waits_for_a_racing_login_and_cascades_its_family() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let grants = [accountsapi::grant_types::PASSWORD, accountsapi::grant_types::REFRESH_TOKEN];
+    let client = insert_client(&pool, &grants).await;
+    let email = format!("delcl1-{}@test.local", suffix());
+    let id = svc.register(email.clone(), "pw".into(), "DelClLogin".into(), client.clone()).await.unwrap().player_id;
+    let mut stamp_gate = pool.begin().await.unwrap();
+    let gate_pid = backend_pid(&mut stamp_gate).await;
+    sqlx::query("SELECT 1 FROM accounts.identities WHERE player_id = $1::uuid FOR UPDATE")
+        .bind(&id)
+        .execute(&mut *stamp_gate)
+        .await
+        .unwrap();
+    let login = {
+        let svc = Arc::clone(&svc);
+        let client = client.clone();
+        tokio::spawn(async move { svc.login(email, "pw".into(), client).await })
+    };
+    let login_pid = waiter_of(&pool, gate_pid).await;
+    let delete = {
+        let admin = AccountsAdmin::new(Arc::clone(&svc));
+        let client = client.clone();
+        tokio::spawn(async move { admin.invoke(delete_client_call(&client)).await })
+    };
+    let waited = login_pid.is_some() && waits_on(&pool, login_pid.unwrap()).await;
+    stamp_gate.rollback().await.unwrap();
+    let session = login.await.unwrap();
+    let deleted = delete.await.unwrap();
+    let families = client_families(&pool, &client).await;
+    let left = player_rows(&pool, &id).await;
+    cleanup_player(&pool, &id).await;
+
+    assert!(login_pid.is_some(), "the login must park at its identity stamp");
+    assert!(waited, "the client delete must wait on the login holding the client row");
+    assert_eq!(session.expect("the login commits first").player_id, id);
+    assert!(matches!(deleted.expect("the delete finishes without a 500"), InvokeOutcome::Ok { .. }));
+    assert_eq!(families, 0, "the delete cascades the family the login committed");
+    assert_eq!(left, 0, "no token or session of the deleted client is left");
+}
+
+/// A refresh holding its family row (FOR KEY SHARE) when the client is deleted: the
+/// delete's cascade waits for it, then takes the rotated family whole. A third
+/// transaction holds the token row so the refresh parks there.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_delete_waits_for_a_racing_refresh_and_cascades_its_family() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let grants = [accountsapi::grant_types::PASSWORD, accountsapi::grant_types::REFRESH_TOKEN];
+    let client = insert_client(&pool, &grants).await;
+    let email = format!("delcl2-{}@test.local", suffix());
+    let first = svc.register(email, "pw".into(), "DelClRefresh".into(), client.clone()).await.unwrap();
+    let id = first.player_id.clone();
+    let mut token_gate = pool.begin().await.unwrap();
+    let gate_pid = backend_pid(&mut token_gate).await;
+    sqlx::query("SELECT 1 FROM accounts.refresh_tokens WHERE token = $1 FOR UPDATE")
+        .bind(&first.refresh_token)
+        .execute(&mut *token_gate)
+        .await
+        .unwrap();
+    let refresh = {
+        let svc = Arc::clone(&svc);
+        let token = first.refresh_token.clone();
+        tokio::spawn(async move { svc.refresh(token).await })
+    };
+    let refresh_pid = waiter_of(&pool, gate_pid).await;
+    let delete = {
+        let admin = AccountsAdmin::new(Arc::clone(&svc));
+        let client = client.clone();
+        tokio::spawn(async move { admin.invoke(delete_client_call(&client)).await })
+    };
+    let waited = refresh_pid.is_some() && waits_on(&pool, refresh_pid.unwrap()).await;
+    token_gate.rollback().await.unwrap();
+    let rotated = refresh.await.unwrap();
+    let deleted = delete.await.unwrap();
+    let families = client_families(&pool, &client).await;
+    let left = player_rows(&pool, &id).await;
+    cleanup_player(&pool, &id).await;
+
+    assert!(refresh_pid.is_some(), "the refresh must park on the held token row");
+    assert!(waited, "the client delete must wait on the refresh holding the family row");
+    rotated.expect("the refresh commits first");
+    assert!(matches!(deleted.expect("the delete finishes without a 500"), InvokeOutcome::Ok { .. }));
+    assert_eq!(families, 0, "the delete cascades the rotated family");
+    assert_eq!(left, 0, "no token or session of the deleted client is left");
 }
