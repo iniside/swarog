@@ -70,7 +70,8 @@ const EPIC_CALLBACK: &str = "/accounts/epic/callback";
 const GOOGLE_START: &str = "/accounts/oidc/google";
 const GOOGLE_CALLBACK: &str = "/accounts/oidc/google/callback";
 /// The redirect URI the Proof fleet pins on accounts-svc for google (gateway-svc's origin).
-const GOOGLE_REDIRECT_URI: &str = "http://127.0.0.1:8082/accounts/oidc/google/callback";
+const GOOGLE_REDIRECT_URI: &str =
+    concat!(processctl::split_gateway_origin!(), "/accounts/oidc/google/callback");
 /// Google's authorize endpoint, accounts' default: the Proof fleet does not pin it.
 const GOOGLE_AUTHORIZE: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 /// The cookie binding an OAuth state to the browser that started it, set on every start.

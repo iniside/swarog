@@ -4,12 +4,7 @@ Last updated: 2026-11-26
 
 ## In progress
 
-- [ ] **Proof redirect URIs repeat the gateway port by hand**
-  The split proof's `http://127.0.0.1:8082/...` callback URIs are written out at
-  tools/processctl/src/fleet.rs:999 and :1017, tools/processctl/src/fleet_tests.rs:335 and :374, and
-  tools/splitproof/src/accounts_browser_checks.rs:73, apart from the gateway port set at fleet.rs:863.
-  Source: docs/plans/2026-11-26-1352-oauth-drift-fixes-plan.md D5, owner answer ("ok 1,2 zrobic reszta do todo", 2026-11-26).
-  Being fixed by docs/plans/2026-11-26-1440-accounts-browser-fixes-plan.md Step 4.
+_None._
 
 ## Open
 

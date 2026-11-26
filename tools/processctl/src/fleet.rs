@@ -139,7 +139,7 @@ pub const PROOF_GOOGLE_CLIENT_ID: &str = "splitproof-google-client";
 
 /// The issuer the split `Proof` overlay gives accounts-svc: gateway-svc's origin, where
 /// clients reach `/accounts/oidc` in the split.
-pub const PROOF_ACCOUNTS_ISSUER_SPLIT: &str = "http://127.0.0.1:8082/accounts/oidc";
+pub const PROOF_ACCOUNTS_ISSUER_SPLIT: &str = concat!(crate::split_gateway_origin!(), "/accounts/oidc");
 /// The issuer the monolith `Proof` overlay pins, on the monolith's own port.
 pub const PROOF_ACCOUNTS_ISSUER_MONOLITH: &str = "http://127.0.0.1:8080/accounts/oidc";
 
@@ -151,7 +151,15 @@ pub(crate) const DEV_ACCOUNTS_SIGNING_KEK: &str = "c3dhcm9nLWRldi1hY2NvdW50cy1za
 /// The issuer the split `Development` fleet gives accounts-svc: gateway-svc's origin, the
 /// split's front door. Port 8080 there is characters-svc, so accounts' own default
 /// (the monolith's port) would name the wrong process.
-pub(crate) const DEV_ACCOUNTS_ISSUER_SPLIT: &str = "http://localhost:8082/accounts/oidc";
+pub(crate) const DEV_ACCOUNTS_ISSUER_SPLIT: &str =
+    concat!("http://localhost:", crate::split_gateway_port!(), "/accounts/oidc");
+
+/// The google callback the split `Proof` overlay gives accounts-svc, on gateway-svc's origin.
+pub(crate) const PROOF_GOOGLE_REDIRECT_URI_SPLIT: &str =
+    concat!(crate::split_gateway_origin!(), "/accounts/oidc/google/callback");
+/// The epic callback the split `Proof` overlay gives accounts-svc, on gateway-svc's origin.
+pub(crate) const PROOF_EPIC_REDIRECT_URI_SPLIT: &str =
+    concat!(crate::split_gateway_origin!(), "/accounts/epic/callback");
 
 /// The provider every fleet flavor configures `mail` with, and the value
 /// `tools/splitproof` asserts a delivered row was sent BY. The harness reads this
@@ -878,7 +886,7 @@ pub fn game_backend_fleet_with_environment(
     let mut gateway_env = environment.runtime_environment();
     gateway_env.insert("EDGE_CA_CERT".into(), cert.clone());
     gateway_env.insert("EDGE_CA_KEY".into(), key.clone());
-    gateway_env.insert("PORT".into(), ":8082".into());
+    gateway_env.insert("PORT".into(), concat!(":", crate::split_gateway_port!()).into());
     // Explicit because this spec is built inline and never goes through `service()`, which
     // is where every other svc gets its `EDGE_ADDR`. Without it `app::run` falls back to
     // its `:9000` default — characters-svc's port.
@@ -1020,7 +1028,7 @@ pub fn game_backend_fleet_with_environment(
             accounts.env.insert("GOOGLE_CLIENT_SECRET".into(), "test".into());
             accounts.env.insert(
                 "GOOGLE_REDIRECT_URI".into(),
-                "http://127.0.0.1:8082/accounts/oidc/google/callback".into(),
+                PROOF_GOOGLE_REDIRECT_URI_SPLIT.into(),
             );
             accounts
                 .env
@@ -1044,7 +1052,7 @@ pub fn game_backend_fleet_with_environment(
             accounts.env.insert("EPIC_CLIENT_SECRET".into(), "test".into());
             accounts.env.insert(
                 "EPIC_REDIRECT_URI".into(),
-                "http://127.0.0.1:8082/accounts/epic/callback".into(),
+                PROOF_EPIC_REDIRECT_URI_SPLIT.into(),
             );
             accounts
                 .env

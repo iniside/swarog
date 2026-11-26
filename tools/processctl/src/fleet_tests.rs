@@ -237,6 +237,27 @@ fn proof_fleet_matches_the_canonical_service_snapshot() {
     );
 }
 
+/// The split gateway's origin is one macro; this pins what it expands to by hand, and that
+/// gateway-svc really listens on that port, so a wrong macro value or a gateway moved off it
+/// goes red here rather than in a split proof's redirect.
+#[test]
+fn split_gateway_origin_is_the_gateway_port() {
+    assert_eq!(crate::split_gateway_origin!(), "http://127.0.0.1:8082");
+    assert_eq!(PROOF_ACCOUNTS_ISSUER_SPLIT, "http://127.0.0.1:8082/accounts/oidc");
+    assert_eq!(DEV_ACCOUNTS_ISSUER_SPLIT, "http://localhost:8082/accounts/oidc");
+    for flavor in [FleetFlavor::Development, FleetFlavor::Proof] {
+        let fleet = game_backend_fleet(&inputs(), flavor);
+        let gateway = fleet.service("gateway-svc").unwrap();
+        let port: u16 = crate::split_gateway_port!().parse().unwrap();
+        assert_eq!(gateway.http_port, port, "{flavor:?}: gateway-svc's http_port");
+        assert_eq!(
+            gateway.env.get("PORT").map(String::as_str),
+            Some(format!(":{}", crate::split_gateway_port!()).as_str()),
+            "{flavor:?}: gateway-svc's PORT env"
+        );
+    }
+}
+
 #[test]
 fn proof_overlay_is_explicit_and_name_lookup_is_stable() {
     let development = game_backend_fleet(&inputs(), FleetFlavor::Development);

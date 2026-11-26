@@ -1,3 +1,21 @@
+/// gateway-svc's HTTP port in the split fleet, as a string literal so it can sit inside
+/// `concat!` (a `const &str` cannot, and a `u16` cannot be formatted in a const).
+#[macro_export]
+macro_rules! split_gateway_port {
+    () => {
+        "8082"
+    };
+}
+
+/// gateway-svc's origin in the split fleet, the split's front door: every split URI a client
+/// is redirected to is built on it with `concat!`.
+#[macro_export]
+macro_rules! split_gateway_origin {
+    () => {
+        concat!("http://127.0.0.1:", $crate::split_gateway_port!())
+    };
+}
+
 mod fleet;
 mod layout;
 mod lock;
