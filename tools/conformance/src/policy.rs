@@ -235,9 +235,11 @@ fn accounts() -> Entry {
                         bad_value: "hunter2",
                         expect: "invalid EPIC_AUTHORIZE_URL",
                     },
-                    // The second OIDC provider's own parse, one case per variable: a
-                    // variable dropped from `provider_env_keys` is never collected by
-                    // `from_env`, and only its OWN case turns red.
+                    // The second OIDC provider's own parse: three of its keys, one case
+                    // each, so a key dropped from `provider_env_keys` turns its own case
+                    // red. Every GOOGLE_* key is guarded by the accounts unit tests
+                    // `reject_set_but_empty_google_oauth_vars` and
+                    // `malformed_google_endpoint_fails_on_its_own_rule_without_client_ids_or_secret`.
                     EnvCase {
                         var: "GOOGLE_JWKS_URL",
                         bad_value: "hunter2",

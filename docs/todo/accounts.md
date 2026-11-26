@@ -11,9 +11,9 @@ Last updated: 2026-11-26
 ## Open
 
 - [ ] **Single failure-rendering policy for the Epic OAuth callback**
-  ACCOUNTS-01. `handle_callback` renders a Postgres outage as a 503 body on the
-  state lookup but as a `/?epic=error` redirect on the link-flow
-  `player_by_session`. Source: modules/accounts/src/oauth_flow.rs:345 (state lookup)
+  ACCOUNTS-01. The Epic callback renders a Postgres outage as a 503 body on
+  `handle_callback`'s state lookup but as a `/?epic=error` redirect on
+  `epic_oauth::complete`'s link-flow `player_by_session`. Source: modules/accounts/src/oauth_flow.rs:345 (state lookup)
   and modules/accounts/src/epic_oauth.rs:178 (link-flow lookup) (2026-07-28).
 - [ ] **Facebook and console login providers**
   ACCOUNTS-03. Not present in modules/accounts/src (Grep, lower bound). Each is a

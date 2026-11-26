@@ -45,10 +45,8 @@ async fn take_state_refuses_and_keeps_another_providers_state() {
 }
 
 /// D4: only Epic has `login` and `link` states, and the table refuses them for any other
-/// provider. Those rows satisfy every other CHECK on `oauth_states` (a known provider and
-/// intent, `session_token` exactly on `link`, no `return_to` or `replaces_session`), so
-/// a check violation here is `provider = 'epic' OR intent = 'browser'`; without it both
-/// inserts succeed.
+/// provider: both inserts fail on the named `oauth_states_epic_only` CHECK, and without
+/// it both succeed.
 #[tokio::test(flavor = "multi_thread")]
 async fn oauth_states_refuse_login_and_link_for_a_provider_other_than_epic() {
     let Some(pool) = test_pool().await else { return };
@@ -59,12 +57,9 @@ async fn oauth_states_refuse_login_and_link_for_a_provider_other_than_epic() {
     for intent in [Intent::Login, Intent::Link { session_token: "tok".into() }] {
         let label = format!("{intent:?}");
         let err = google.new_state(intent, binding.clone()).await.expect_err(&label);
-        let code = err
-            .downcast_ref::<sqlx::Error>()
-            .and_then(|e| e.as_database_error())
-            .and_then(|e| e.code())
-            .map(|c| c.into_owned());
-        assert_eq!(code.as_deref(), Some("23514"), "{label}: {err:#}");
+        let db = err.downcast_ref::<sqlx::Error>().and_then(|e| e.as_database_error());
+        let constraint = db.and_then(|e| e.constraint());
+        assert_eq!(constraint, Some("oauth_states_epic_only"), "{label}: {err:#}");
     }
 }
 

@@ -263,7 +263,7 @@ CREATE TABLE IF NOT EXISTS accounts.oauth_states (
 	replaces_session bytea,
 	browser_binding  text        NOT NULL,
 	created_at       timestamptz NOT NULL DEFAULT now(),
-	CHECK (provider = '{EPIC}' OR intent = 'browser'),
+	CONSTRAINT oauth_states_epic_only CHECK (provider = '{EPIC}' OR intent = 'browser'),
 	CHECK ((intent = 'link') = (session_token IS NOT NULL)),
 	CHECK ((intent = 'browser') = (return_to IS NOT NULL)),
 	CHECK (intent = 'browser' OR replaces_session IS NULL)
