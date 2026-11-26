@@ -66,7 +66,6 @@ fn workspace_root() -> PathBuf {
 fn rpc_modules() -> Vec<(&'static str, Vec<opsapi::RouteBinding>)> {
     vec![
         ("accountsapi::auth_rpc", accountsapi::auth_rpc::route_bindings()),
-        ("accountsapi::sessions_rpc", accountsapi::sessions_rpc::route_bindings()),
         ("accountsapi::directory_rpc", accountsapi::directory_rpc::route_bindings()),
         ("apikeysapi::keys_rpc", apikeysapi::keys_rpc::route_bindings()),
         ("charactersapi::ownership_rpc", charactersapi::ownership_rpc::route_bindings()),

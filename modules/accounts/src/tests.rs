@@ -427,7 +427,7 @@ fn new_accounts_caps_count_utf8_bytes_at_boundary() {
     assert_cap(
         "session token",
         accountsapi::MAX_SESSION_TOKEN_BYTES,
-        session_token_within_cap,
+        opaque_token_within_cap,
     );
 }
 

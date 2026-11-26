@@ -13,7 +13,7 @@ use sqlx::PgPool;
 use testdb::test_pool;
 
 use super::{
-    fake_client, fake_ip, mask, session_rows, thousands, AccountsAdmin, CREATE_ACCOUNT,
+    fake_ip, mask, session_rows, thousands, AccountsAdmin, CREATE_ACCOUNT,
     CREATE_CLIENT, DELETE_CLIENT, FIELD_DISPLAY_NAME, FIELD_EMAIL, FIELD_GRANTS, MAX_NEEDLE_BYTES,
     PAGE_SIZE, RESET_PASSWORD, REVOKE_ALL, REVOKE_SESSION, SESSIONS_SHOWN,
 };
@@ -310,6 +310,12 @@ async fn sessions_panel_lists_the_families_revoke_all_counts_newest_first() {
             operator: "op".to_string(),
         })
         .await;
+    let client_name: String =
+        sqlx::query_scalar("SELECT display_name FROM accounts.oidc_clients WHERE client_id = $1")
+            .bind(test_client())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     cleanup_player(&pool, &id).await;
 
     let body = body.unwrap();
@@ -324,7 +330,7 @@ async fn sessions_panel_lists_the_families_revoke_all_counts_newest_first() {
         "families still granting access newest first, the access-only one included; the expired one is gone",
     );
     for (row, family) in t.rows.iter().zip([&d, &b, &a]) {
-        assert_eq!(row.cells[0].value, fake_client(family), "Client hashes the family id");
+        assert_eq!(row.cells[0].value, client_name, "Client is the family's client's display name");
         assert_eq!(row.cells[1].value, fake_ip(family), "IP hashes the family id");
         assert!(row.cells[3].value.starts_with("in "), "Expires is relative: {:?}", row.cells[3].value);
         assert_eq!(row.actions, vec!["revoke-session".to_string()]);
@@ -500,11 +506,11 @@ fn revoke(action: &str, player: Option<&str>, item: Option<&str>) -> InvokeCall 
     }
 }
 
-/// Refresh tokens and access sessions left in one family.
+/// Refresh tokens and the family row left of one family.
 async fn family_rows(pool: &PgPool, family: &str) -> i64 {
     sqlx::query_scalar(
         "SELECT (SELECT count(*) FROM accounts.refresh_tokens WHERE family_id = $1::uuid) \
-              + (SELECT count(*) FROM accounts.sessions WHERE family_id = $1::uuid)",
+              + (SELECT count(*) FROM accounts.token_families WHERE id = $1::uuid)",
     )
     .bind(family)
     .fetch_one(pool)
@@ -512,11 +518,11 @@ async fn family_rows(pool: &PgPool, family: &str) -> i64 {
     .unwrap()
 }
 
-/// Refresh tokens and access sessions left to one player.
+/// Refresh tokens and family rows left to one player.
 async fn player_rows(pool: &PgPool, player: &str) -> i64 {
     sqlx::query_scalar(
         "SELECT (SELECT count(*) FROM accounts.refresh_tokens WHERE player_id = $1::uuid) \
-              + (SELECT count(*) FROM accounts.sessions WHERE player_id = $1::uuid)",
+              + (SELECT count(*) FROM accounts.token_families WHERE player_id = $1::uuid)",
     )
     .bind(player)
     .fetch_one(pool)
@@ -611,7 +617,7 @@ async fn revoke_session_ends_one_family_and_a_repeat_or_a_foreign_family_is_noop
     let revoked = admin.invoke(revoke(REVOKE_SESSION, Some(&id), Some(&a))).await;
     let rows = (family_rows(&pool, &a).await, family_rows(&pool, &b).await);
     let refresh = svc.refresh(first.refresh_token.clone()).await.map(|_| ());
-    let verified = accountsapi::Sessions::verify_session(&*svc, first.token.clone()).await;
+    let verified = svc.tokens.verify_access(&first.token).await;
     let repeat = admin.invoke(revoke(REVOKE_SESSION, Some(&id), Some(&a))).await;
     let cross = admin.invoke(revoke(REVOKE_SESSION, Some(&id), Some(&foreign))).await;
     let foreign_rows = family_rows(&pool, &foreign).await;
@@ -619,8 +625,8 @@ async fn revoke_session_ends_one_family_and_a_repeat_or_a_foreign_family_is_noop
     cleanup_player(&pool, &other.player_id).await;
 
     assert!(matches!(revoked.unwrap(), InvokeOutcome::Ok { ref message, .. } if message == "Session revoked"));
-    assert_eq!(rows.0, 0, "the revoked family keeps no token and no session");
-    assert_eq!(rows.1, 2, "the player's other login keeps its token and session");
+    assert_eq!(rows.0, 0, "the revoked family keeps no token and no family row");
+    assert_eq!(rows.1, 2, "the player's other login keeps its token and family");
     assert_eq!(refresh.unwrap_err().status, Status::Unauthorized, "the revoked refresh token is dead");
     assert_eq!(verified.unwrap(), None, "the revoked access token is dead");
     assert!(matches!(repeat.unwrap(), InvokeOutcome::NoOp { .. }), "a repeat finds nothing to revoke");
@@ -648,9 +654,9 @@ async fn revoke_all_ends_every_family_of_the_player_only_and_a_repeat_is_noop() 
     cleanup_player(&pool, &id).await;
     cleanup_player(&pool, &other.player_id).await;
 
-    assert_eq!(before, 4, "two logins: two tokens and two sessions");
+    assert_eq!(before, 4, "two logins: two tokens and two families");
     assert!(matches!(revoked.unwrap(), InvokeOutcome::Ok { ref message, .. } if message == "All sessions revoked"));
-    assert_eq!(after, 0, "every token and session of the player is gone");
+    assert_eq!(after, 0, "every token and family of the player is gone");
     assert_eq!(others, 2, "another player's login is untouched");
     assert!(matches!(repeat.unwrap(), InvokeOutcome::NoOp { .. }), "a repeat finds nothing to revoke");
     assert!(player_kept, "revoking sessions keeps the account");
@@ -750,7 +756,7 @@ async fn revoke_all_waits_for_a_racing_login_and_revokes_it_whole() {
     let session = session.unwrap();
     assert_eq!(session.player_id, id);
     assert!(matches!(revoked.unwrap(), InvokeOutcome::Ok { .. }));
-    assert_eq!(left, 0, "the login that committed first is revoked whole: token and session");
+    assert_eq!(left, 0, "the login that committed first is revoked whole: token and family");
 }
 
 /// A refresh that has taken its position when Revoke all starts: before the fix the refresh
@@ -794,7 +800,7 @@ async fn a_refresh_racing_revoke_all_finishes_first_and_is_revoked_whole() {
     assert!(revoke_parked, "Revoke all must wait while the refresh holds its position");
     rotated.expect("the refresh finishes without a deadlock");
     assert!(matches!(revoked.expect("Revoke all finishes without a deadlock"), InvokeOutcome::Ok { .. }));
-    assert_eq!(left, 0, "the rotated family is revoked whole: both tokens and the session");
+    assert_eq!(left, 0, "the rotated family is revoked whole: both tokens and the family");
 }
 
 /// A player whose only family is past both expiries has nothing Revoke all would end: the
@@ -896,7 +902,7 @@ async fn a_login_racing_revoke_all_waits_and_survives_whole() {
     assert_eq!(killed, Some(1), "the registration's family is revoked");
     assert!(waited, "the login must wait on Revoke all's player row lock");
     session.unwrap();
-    assert_eq!(left, 2, "the login after the revoke survives whole: token and session");
+    assert_eq!(left, 2, "the login after the revoke survives whole: token and family");
 }
 
 #[test]
@@ -961,8 +967,8 @@ async fn create_account_reveals_a_password_that_signs_in_and_a_taken_email_is_a_
     .await
     .unwrap();
     let id = stored.0.clone();
-    let sessions_after_create: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM accounts.sessions WHERE player_id = $1::uuid")
+    let families_after_create: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM accounts.token_families WHERE player_id = $1::uuid")
             .bind(&id)
             .fetch_one(&pool)
             .await
@@ -991,7 +997,7 @@ async fn create_account_reveals_a_password_that_signs_in_and_a_taken_email_is_a_
     assert_eq!(label, format!("Account created — {lower}"), "the email is normalised");
     assert!(stored.1.starts_with("$argon2id$"), "only the argon2 hash is stored");
     assert!(!stored.1.contains(&password));
-    assert_eq!(sessions_after_create, 0, "Create account mints no session");
+    assert_eq!(families_after_create, 0, "Create account mints no token family");
     assert_eq!(registered, 1, "one player.registered rides the create's tx");
     assert_eq!(login.unwrap().player_id, id, "the revealed password signs in");
     let email_error = |outcome: Result<InvokeOutcome, opsapi::Error>, key: &str| match outcome.unwrap() {
@@ -1020,7 +1026,7 @@ async fn reset_password_ends_every_login_and_only_the_new_password_signs_in() {
     let reset = admin.invoke(revoke(RESET_PASSWORD, Some(&id), None)).await.unwrap();
     let (label, password) = revealed(reset);
     let refreshed = svc.refresh(first.refresh_token.clone()).await;
-    let bearer = svc.store.player_by_session(&first.token).await.unwrap();
+    let bearer = svc.tokens.verify_access(&first.token).await.unwrap();
     let browser_left = svc.store.browser_session(&browser.token).await.unwrap();
     let old_login = svc.login(lower.clone(), "old-pw".into(), test_client()).await;
     let new_login = svc.login(lower.clone(), password.clone(), test_client()).await;
@@ -1033,7 +1039,7 @@ async fn reset_password_ends_every_login_and_only_the_new_password_signs_in() {
     assert_eq!(spec.impact[0].1.value, lower, "the modal names the sign-in email");
     assert_eq!(label, format!("Password reset — {lower}"));
     assert_eq!(refreshed.unwrap_err().status, Status::Unauthorized, "the old refresh token fails");
-    assert!(bearer.is_none(), "the old bearer session is gone");
+    assert!(bearer.is_none(), "the old access token is refused");
     assert!(browser_left.is_none(), "the browser session is gone");
     assert_eq!(old_login.unwrap_err().status, Status::Unauthorized, "the old password fails");
     assert_eq!(new_login.unwrap().player_id, id, "the revealed password signs in");
@@ -1056,7 +1062,7 @@ async fn a_password_verified_before_a_reset_mints_no_session_after_it() {
     let browser = svc.issue_password_browser_session(&verified, None).await;
     let rows: (i64, i64, i64) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM accounts.refresh_tokens WHERE player_id = $1::uuid), \
-                (SELECT count(*) FROM accounts.sessions WHERE player_id = $1::uuid), \
+                (SELECT count(*) FROM accounts.token_families WHERE player_id = $1::uuid), \
                 (SELECT count(*) FROM accounts.browser_sessions WHERE player_id = $1::uuid)",
     )
     .bind(&id)
@@ -1068,7 +1074,7 @@ async fn a_password_verified_before_a_reset_mints_no_session_after_it() {
 
     assert_eq!(bearer.unwrap_err().status, Status::Unauthorized, "the bearer mint is refused");
     assert_eq!(browser.err().map(|e| e.status), Some(Status::Unauthorized), "the browser mint is refused");
-    assert_eq!(rows, (0, 0, 0), "no family, access session or browser session is left");
+    assert_eq!(rows, (0, 0, 0), "no refresh token, family or browser session is left");
     assert_eq!(fresh.err().map(|e| e.status), Some(Status::Unauthorized), "the old password fails anew");
 }
 
@@ -1089,7 +1095,6 @@ async fn reset_password_refuses_a_player_without_a_password_and_a_missing_player
             &epic,
             crate::MintedVia { provider: "epic", subject: &subject, secret_hash: None },
             TEST_CLIENT_ID,
-            crate::store::new_token(),
         )
         .await
         .unwrap();
@@ -1098,7 +1103,7 @@ async fn reset_password_refuses_a_player_without_a_password_and_a_missing_player
     let admin = AccountsAdmin::new(Arc::clone(&svc));
     let spec = admin.prepare(prepare_call(RESET_PASSWORD, Some(&epic.id))).await;
     let reset = admin.invoke(revoke(RESET_PASSWORD, Some(&epic.id), None)).await;
-    let bearer = svc.store.player_by_session(&session.token).await.unwrap();
+    let bearer = svc.tokens.verify_access(&session.token).await.unwrap();
     let browser_left = svc.store.browser_session(&browser.token).await.unwrap();
     let refresh_left: i64 = sqlx::query_scalar("SELECT count(*) FROM accounts.refresh_tokens WHERE token = $1")
         .bind(&session.refresh_token)
@@ -1119,7 +1124,7 @@ async fn reset_password_refuses_a_player_without_a_password_and_a_missing_player
     assert_eq!(spec.unwrap_err().status, Status::Conflict, "no password to reset: refused before the modal");
     assert_eq!(reset.unwrap_err().status, Status::Conflict);
     assert!(hash.is_none(), "a refused reset writes no hash onto another identity");
-    assert!(bearer.is_some(), "a refused reset keeps the access session");
+    assert!(bearer.is_some(), "a refused reset keeps the access token");
     assert_eq!(refresh_left, 1, "a refused reset keeps the refresh family");
     assert!(browser_left.is_some(), "a refused reset keeps the browser session");
     assert_eq!(missing.unwrap_err().status, Status::NotFound);
@@ -1169,6 +1174,7 @@ fn sessions_panel_merges_both_kinds_newest_first_under_one_cap() {
             started: String::new(),
             started_us: 2 * i,
             expires_in_secs: 60,
+            client: String::new(),
         })
         .collect();
     let browsers: Vec<BrowserSessionRow> = (0..shown as i64)
@@ -1528,8 +1534,6 @@ async fn a_password_reset_and_a_racing_client_delete_take_two_families_in_one_or
 /// prune's lock pass reaches it.
 #[derive(Clone, Copy)]
 enum PruneChild {
-    /// A live family holding an expired access session.
-    Session,
     /// A live family holding an expired refresh token.
     Refresh,
     /// A stale family with no rows under it.
@@ -1587,7 +1591,7 @@ async fn prune_race(child: PruneChild) {
     .await
     .unwrap();
     let target_access = match child {
-        PruneChild::Session | PruneChild::Refresh => "1 hour",
+        PruneChild::Refresh => "1 hour",
         PruneChild::Childless => "-1 hour",
     };
     for (family, owner, access) in [(&target, &player, target_access), (&gated, &other, "-1 hour")] {
@@ -1604,7 +1608,6 @@ async fn prune_race(child: PruneChild) {
         .unwrap();
     }
     let child_row = match child {
-        PruneChild::Session => Some("accounts.sessions"),
         PruneChild::Refresh => Some("accounts.refresh_tokens"),
         PruneChild::Childless => None,
     }
@@ -1708,11 +1711,6 @@ async fn prune_race(child: PruneChild) {
     pruned.expect("the prune finishes without a deadlock");
     assert_eq!(families_left, 0, "the player's family and the held stale family are gone");
     assert_eq!(child_left, 0, "the expired child row is gone");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn the_prune_locks_a_family_with_an_expired_session_before_a_racing_password_reset() {
-    prune_race(PruneChild::Session).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

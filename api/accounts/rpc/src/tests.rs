@@ -1,5 +1,5 @@
 //! `provide_factories()` (D2 capability-without-routes) vs `remote_factories()` (the
-//! bundled provide+routes path). Proves the D2 seam provides the `Sessions` capability
+//! bundled provide+routes path). Proves the D2 seam provides the `TokenState` capability
 //! under its registry key while contributing ZERO `#[http]` route bindings — the
 //! collision-avoidance the D2 route table (rebuilt from each svc's `describe()`) needs —
 //! and that the EXISTING bundled path is unchanged (still provides `Auth` AND contributes
@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use accountsapi::{Auth, Sessions, TokenState};
+use accountsapi::{Auth, TokenState};
 use lifecycle::Context;
 use opsapi::{Caller, Error, RetryMode};
 
@@ -41,17 +41,11 @@ fn apply(factories: Vec<remote::RemoteFactory>) -> Context {
 }
 
 #[test]
-fn provide_factories_provides_sessions_without_contributing_routes() {
+fn provide_factories_provides_token_state_without_contributing_routes() {
     let ctx = apply(crate::provide_factories());
 
     // (1) The capability the gateway's verifier `require`s IS provided, under the same
     // key + generated Client the bundled path uses (so it dials the peer identically).
-    assert!(
-        ctx.registry()
-            .try_require::<dyn Sessions>(&registry::key("accounts", "sessions"))
-            .is_some(),
-        "accounts.sessions must resolve to an Arc<dyn Sessions> on the provide-only path"
-    );
     assert!(
         ctx.registry()
             .try_require::<dyn TokenState>(&registry::key("accounts", "token_state"))
@@ -77,7 +71,7 @@ fn provide_factories_provides_sessions_without_contributing_routes() {
         ctx.registry()
             .try_require::<dyn Auth>(&registry::key("accounts", "auth"))
             .is_none(),
-        "provide_factories must provide only the Sessions sync dep, not dyn Auth"
+        "provide_factories must provide only the TokenState sync dep, not dyn Auth"
     );
 }
 
@@ -85,13 +79,7 @@ fn provide_factories_provides_sessions_without_contributing_routes() {
 fn remote_factories_still_bundles_provide_and_auth_routes() {
     let ctx = apply(crate::remote_factories());
 
-    // Both capability clients still resolve (the bundled full path is unchanged).
-    assert!(
-        ctx.registry()
-            .try_require::<dyn Sessions>(&registry::key("accounts", "sessions"))
-            .is_some(),
-        "bundled path still provides accounts.sessions"
-    );
+    // The capability clients still resolve (the bundled full path is unchanged).
     assert!(
         ctx.registry()
             .try_require::<dyn TokenState>(&registry::key("accounts", "token_state"))

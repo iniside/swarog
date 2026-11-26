@@ -18,7 +18,7 @@ use crate::providers::{Providers, Resolution, EPIC, GOOGLE, GUEST};
 use crate::store::Store;
 use crate::{
     credential_within_cap, display_name_within_cap, email_within_cap,
-    password_within_cap, provider_name_within_cap, session_token_within_cap, Service,
+    password_within_cap, provider_name_within_cap, opaque_token_within_cap, Service,
 };
 
 /// Re-exported so `tools/conformance` states these caps by reference instead of a
@@ -499,8 +499,8 @@ pub fn conformance_provider_name_rejected(len: usize) -> bool {
 }
 
 #[doc(hidden)]
-pub fn conformance_session_token_rejected(len: usize) -> bool {
-    !session_token_within_cap(&"a".repeat(len))
+pub fn conformance_opaque_token_rejected(len: usize) -> bool {
+    !opaque_token_within_cap(&"a".repeat(len))
 }
 
 /// `epic` is in `KNOWN_PROVIDERS`, so a service that configured nothing answers the

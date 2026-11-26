@@ -5,24 +5,22 @@
 //! for `#[http]` methods — `operations()`/`route_bindings()`) is GENERATED into
 //! child `*_rpc` modules. The edge-dependent glue (`Client`, `register_server`,
 //! `provide_remote`) lives in the sibling `accountsrpc` crate, which expands this
-//! crate's metadata-callback macros (`accounts_sessions_meta!` /
+//! crate's metadata-callback macros (`accounts_token_state_meta!` /
 //! `accounts_auth_meta!` / `accounts_directory_meta!`) — so THIS crate never depends
 //! on `edge`.
 //!
-//! The gateway's verifier adapter imports this crate ONLY to name `dyn Sessions`
-//! for `registry::require` (rule 4); it never imports the `accounts` impl crate.
+//! The gateway's verifier imports this crate ONLY to name `dyn TokenState` for
+//! `registry::require` (rule 4); it never imports the `accounts` impl crate.
 
 use async_trait::async_trait;
 use opsapi::{Error, Identity};
 use rpc_macro::rpc;
 use serde::{Deserialize, Serialize};
 
-/// Maximum accepted opaque token size in bytes, for BOTH token kinds accounts mints:
-/// the access token a bearer presents and the refresh token [`Auth::refresh`] rotates
-/// (one mint function, 43-byte base64url). The wider cap leaves format headroom while
-/// bounding lookup and internal-RPC work from attacker-controlled input at every
-/// topology's auth boundary.
-pub const MAX_SESSION_TOKEN_BYTES: usize = 128;
+/// Maximum accepted opaque token size in bytes: the refresh token [`Auth::refresh`] rotates
+/// and the hosted pages' browser cookie (43-byte base64url). The wider cap leaves format
+/// headroom while bounding lookup work from attacker-controlled input.
+pub const MAX_OPAQUE_TOKEN_BYTES: usize = 128;
 
 /// Maximum accepted `display_name` size in bytes — the cap accounts' registration
 /// guard enforces, published here so a consumer sizing a handle input cannot drift
@@ -245,20 +243,6 @@ pub trait Directory: Send + Sync {
     async fn find_by_handle(&self, handle: String) -> Result<Option<PlayerSummary>, Error>;
 }
 
-/// Resolves a bearer token to its player — the capability the gateway's auth-once
-/// seam verifies sessions through. It is WIRE-ONLY: no leading `Identity` (it
-/// ESTABLISHES identity, so there is none yet) and no `#[http]` (not a gateway
-/// route; it rides the internal mTLS edge like `characters.ownerOf`). Returns
-/// `Ok(None)` for a genuine unknown/expired token so a transport/store failure (an
-/// `Err`) surfaces distinctly from an invalid session — the Rust twin of Go's
-/// `(playerID, ok, err)`.
-#[rpc(prefix = "accounts")]
-#[async_trait]
-pub trait Sessions: Send + Sync {
-    #[retry_safe]
-    async fn verify_session(&self, token: String) -> Result<Option<String>, Error>;
-}
-
 /// The public half of an ES256 signing key as a JWK (RFC 7517); it has no member a private
 /// key could fill.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -298,7 +282,7 @@ pub struct TokenStateSnapshot {
 }
 
 /// The verification state of player access tokens, which a verifier pulls and refreshes.
-/// WIRE-ONLY like [`Sessions`]: no leading `Identity` and no `#[http]`.
+/// WIRE-ONLY: no leading `Identity` and no `#[http]`; it rides the internal mTLS edge.
 #[rpc(prefix = "accounts")]
 #[async_trait]
 pub trait TokenState: Send + Sync {

@@ -127,10 +127,10 @@ async fn handle_start(
 ) -> Response {
     let mut link = None;
     if let Some(tok) = bearer(&headers) {
-        match svc.store.player_by_session(&tok).await {
-            // Valid session ⇒ LINK flow bound to that player.
+        match svc.tokens.verify_access(&tok).await {
+            // Valid access token ⇒ LINK flow bound to that player.
             Ok(Some(_)) => link = Some(Intent::Link { session_token: tok }),
-            // No such session ⇒ genuine LOGIN flow.
+            // Not a valid access token ⇒ genuine LOGIN flow.
             Ok(None) => {}
             // Store outage: DO NOT fold into "no session" — that would silently
             // downgrade a LINK request (bearer present) into a LOGIN that
@@ -140,7 +140,7 @@ async fn handle_start(
             // precedent) BEFORE any state is minted — an unresolvable request
             // leaves no redeemable state behind.
             Err(err) => {
-                tracing::error!(%err, "epic start: session lookup failed");
+                tracing::error!("epic start: access token verification failed: {err:#}");
                 return (StatusCode::SERVICE_UNAVAILABLE, "internal error, try again")
                     .into_response();
             }
@@ -203,10 +203,10 @@ async fn complete(svc: &Service, outcome: Outcome) -> Response {
         HookIntent::Login { client_id } => return login(svc, &subject, &client_id).await,
     };
     // LINK flow: attach the Epic identity to the already-logged-in player.
-    let p = match svc.store.player_by_session(&session_token).await {
-        Ok(Some(p)) => p,
-        // Session gone (expired/revoked between start and callback): the
-        // link target no longer exists — visibly an error redirect.
+    let player_id = match svc.tokens.verify_access(&session_token).await {
+        Ok(Some(claims)) => claims.sub,
+        // Token expired or revoked between start and callback: the link target no
+        // longer holds a valid token — visibly an error redirect.
         Ok(None) => return Redirect::to("/?epic=error").into_response(),
         // Store outage: the visible behavior stays an error redirect — a
         // browser callback can't render a 503 meaningfully and there is no
@@ -214,14 +214,14 @@ async fn complete(svc: &Service, outcome: Outcome) -> Response {
         // LOG is the fix (the old `let Ok(Some(_)) else` swallowed this
         // silently, indistinguishable from a truly-missing session).
         Err(err) => {
-            tracing::error!(%err, "epic link: session lookup failed");
+            tracing::error!("epic link: access token verification failed: {err:#}");
             return Redirect::to("/?epic=error").into_response();
         }
     };
-    match svc.link_identity(&p.id, SPEC.name, &subject).await {
+    match svc.link_identity(&player_id, SPEC.name, &subject).await {
         Ok(_) => {}
         Err(err) if err.status == opsapi::Status::Conflict => {
-            tracing::warn!(player_id = %p.id, "epic link: identity already linked to a different player");
+            tracing::warn!(%player_id, "epic link: identity already linked to a different player");
             return Redirect::to("/?epic=error").into_response();
         }
         Err(err) => {
@@ -235,7 +235,7 @@ async fn complete(svc: &Service, outcome: Outcome) -> Response {
 /// LOGIN flow: find or create a player for this Epic identity (durable
 /// player.registered on first sight), mint a session for the client that started the
 /// login, hand BOTH tokens back via the URL fragment for the page to pick up — the
-/// access token alone would strand the browser at its 60-minute expiry with nothing to
+/// access token alone would strand the browser at its expiry with nothing to
 /// renew from. `refresh` is empty when that client lacks the `refresh_token` grant.
 /// A client deleted since the start fails the mint.
 async fn login(svc: &Service, subject: &str, client_id: &str) -> Response {

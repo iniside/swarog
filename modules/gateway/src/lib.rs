@@ -106,9 +106,7 @@ use serde_json::value::RawValue;
 pub use backend::{LocalBackend, OperationBackend, RemoteBackend};
 pub use push_ws::PushLimits;
 pub use keys::{AllowAllKeyVerifier, KeyVerifier, LookupUnavailable, RealKeyVerifier};
-pub use verifier::{
-    DevSessionVerifier, JwtVerifier, SessionVerifier, SessionsVerifier, VerifyUnavailable,
-};
+pub use verifier::{DevSessionVerifier, JwtVerifier, SessionVerifier, VerifyUnavailable};
 
 use keys::{check_api_key, KeyCheck, KeyDenial};
 use push_ws::PushHub;

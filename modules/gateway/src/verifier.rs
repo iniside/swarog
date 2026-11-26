@@ -44,8 +44,8 @@ pub trait SessionVerifier: Send + Sync {
 /// The `dev-` token prefix [`DevSessionVerifier`] accepts.
 const DEV_PREFIX: &str = "dev-";
 
-/// A dev-only [`SessionVerifier`] standing in for the real `accounts` sessions
-/// service in M1. It accepts a token shaped **`dev-<player_id>`** and returns the
+/// A dev-only [`SessionVerifier`] standing in for the real `accounts` token
+/// verification. It accepts a token shaped **`dev-<player_id>`** and returns the
 /// suffix verbatim as the player_id (e.g. `dev-alice` → `alice`,
 /// `dev-4f9c…-uuid` → `4f9c…-uuid`); ANY other token is rejected. It emits a single
 /// loud warning the first time it is consulted, so it is impossible to run this in
@@ -69,7 +69,7 @@ impl Default for DevSessionVerifier {
 #[async_trait]
 impl SessionVerifier for DevSessionVerifier {
     async fn verify(&self, token: &str) -> Result<Option<String>, VerifyUnavailable> {
-        if token.len() > accountsapi::MAX_SESSION_TOKEN_BYTES {
+        if token.len() > accountsapi::MAX_ACCESS_TOKEN_BYTES {
             return Ok(None);
         }
         self.warned.call_once(|| {
@@ -85,40 +85,6 @@ impl SessionVerifier for DevSessionVerifier {
             Some(pid) if !pid.is_empty() => Some(pid.to_string()),
             _ => None,
         })
-    }
-}
-
-/// Adapts the `accounts.sessions` capability to the gateway's consumer-defined
-/// [`SessionVerifier`]. `Ok(None)` (unknown/expired token)
-/// verifies to `Ok(None)` — a definitive invalid session — while an accounts store/peer
-/// failure returns `Err(VerifyUnavailable)` (logged) so an outage surfaces as
-/// 503/`Status::Unavailable` rather than masquerading as bad credentials.
-pub struct SessionsVerifier {
-    sessions: Arc<dyn accountsapi::Sessions>,
-}
-
-impl SessionsVerifier {
-    pub fn new(sessions: Arc<dyn accountsapi::Sessions>) -> SessionsVerifier {
-        SessionsVerifier { sessions }
-    }
-}
-
-#[async_trait]
-impl SessionVerifier for SessionsVerifier {
-    async fn verify(&self, token: &str) -> Result<Option<String>, VerifyUnavailable> {
-        // An over-cap bearer is definitively not one of accounts' opaque sessions.
-        // Reject it before invoking the capability: in a split process that call is
-        // an internal RPC (and retry-safe replay), while in the monolith it is local.
-        if token.len() > accountsapi::MAX_SESSION_TOKEN_BYTES {
-            return Ok(None);
-        }
-        match self.sessions.verify_session(token.to_string()).await {
-            Ok(pid) => Ok(pid.filter(|p| !p.is_empty())),
-            Err(err) => {
-                tracing::error!(%err, "gateway: session verification failed (accounts unreachable?)");
-                Err(VerifyUnavailable)
-            }
-        }
     }
 }
 

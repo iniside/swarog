@@ -119,13 +119,6 @@ fn rpc_modules() -> Vec<RpcModule> {
             accountsapi::auth_rpc::describe().ops,
         ),
         (
-            "accountsapi::sessions_rpc",
-            accountsapi::sessions_rpc::route_bindings(),
-            accountsapi::sessions_rpc::wire_ops(),
-            accountsapi::sessions_rpc::body_shapes(),
-            accountsapi::sessions_rpc::describe().ops,
-        ),
-        (
             "accountsapi::directory_rpc",
             accountsapi::directory_rpc::route_bindings(),
             accountsapi::directory_rpc::wire_ops(),

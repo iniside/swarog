@@ -184,7 +184,6 @@ impl Tokens {
     }
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "no production caller verifies an access token yet"))]
 impl Tokens {
     /// The claims of `token` when [`Tokens::verify_against`] accepts it under the current
     /// [`Tokens::snapshot`]; `Err` only when the keys or revocations cannot be read.

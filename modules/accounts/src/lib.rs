@@ -5,14 +5,15 @@
 //! self-registration is gated behind `ACCOUNTS_OPEN_REGISTRATION` (explicit opt-in,
 //! default OFF, loud warn when set). Its subject is the email after [`normalize_email`]. One
 //! product-scoped `player_id`, many credential providers over it
-//! (`identities(provider, subject) → player_id`), opaque DB-backed `sessions`
-//! (60-minute access tokens, 32-byte base64url) renewed by rotating refresh tokens
-//! whose family lives at most 30 days.
+//! (`identities(provider, subject) → player_id`), ES256 JWT access tokens
+//! ([`accountsapi::ACCESS_TTL_MINUTES`]-minute, signed in `jwt`) renewed by rotating
+//! opaque refresh tokens whose family lives at most 30 days.
 //!
 //! Capabilities (all topology-blind — the module never knows the process layout):
-//!   - `accounts.sessions` ([`accountsapi::Sessions`]) — bearer → player_id, the
-//!     capability the gateway's auth-once verifier resolves (registry swap: local
-//!     here, an edge client from `accountsrpc::remote_factories()` in a split peer).
+//!   - `accounts.token_state` ([`accountsapi::TokenState`]) — the public keys and
+//!     revocations the gateway's auth-once verifier checks access tokens against
+//!     (registry swap: local here, an edge client from `accountsrpc::remote_factories()`
+//!     in a split peer).
 //!   - `accounts.auth` ([`accountsapi::Auth`]) — register/login/loginFederated/
 //!     createGuest/refresh/me/link/beginDelete/deleteAccount, ALL contributed as gateway
 //!     operations UNCONDITIONALLY — the dev/provider gating lives at the impl (see
@@ -148,8 +149,8 @@ pub(crate) fn client_id_within_cap(client_id: &str) -> bool {
     client_id.len() <= accountsapi::MAX_CLIENT_ID_BYTES
 }
 
-pub(crate) fn session_token_within_cap(token: &str) -> bool {
-    token.len() <= accountsapi::MAX_SESSION_TOKEN_BYTES
+pub(crate) fn opaque_token_within_cap(token: &str) -> bool {
+    token.len() <= accountsapi::MAX_OPAQUE_TOKEN_BYTES
 }
 
 pub(crate) fn delete_ticket_within_cap(ticket: &str) -> bool {
@@ -223,8 +224,8 @@ CREATE TABLE IF NOT EXISTS accounts.identities (
 );
 
 -- The hosted login pages' signed-in browsers: the cookie's opaque token is stored only as
--- its SHA-256 digest, and `player_by_session` never reads this table, so a browser cookie
--- never authenticates an operation.
+-- its SHA-256 digest; it is not an access token, so a browser cookie never authenticates
+-- an operation.
 CREATE TABLE IF NOT EXISTS accounts.browser_sessions (
 	token_digest bytea PRIMARY KEY,
 	player_id    uuid        NOT NULL REFERENCES accounts.players(id) ON DELETE CASCADE,
@@ -252,16 +253,6 @@ CREATE TABLE IF NOT EXISTS accounts.token_families (
 	created_at        timestamptz NOT NULL DEFAULT now(),
 	-- The newest access token's expiry, moved forward by every mint in the family.
 	access_expires_at timestamptz NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS accounts.sessions (
-	token      text PRIMARY KEY,
-	player_id  uuid        NOT NULL REFERENCES accounts.players(id) ON DELETE CASCADE,
-	created_at timestamptz NOT NULL DEFAULT now(),
-	expires_at timestamptz NOT NULL,
-	-- The refresh family this access token was minted under: a revoked family, or one
-	-- whose client is deleted, takes its access tokens with it.
-	family_id  uuid        NOT NULL REFERENCES accounts.token_families(id) ON DELETE CASCADE
 );
 
 -- Rotating refresh tokens. A consumed row is KEPT (until it expires) with the successor
@@ -347,12 +338,12 @@ async fn refuse_stale_oauth_states(pool: &sqlx::PgPool, schema: &str) -> anyhow:
     Ok(())
 }
 
-/// Refuses a `{schema}.refresh_tokens` or `{schema}.sessions` without an ON DELETE
-/// CASCADE foreign key to `{schema}.token_families`: `CREATE TABLE IF NOT EXISTS` keeps
-/// an older table, whose tokens would outlive a deleted family.
+/// Refuses a `{schema}.refresh_tokens` without an ON DELETE CASCADE foreign key to
+/// `{schema}.token_families`: `CREATE TABLE IF NOT EXISTS` keeps an older table, whose
+/// tokens would outlive a deleted family.
 async fn refuse_unfamilied_tokens(pool: &sqlx::PgPool, schema: &str) -> anyhow::Result<()> {
     let families = format!("{schema}.token_families");
-    for table in ["refresh_tokens", "sessions"] {
+    for table in ["refresh_tokens"] {
         let table = format!("{schema}.{table}");
         let linked: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM pg_constraint \
@@ -501,7 +492,6 @@ impl Service {
         p: &Player,
         via: MintedVia<'_>,
         client_id: &str,
-        token: String,
     ) -> Result<accountsapi::Session, Error> {
         let MintedVia { provider, subject, secret_hash } = via;
         let Some(grants) = self
@@ -527,10 +517,7 @@ impl Service {
         } else {
             String::new()
         };
-        self.store
-            .insert_session_tx(conn, &p.id, &token, &family_id)
-            .await
-            .map_err(internal)?;
+        let token = self.sign_access(&p.id, client_id, &family_id).await?;
         let stamped = self
             .store
             .stamp_identity_used_tx(conn, provider, subject, &p.id, secret_hash)
@@ -545,6 +532,13 @@ impl Service {
             refresh_token,
             access_expires_in_secs: store::access_expires_in_secs(),
         })
+    }
+
+    /// Signs an access token of family `family_id` for `player_id` and `client_id`, issued now.
+    async fn sign_access(&self, player_id: &str, client_id: &str, family_id: &str) -> Result<String, Error> {
+        let iat = jwt::Tokens::unix_now();
+        let claims = self.tokens.claims(player_id, accountsapi::SWAROG_AUDIENCE, client_id, family_id, iat);
+        self.tokens.sign(&claims).await.map_err(|e| internal(format!("{e:#}")))
     }
 
     /// Mints a fresh bearer token through the password identity `verified` matched, in its
@@ -566,7 +560,6 @@ impl Service {
                     secret_hash: Some(&verified.hash),
                 },
                 client_id,
-                store::new_token(),
             )
             .await?;
         tx.commit().await.map_err(internal)?;
@@ -777,13 +770,12 @@ impl Service {
         Ok(PasswordReset::Reset { emails, password })
     }
 
-    async fn register_hashed_with_token(
+    async fn register_hashed(
         &self,
         email: &str,
         display: &str,
         hash: &str,
         client_id: &str,
-        token: String,
     ) -> Result<accountsapi::Session, Error> {
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
         let p = match self.insert_password_player_tx(&mut tx, email, display, hash).await {
@@ -803,7 +795,6 @@ impl Service {
                 &p,
                 MintedVia { provider: providers::PASSWORD, subject: email, secret_hash: None },
                 client_id,
-                token,
             )
             .await
         {
@@ -843,7 +834,6 @@ impl Service {
                 &p,
                 MintedVia { provider, subject, secret_hash: None },
                 client_id,
-                store::new_token(),
             )
             .await
         {
@@ -1108,15 +1098,12 @@ impl Service {
         family_id: &str,
         refresh_token: String,
     ) -> Result<accountsapi::Session, Error> {
-        let token = store::new_token();
-        self.store
+        let client_id = self
+            .store
             .touch_family_tx(conn, family_id)
             .await
             .map_err(internal)?;
-        self.store
-            .insert_session_tx(conn, player_id, &token, family_id)
-            .await
-            .map_err(internal)?;
+        let token = self.sign_access(player_id, &client_id, family_id).await?;
         Ok(accountsapi::Session {
             player_id: player_id.to_string(),
             token,
@@ -1127,14 +1114,13 @@ impl Service {
 
     /// Erases one player in ONE transaction: consume the ticket, reserve the handle
     /// permanently, write the receipt, delete the player row — whose cascades take its
-    /// identities, sessions, refresh tokens and remaining ticket — and append
+    /// identities, token families, refresh tokens and remaining ticket — and append
     /// `player.deleted`.
     ///
-    /// The revocation sharing this transaction is what closes the resurrection race:
-    /// accounts owns both the session table and the append, and a consumer becomes
-    /// eligible for an event only once the appending transaction is globally visible, so
-    /// every purge handler runs strictly after the player's 60-minute access tokens
-    /// stopped verifying.
+    /// The player revocation shares this transaction with the append, and a consumer
+    /// becomes eligible for an event only once the appending transaction is globally
+    /// visible, so every purge handler runs after accounts' own verification refuses the
+    /// player's access tokens. A gateway refuses them only from its next token-state pull.
     ///
     /// The player lock is the first statement after BEGIN (the lock order this module
     /// documents on `link_identity`), which is also what makes the replay deterministic:
@@ -1285,24 +1271,6 @@ impl accountsapi::Directory for Service {
 }
 
 #[async_trait]
-impl accountsapi::Sessions for Service {
-    /// Resolves a bearer token to its player. An unknown/expired token is
-    /// `Ok(None)`; a store failure propagates as `Err` (Go's B2 fix) so a consumer
-    /// can answer 503 on infrastructure failure rather than 401.
-    async fn verify_session(&self, token: String) -> Result<Option<String>, Error> {
-        if !session_token_within_cap(&token) {
-            return Ok(None);
-        }
-        Ok(self
-            .store
-            .player_by_session(&token)
-            .await
-            .map_err(internal)?
-            .map(|p| p.id))
-    }
-}
-
-#[async_trait]
 impl accountsapi::TokenState for Service {
     async fn token_state(&self) -> Result<accountsapi::TokenStateSnapshot, Error> {
         self.tokens.snapshot().await.map_err(|e| internal(format!("{e:#}")))
@@ -1345,7 +1313,7 @@ impl accountsapi::Auth for Service {
         }
 
         let hash = self.hash_on_permit(password).await?;
-        self.register_hashed_with_token(&email, &display, &hash, &client_id, store::new_token())
+        self.register_hashed(&email, &display, &hash, &client_id)
             .await
     }
 
@@ -1434,7 +1402,7 @@ impl accountsapi::Auth for Service {
     /// window additionally revokes the family, and that revocation COMMITS before the
     /// 401 is returned.
     async fn refresh(&self, refresh_token: String) -> Result<accountsapi::Session, Error> {
-        if !session_token_within_cap(&refresh_token) {
+        if !opaque_token_within_cap(&refresh_token) {
             return Err(Error::unauthorized("invalid refresh token"));
         }
         let successor = store::new_token();
@@ -1589,8 +1557,8 @@ impl accountsapi::Auth for Service {
 }
 
 // ============================================================================
-// Durable prune reaction — sessions, refresh tokens, token families, delete tickets and
-// browser sessions all carry a TTL filtered on read, so accounts reacts to the seeded daily
+// Durable prune reaction — refresh tokens, token families, delete tickets, browser sessions
+// and revocations all carry a TTL filtered on read, so accounts reacts to the seeded daily
 // `accounts-sessions-prune` schedule and deletes the expired rows of all five on the
 // DELIVERY tx (exactly-once with the checkpoint advance).
 // Copied from audit's prune: subscribe raw by the CONTRACT descriptor's topic const, no
@@ -1746,18 +1714,6 @@ impl Accounts {
             .index(
                 "accounts.identities_player_idx",
                 "CREATE INDEX identities_player_idx ON accounts.identities(player_id)",
-            )
-            .index(
-                "accounts.sessions_player_idx",
-                "CREATE INDEX sessions_player_idx ON accounts.sessions(player_id)",
-            )
-            .index(
-                "accounts.sessions_expires_idx",
-                "CREATE INDEX sessions_expires_idx ON accounts.sessions(expires_at)",
-            )
-            .index(
-                "accounts.sessions_family_idx",
-                "CREATE INDEX sessions_family_idx ON accounts.sessions(family_id)",
             )
             .index(
                 "accounts.token_families_player_idx",
@@ -1935,7 +1891,7 @@ impl Accounts {
 
         // Edge exposure, contributed UNCONDITIONALLY — topology-blind: `app::run`
         // applies this iff the entrypoint stood up an internal edge server (then a
-        // peer gateway verifies sessions / fronts the auth ops over QUIC); in the
+        // peer gateway pulls the token state / fronts the auth ops over QUIC); in the
         // monolith it is never applied. Own glue (rule 5): the generated
         // register_server faces live in `accountsrpc`.
         //
@@ -1944,11 +1900,10 @@ impl Accounts {
         // edge face matches the HTTP ops exactly: `register` self-rejects with
         // NotFound when `open_registration` is off, and `login_federated` answers
         // `Unavailable` for a provider this deployment did not configure. `me` and
-        // Sessions `verify_session` stay unconditional — the gateway needs them.
+        // `token_state` stay unconditional — the gateway needs them.
         ctx.contribute(
             edge::EDGE_SLOT,
             edge::EdgeReg::new(move |server| {
-                accountsrpc::sessions_rpc::register_server(server, svc.clone());
                 accountsrpc::token_state_rpc::register_server(server, svc.clone());
                 accountsrpc::directory_rpc::register_server(server, svc.clone());
                 accountsrpc::auth_rpc::register_server(server, svc);
@@ -1959,14 +1914,13 @@ impl Accounts {
         // pure DATA, contributed UNCONDITIONALLY (topology-blind). `app::run` concats
         // every module's manifest and serves the union under the ONE reserved
         // `__describe` op iff this process serves an edge. `auth_rpc` carries the
-        // register/login/loginFederated/me HTTP ops; `sessions_rpc` and `directory_rpc`
+        // register/login/loginFederated/me HTTP ops; `token_state_rpc` and `directory_rpc`
         // are wire-only (empty `describe()`) — concatenated so a future `#[http]` op on
         // any of them flows through.
         ctx.contribute(
             opsapi::DESCRIBE_SLOT,
             opsapi::DescribeManifest::concat([
                 accountsrpc::auth_rpc::describe(),
-                accountsrpc::sessions_rpc::describe(),
                 accountsrpc::token_state_rpc::describe(),
                 accountsrpc::directory_rpc::describe(),
             ]),
@@ -1982,9 +1936,8 @@ impl Module for Accounts {
     }
 
     /// Phase 1, BEFORE any `init`: builds the store-backed service and offers it
-    /// under all four capability keys — `accounts.sessions` (the gateway's verifier
-    /// resolves it), `accounts.token_state`, `accounts.auth` and `accounts.directory` —
-    /// so a dependent's
+    /// under all three capability keys — `accounts.token_state` (the gateway's verifier
+    /// resolves it), `accounts.auth` and `accounts.directory` — so a dependent's
     /// `require` resolves regardless of registration order.
     fn register(&self, ctx: &Context) -> anyhow::Result<()> {
         let issuer = signing_keys::oidc_issuer(std::env::var_os(signing_keys::ISSUER_ENV))?;
@@ -2012,10 +1965,6 @@ impl Module for Accounts {
             .set(svc.clone())
             .map_err(|_| anyhow::anyhow!("accounts.register ran twice"))?;
 
-        ctx.registry().provide::<dyn accountsapi::Sessions>(
-            registry::key("accounts", "sessions"),
-            svc.clone(),
-        );
         ctx.registry().provide::<dyn accountsapi::TokenState>(
             registry::key("accounts", "token_state"),
             svc.clone(),
@@ -2038,7 +1987,7 @@ impl Module for Accounts {
     /// LAZY — so a malformed value can only be caught here), mounts the OAuth
     /// browser routes and the OIDC discovery and JWKS, contributes the player
     /// operations (all unconditional — the dev/epic gating lives at the impl), and the
-    /// generated Sessions + Auth RPC faces to the edge slot.
+    /// generated TokenState, Directory and Auth RPC faces to the edge slot.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         // Federated credential providers, parsed and VALIDATED by the one typed
         // authority. A present-but-malformed provider is an `Err` here and fails

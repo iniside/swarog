@@ -460,7 +460,7 @@ async fn google_start(
 fn held_session_digest(jar: &CookieJar) -> Option<Vec<u8>> {
     jar.get(SESSION_COOKIE)
         .map(|c| c.value())
-        .filter(|token| crate::session_token_within_cap(token))
+        .filter(|token| crate::opaque_token_within_cap(token))
         .map(session::digest)
 }
 

@@ -240,26 +240,8 @@ fn thousands(n: i64) -> String {
     out
 }
 
-fn fake_pick(salt: &str, id: &str, options: &[&'static str]) -> &'static str {
-    options[(fake_hash(salt, id) % options.len() as u64) as usize]
-}
-
-// FAKE: a Sessions panel row carries neither a client nor an address; both hash the family
-// id, never the token.
-fn fake_client(family_id: &str) -> &'static str {
-    fake_pick(
-        "client",
-        family_id,
-        &[
-            "Windows · game client",
-            "macOS · game client",
-            "Steam Deck · game client",
-            "Admin portal · Chrome",
-        ],
-    )
-}
-
-// FAKE: see `fake_client`; the address is in the documentation ranges (RFC 5737).
+// FAKE: a Sessions panel row carries no address; it hashes the family id, never the token,
+// into the documentation ranges (RFC 5737).
 fn fake_ip(family_id: &str) -> String {
     let hash = fake_hash("ip", family_id);
     let net = if hash & 1 == 0 { "198.51.100" } else { "203.0.113" };
@@ -1183,7 +1165,7 @@ fn session_row(family: &FamilyRow) -> Row {
     Row {
         entity: None,
         cells: vec![
-            text(CellKind::Text, fake_client(&family.family_id)),
+            text(CellKind::Text, family.client.clone()),
             text(CellKind::Text, fake_ip(&family.family_id)),
             text(CellKind::Text, family.started.clone()),
             text(CellKind::Text, expires_in(family.expires_in_secs)),

@@ -83,7 +83,7 @@ impl Store {
         &self,
         token: &str,
     ) -> Result<Option<BrowserSession>, sqlx::Error> {
-        if !crate::session_token_within_cap(token) {
+        if !crate::opaque_token_within_cap(token) {
             return Ok(None);
         }
         let row: Option<(String, String)> = sqlx::query_as(
@@ -132,7 +132,7 @@ impl Store {
 
     /// Ends the session `token` names, answering whether there was one.
     pub async fn delete_browser_session(&self, token: &str) -> Result<bool, sqlx::Error> {
-        if !crate::session_token_within_cap(token) {
+        if !crate::opaque_token_within_cap(token) {
             return Ok(false);
         }
         let mut conn = self.pool.acquire().await?;
