@@ -4,7 +4,9 @@ Last updated: 2026-11-26
 
 ## In progress
 
-_None._
+- [ ] **Google server-side OIDC redirect flow on the hosted login page**
+  Plan: docs/plans/2026-11-26-1123-google-browser-login-plan.md.
+  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, owner decision 4 (2026-11-25).
 
 ## Open
 
@@ -31,9 +33,6 @@ _None._
 - [ ] **Open registration (1b)**
   `ACCOUNTS_OPEN_REGISTRATION` stays (default OFF) until this lands.
   Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, owner decision 1 (2026-11-25).
-- [ ] **Google server-side OIDC redirect flow on the hosted login page**
-  The next phase after the accounts-browser-login plan.
-  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, owner decision 4 (2026-11-25).
 - [ ] **UILayout mockup of the hosted login page**
   Add a `UILayout/` mockup that roughly matches the shipped page, then port the page to it.
   Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, owner decision 8 (2026-11-25).
