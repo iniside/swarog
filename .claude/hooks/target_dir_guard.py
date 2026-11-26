@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """PreToolUse(Bash|PowerShell) guard: denies a private cargo target directory
-(`CARGO_TARGET_DIR=...`, `export`/`set`/`$env:` of it, or `cargo ... --target-dir`).
+(`CARGO_[BUILD_]TARGET_DIR` set in the shell, `cargo ... --target-dir` or
+`--config build.target-dir=...`); `cargo clean --target-dir` stays allowed.
 Every such directory is a full rebuild of the workspace that nobody deletes.
 Override: put `force-target-dir` in the command. Any internal error exits 0
 with no output.
@@ -19,14 +20,21 @@ except Exception:
 
 SHELL_TOOLS = {"Bash", "PowerShell"}
 
+VARS = r"CARGO_(?:BUILD_)?TARGET_DIR"
 ASSIGNMENTS = r"(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
+WRAPPERS = re.compile(
+    r"^(?:[({]\s*|(?:time|sudo|nice|command|exec|env(?:\s+-\S+(?:\s+[A-Za-z_]\w*(?=\s))?)*)\s+)+")
 SET_VAR = re.compile(
-    r"^(?:env\s+|export\s+|set\s+)?" + ASSIGNMENTS + r"CARGO_TARGET_DIR\s*=", re.I)
-PS_SET_VAR = re.compile(r"^\$env:CARGO_TARGET_DIR\s*=", re.I)
-CARGO_FLAG = re.compile(
-    r"^(?:env\s+)?" + ASSIGNMENTS + r"[\"'&]?\s*(?:\S*[/\\])?cargo(?:\.exe)?[\"']?\s.*?"
-    r"(?:^|\s)--target-dir(?:[=\s]|$)", re.I)
-
+    r"^(?:export\s+|set\s+|declare\s+-\S+\s+|typeset\s+-\S+\s+)?" + ASSIGNMENTS + VARS + r"\s*=",
+    re.I)
+PS_SET_VAR = re.compile(
+    r"^(?:\$env:" + VARS + r"|\$\{env:" + VARS + r"\})\s*="
+    r"|^(?:set-item|si|new-item|ni)\s+(?:-path\s+)?['\"]?env:[/\\]?" + VARS + r"\b"
+    r"|setenvironmentvariable\(\s*['\"]" + VARS + r"['\"]", re.I)
+CARGO = re.compile(
+    ASSIGNMENTS + r"[\"'&]?\s*(?:\S*[/\\])?(?:cargo|rustup)(?:\.exe)?[\"']?\s+(\S+)?(.*)$", re.I)
+CARGO_TARGET_FLAG = re.compile(
+    r"(?:^|\s)--target-dir(?:[=\s]|$)|build\.target-dir\s*=", re.I)
 REASON = (
     "A private cargo target directory is a full rebuild of the workspace that nobody "
     "deletes; these piled up to 250+ GB under target/. Use the shared target/ and "
@@ -40,9 +48,16 @@ def verdict(command):
     if "force-target-dir" in command.lower():
         return None
     for segment, _ in shell_data.split_commands(command):
-        text = segment.strip()
-        if SET_VAR.search(text) or PS_SET_VAR.search(text) or CARGO_FLAG.search(text):
+        text = WRAPPERS.sub("", segment.strip())
+        if SET_VAR.search(text) or PS_SET_VAR.search(text):
             return REASON
+        cargo = CARGO.match(text)
+        if not cargo or (cargo.group(1) or "").lower() == "clean":
+            continue
+        else:
+            args = re.split(r"\s--(?:\s|$)", " " + (cargo.group(1) or "") + cargo.group(2), 1)[0]
+            if CARGO_TARGET_FLAG.search(args):
+                return REASON
     return None
 
 
