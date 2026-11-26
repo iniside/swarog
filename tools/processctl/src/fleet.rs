@@ -77,19 +77,22 @@ const fn concat_env_23_10(a: &[&'static str; 23], b: &[&'static str; 10]) -> [&'
 const MONOLITH_OVERRIDEABLE_ENV_ARR: [&str; 33] = concat_env_23_10(MONOLITH_BASE_ENV, MAIL_OVERRIDEABLE_ENV);
 const MONOLITH_OVERRIDEABLE_ENV: &[&str] = &MONOLITH_OVERRIDEABLE_ENV_ARR;
 
-/// Provider keys the `Proof` overlay CLEARS before pinning its own. `google` is the
-/// split-proof fleet's deliberately unconfigured provider: it is the only way to execute
-/// the `KnownButUnconfigured` 503 arm that separates "no such provider" (400) from "not
-/// configured here" (503), so an ambient `GOOGLE_CLIENT_IDS` would silently delete an
-/// assertion rather than fail one. Every allowlisted `GOOGLE_*` key is cleared: any one of
-/// them present makes accounts parse google as configured.
-const PROOF_UNCONFIGURED_PROVIDER_ENV: &[&str] = &[
+/// Every allowlisted `GOOGLE_*` key, which both `Proof` overlays CLEAR first so no ambient
+/// shell value reaches a proof fleet: any one of them present makes accounts parse google
+/// as configured. The split overlay then pins google against the loopback OIDC fixture
+/// ([`PROOF_GOOGLE_CLIENT_ID`]), which splitproof's `[A6]`/`[P8]` and `[BG*]` checks
+/// assert. The monolith overlay pins nothing, so google stays known but unconfigured there:
+/// the only way to execute the `KnownButUnconfigured` 503 arm that separates "no such
+/// provider" (400) from "not configured here" (503), asserted as `[A6m]`/`[P8m]`. An
+/// ambient `GOOGLE_CLIENT_IDS` would otherwise silently delete that assertion rather than
+/// fail it.
+const PROOF_CLEARED_GOOGLE_ENV: &[&str] = &[
     "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL", "GOOGLE_CLIENT_SECRET", "GOOGLE_OAUTH_CLIENT_ID",
     "GOOGLE_REDIRECT_URI", "GOOGLE_AUTHORIZE_URL", "GOOGLE_TOKEN_URL",
 ];
 
 /// The `MAIL_SMTP_*` group the `Proof` overlay CLEARS from `mail`'s OWN env (never
-/// `accounts.env` — a distinct list from [`PROOF_UNCONFIGURED_PROVIDER_ENV`], whose
+/// `accounts.env` — a distinct list from [`PROOF_CLEARED_GOOGLE_ENV`], whose
 /// removal loop only touches `accounts.env`, so reusing that const here would silently
 /// clear nothing). Proof always pins `MAIL_PROVIDER=log` afterward, so this is not about
 /// exercising an unconfigured-provider arm: it is about never letting an operator's
@@ -115,6 +118,11 @@ macro_rules! proof_oidc_origin {
 pub const PROOF_OIDC_ISSUER: &str = proof_oidc_origin!();
 pub const PROOF_OIDC_JWKS_URL: &str = concat!(proof_oidc_origin!(), "/jwks");
 pub const PROOF_OIDC_CLIENT_ID: &str = "splitproof-epic-client";
+/// The client id the split `Proof` overlay configures `google` with, as both its token
+/// audience (`GOOGLE_CLIENT_IDS`) and its browser-flow client (`GOOGLE_OAUTH_CLIENT_ID`),
+/// verified against the same fixture's JWKS. splitproof's `[BG1]` reads it off the
+/// authorize URL.
+pub const PROOF_GOOGLE_CLIENT_ID: &str = "splitproof-google-client";
 
 /// The provider every fleet flavor configures `mail` with, and the value
 /// `tools/splitproof` asserts a delivered row was sent BY. The harness reads this
@@ -964,9 +972,26 @@ pub fn game_backend_fleet_with_environment(
             gateway
                 .env
                 .insert("RATE_LIMIT_BURST".into(), PROOF_GATEWAY_RATE_LIMIT_BURST.to_string());
-            for key in PROOF_UNCONFIGURED_PROVIDER_ENV {
+            for key in PROOF_CLEARED_GOOGLE_ENV {
                 accounts.env.remove(*key);
             }
+            accounts
+                .env
+                .insert("GOOGLE_CLIENT_IDS".into(), PROOF_GOOGLE_CLIENT_ID.into());
+            accounts
+                .env
+                .insert("GOOGLE_OAUTH_CLIENT_ID".into(), PROOF_GOOGLE_CLIENT_ID.into());
+            accounts
+                .env
+                .insert("GOOGLE_JWKS_URL".into(), PROOF_OIDC_JWKS_URL.into());
+            accounts.env.insert("GOOGLE_CLIENT_SECRET".into(), "test".into());
+            accounts.env.insert(
+                "GOOGLE_REDIRECT_URI".into(),
+                "http://127.0.0.1:8082/accounts/oidc/google/callback".into(),
+            );
+            accounts
+                .env
+                .insert("GOOGLE_TOKEN_URL".into(), "http://127.0.0.1:1/token".into());
             accounts.env.insert("ACCOUNTS_OPEN_REGISTRATION".into(), "1".into());
             accounts
                 .env
@@ -1040,7 +1065,9 @@ pub fn game_backend_monolith(
     }
     if flavor == FleetFlavor::Proof {
         // Proof-only overlay is intentionally last and cannot be weakened by ambient state.
-        for key in PROOF_UNCONFIGURED_PROVIDER_ENV {
+        // Google is cleared and never pinned here: the monolith is where the known but
+        // unconfigured provider's 503 arm is proven.
+        for key in PROOF_CLEARED_GOOGLE_ENV {
             env.remove(*key);
         }
         for key in PROOF_CLEARED_MAIL_SMTP_ENV {

@@ -4,7 +4,8 @@ use crate::{
     check_pg_session_floor, game_backend_fleet, game_backend_fleet_with_environment,
     game_backend_monolith, EnvironmentSnapshot, FleetError, FleetFlavor, FleetInputs, FleetSpec,
     PgSessionCapacity, PoolBudget, ServiceSpec, HARNESS_RESERVE, PG_SESSION_BUDGET,
-    PROOF_GATEWAY_RATE_LIMIT_BURST, PROOF_GATEWAY_RATE_LIMIT_RPS, REQUIRED_MAX_CONNECTIONS,
+    PROOF_GATEWAY_RATE_LIMIT_BURST, PROOF_GATEWAY_RATE_LIMIT_RPS, PROOF_GOOGLE_CLIENT_ID,
+    PROOF_OIDC_JWKS_URL, REQUIRED_MAX_CONNECTIONS,
 };
 #[cfg(windows)]
 use crate::build_environment;
@@ -268,16 +269,36 @@ fn development_fleet_passes_every_google_key_to_accounts_in_both_topologies() {
     }
 }
 
+/// The Proof monolith is where google stays known but unconfigured (`[A6m]` 503,
+/// `[P8m]` `Unavailable`): no `GOOGLE_*` key survives, whatever the operator's shell holds.
 #[test]
-fn proof_fleet_clears_every_ambient_google_key_in_both_topologies() {
-    let environment = ambient_google();
-    let fleet = game_backend_fleet_with_environment(&inputs(), FleetFlavor::Proof, &environment);
+fn proof_monolith_drops_every_ambient_google_key() {
+    let monolith = game_backend_monolith(&inputs(), FleetFlavor::Proof, &ambient_google());
+    let google: Vec<&String> = monolith.env.keys().filter(|key| key.starts_with("GOOGLE_")).collect();
+    assert!(google.is_empty(), "monolith kept {google:?}");
+}
+
+/// The Proof accounts-svc holds exactly the google configuration splitproof's `[A6]`, `[P8]` and
+/// `[BG*]` assert against, every ambient `GOOGLE_*` value replaced or dropped: an ambient
+/// `GOOGLE_AUTHORIZE_URL` would otherwise survive the pins beside them.
+#[test]
+fn proof_split_pins_google_to_the_oidc_fixture_over_every_ambient_key() {
+    let fleet = game_backend_fleet_with_environment(&inputs(), FleetFlavor::Proof, &ambient_google());
     let accounts = &fleet.service("accounts-svc").unwrap().env;
-    let monolith = game_backend_monolith(&inputs(), FleetFlavor::Proof, &environment);
-    for key in GOOGLE_ENV {
-        assert!(!accounts.contains_key(key), "accounts-svc kept ambient {key}");
-        assert!(!monolith.env.contains_key(key), "monolith kept ambient {key}");
-    }
+    let google: BTreeMap<&str, &str> = accounts
+        .iter()
+        .filter(|(key, _)| key.starts_with("GOOGLE_"))
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    let pinned = BTreeMap::from([
+        ("GOOGLE_CLIENT_IDS", PROOF_GOOGLE_CLIENT_ID),
+        ("GOOGLE_OAUTH_CLIENT_ID", PROOF_GOOGLE_CLIENT_ID),
+        ("GOOGLE_JWKS_URL", PROOF_OIDC_JWKS_URL),
+        ("GOOGLE_CLIENT_SECRET", "test"),
+        ("GOOGLE_REDIRECT_URI", "http://127.0.0.1:8082/accounts/oidc/google/callback"),
+        ("GOOGLE_TOKEN_URL", "http://127.0.0.1:1/token"),
+    ]);
+    assert_eq!(google, pinned);
 }
 
 #[test]

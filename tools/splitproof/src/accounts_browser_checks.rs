@@ -16,6 +16,11 @@
 //! drains one client on the hosted form and shows its next Epic starts refused, so the form and
 //! the Epic start draw from one bucket as accounts wires it.
 //!
+//! The Google checks ([BG1], [BG2], [BG3]) run between the two: the split Proof fleet configures
+//! google against the loopback OIDC fixture with a dead token endpoint, so a start, a failed
+//! callback and a state another provider minted are provable without a live Google. Each names its
+//! own `X-Forwarded-For` client, so no bucket another check drew from can refuse it.
+//!
 //! Timing rule: the run after a refusal (`B_REQUESTS` back to back) is timed from the instant this
 //! harness took just before sending the request accounts refused, so the clock starts at or before
 //! the server's refusal, never after it. At the refusal the bucket holds some fraction `f` of a
@@ -61,6 +66,19 @@ const LOGIN: &str = "/accounts/oidc/login";
 const LANDING: &str = "/accounts/oidc/";
 const LOGOUT: &str = "/accounts/oidc/logout";
 const EPIC_START: &str = "/accounts/epic/start";
+const EPIC_CALLBACK: &str = "/accounts/epic/callback";
+const GOOGLE_START: &str = "/accounts/oidc/google";
+const GOOGLE_CALLBACK: &str = "/accounts/oidc/google/callback";
+/// The redirect URI the Proof fleet pins on accounts-svc for google (gateway-svc's origin).
+const GOOGLE_REDIRECT_URI: &str = "http://127.0.0.1:8082/accounts/oidc/google/callback";
+/// Google's authorize endpoint, accounts' default: the Proof fleet does not pin it.
+const GOOGLE_AUTHORIZE: &str = "https://accounts.google.com/o/oauth2/v2/auth";
+/// The cookie binding an OAuth state to the browser that started it, set on every start.
+const BINDING: &str = "epic_oauth_binding";
+/// What the sign-in form shows after `?google=error`.
+const GOOGLE_FAILED: &str = "Sign-in with Google failed.";
+/// The `return_to` the [BG*] starts carry, so the error redirect shows it came back off the state row.
+const BG_RETURN_TO: &str = "/accounts/oidc/?bg=1";
 const SESSION: &str = "swarog_session";
 const LOGIN_CSRF: &str = "swarog_login_csrf";
 /// The hosted form's one error for an unknown email and a wrong password.
@@ -76,6 +94,10 @@ const EPIC_A: &str = "203.0.113.73";
 const EPIC_B: &str = "203.0.113.74";
 /// The one client of [BR3], drained on the hosted form then sent to the Epic start.
 const SHARED: &str = "203.0.113.75";
+/// One client per [BG*] check, so none meets a sign-in bucket another check drew from.
+const BG1_CLIENT: &str = "203.0.113.76";
+const BG2_CLIENT: &str = "203.0.113.77";
+const BG3_CLIENT: &str = "203.0.113.78";
 /// Client B's requests, each of which must pass the bucket client A drained.
 const B_REQUESTS: usize = 5;
 /// The tokens a second accounts' sign-in bucket refills: the rate accounts builds its limiter from.
@@ -96,6 +118,9 @@ fn gateway_refill() -> Duration {
 pub(super) async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &reqwest::Client, tag: &str) -> Result<()> {
     if let Err(e) = sign_in_checks(ctx, pool, p, front, admin, tag).await {
         p.check(&format!("[BL0{tag}] hosted browser sign-in pass completes"), false, format!("{e:#}"));
+    }
+    if let Err(e) = google_checks(ctx, pool, p, front, tag).await {
+        p.check(&format!("[BG0{tag}] Google browser sign-in pass completes"), false, format!("{e:#}"));
     }
     if let Err(e) = bucket_checks(ctx, p, front, tag).await {
         p.check(&format!("[BR0{tag}] per-IP sign-in bucket pass completes"), false, format!("{e:#}"));
@@ -261,6 +286,166 @@ async fn sign_in_checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, ad
         ),
     );
     Ok(())
+}
+
+/// Google's browser sign-in through gateway-svc, configured by the split Proof fleet against the
+/// loopback fixture with a dead token endpoint: the start, the failed callback, and a state another
+/// provider minted.
+async fn google_checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, tag: &str) -> Result<()> {
+    // [BG1] the form offers the Google button; its POST with the login CSRF is a 303 to Google's
+    // authorize URL for the pinned client and redirect URI, sets the binding cookie, and persists
+    // a google `browser` state carrying the form's return_to.
+    let page = browse(|| ctx.http_noredirect.get(format!("{front}{LOGIN}")).header("X-Forwarded-For", BG1_CLIENT)).await?;
+    let button = page.body.contains(&format!("action=\"{GOOGLE_START}\"")) && text(&page.body).contains("Continue with Google");
+    let started = google_start(ctx, front, BG1_CLIENT, &page).await?;
+    let authorize = reqwest::Url::parse(&started.location).ok();
+    let endpoint = authorize.as_ref().map(|u| format!("{}{}", u.origin().ascii_serialization(), u.path())).unwrap_or_default();
+    let client_id = query_param(authorize.as_ref(), "client_id");
+    let redirect_uri = query_param(authorize.as_ref(), "redirect_uri");
+    let state = query_param(authorize.as_ref(), "state");
+    let binding_cookie = set_cookie(&started.cookies, BINDING);
+    let row = oauth_state(pool, &state).await?;
+    let want_row = Some(("google".to_string(), "browser".to_string(), Some(BG_RETURN_TO.to_string())));
+    p.check(
+        &format!("[BG1{tag}] {LOGIN} shows Continue with Google; POST {GOOGLE_START} with the login CSRF -> 303 to Google's authorize URL (pinned client_id, redirect_uri, state) with {BINDING} and a google browser state row"),
+        page.status == 200
+            && button
+            && started.status == 303
+            && endpoint == GOOGLE_AUTHORIZE
+            && client_id == processctl::PROOF_GOOGLE_CLIENT_ID
+            && redirect_uri == GOOGLE_REDIRECT_URI
+            && !state.is_empty()
+            && !cookie_value(&binding_cookie).is_empty()
+            && has_attrs(&binding_cookie, &["Path=/accounts", "HttpOnly"])
+            && row == want_row,
+        format!(
+            "form={} button={button} start={} endpoint={endpoint:?} client_id={client_id:?} redirect_uri={redirect_uri:?} state={} binding={:?} row={row:?} body={}",
+            page.status,
+            started.status,
+            !state.is_empty(),
+            redact(&binding_cookie),
+            cut(&text(&started.body))
+        ),
+    );
+
+    // [BG2] the callback for a state this browser started, with a code the dead token endpoint can
+    // never exchange: the state is consumed and the browser goes back to the form with Google's
+    // error and the start's return_to, where the form shows that error.
+    let page = browse(|| ctx.http_noredirect.get(format!("{front}{LOGIN}")).header("X-Forwarded-For", BG2_CLIENT)).await?;
+    let started = google_start(ctx, front, BG2_CLIENT, &page).await?;
+    let state = query_param(reqwest::Url::parse(&started.location).ok().as_ref(), "state");
+    let binding = cookie_value(&set_cookie(&started.cookies, BINDING));
+    let back = callback(ctx, front, GOOGLE_CALLBACK, BG2_CLIENT, &state, &binding).await?;
+    let landed = reqwest::Url::parse("http://front.invalid").and_then(|base| base.join(&back.location)).ok();
+    let landed_path = landed.as_ref().map(|u| u.path().to_string()).unwrap_or_default();
+    let error_key = query_param(landed.as_ref(), "google");
+    let return_to = query_param(landed.as_ref(), "return_to");
+    let row_after = oauth_state(pool, &state).await?;
+    let shown = browse(|| ctx.http_noredirect.get(format!("{front}{}", back.location)).header("X-Forwarded-For", BG2_CLIENT)).await?;
+    p.check(
+        &format!("[BG2{tag}] GET {GOOGLE_CALLBACK} with a bad code (dead-port token URL) -> 303 {LOGIN}?google=error&return_to=<the start's>, state consumed, the form shows Google's error"),
+        !state.is_empty()
+            && !binding.is_empty()
+            && back.status == 303
+            && landed_path == LOGIN
+            && error_key == "error"
+            && return_to == BG_RETURN_TO
+            && row_after.is_none()
+            && shown.status == 200
+            && text(&shown.body).contains(GOOGLE_FAILED),
+        format!(
+            "state={} binding={} callback={} loc={:?} row_after={row_after:?} form={} shows_error={} body={}",
+            !state.is_empty(),
+            !binding.is_empty(),
+            back.status,
+            back.location,
+            shown.status,
+            text(&shown.body).contains(GOOGLE_FAILED),
+            cut(&text(&back.body))
+        ),
+    );
+
+    // [BG3] states are scoped to the provider that minted them: an Epic JSON start's state, with
+    // its own binding, is refused on Google's callback and left unconsumed, so Epic's callback still
+    // redeems it (its failed exchange answering Epic's error redirect, never the 400 of a missing
+    // state).
+    let epic = browse(|| ctx.http_noredirect.post(format!("{front}{EPIC_START}")).header("X-Forwarded-For", BG3_CLIENT)).await?;
+    let epic_url = serde_json::from_str::<serde_json::Value>(&epic.body)
+        .ok()
+        .and_then(|v| v.get("authorize_url").and_then(|u| u.as_str()).map(str::to_string))
+        .unwrap_or_default();
+    let state = query_param(reqwest::Url::parse(&epic_url).ok().as_ref(), "state");
+    let binding = cookie_value(&set_cookie(&epic.cookies, BINDING));
+    let minted = oauth_state(pool, &state).await?;
+    let foreign = callback(ctx, front, GOOGLE_CALLBACK, BG3_CLIENT, &state, &binding).await?;
+    let kept = oauth_state(pool, &state).await?;
+    let own = callback(ctx, front, EPIC_CALLBACK, BG3_CLIENT, &state, &binding).await?;
+    let row_after = oauth_state(pool, &state).await?;
+    let epic_provider = |row: &Option<(String, String, Option<String>)>| row.as_ref().is_some_and(|(provider, _, _)| provider == "epic");
+    p.check(
+        &format!("[BG3{tag}] a state minted by POST {EPIC_START}, presented with its binding on {GOOGLE_CALLBACK} -> 400 and the row kept; the same state on {EPIC_CALLBACK} -> 303 /?epic=error (redeemed)"),
+        epic.status == 200
+            && !state.is_empty()
+            && !binding.is_empty()
+            && epic_provider(&minted)
+            && foreign.status == 400
+            && epic_provider(&kept)
+            && own.status == 303
+            && own.location == "/?epic=error"
+            && row_after.is_none(),
+        format!(
+            "start={} state={} binding={} minted={minted:?} google_callback={} kept={kept:?} epic_callback={} epic_loc={:?} row_after={row_after:?}",
+            epic.status,
+            !state.is_empty(),
+            !binding.is_empty(),
+            foreign.status,
+            own.status,
+            own.location
+        ),
+    );
+    Ok(())
+}
+
+/// POSTs the Google start as the form `page` was served: its login-CSRF cookie and double-submitted
+/// value, and [`BG_RETURN_TO`], from `client`.
+async fn google_start(ctx: &Ctx, front: &str, client: &str, page: &Answer) -> Result<Answer> {
+    let csrf = cookie_value(&set_cookie(&page.cookies, LOGIN_CSRF));
+    let form = [("csrf", csrf.as_str()), ("return_to", BG_RETURN_TO)];
+    browse(|| {
+        ctx.http_noredirect
+            .post(format!("{front}{GOOGLE_START}"))
+            .header("X-Forwarded-For", client)
+            .header(COOKIE, format!("{LOGIN_CSRF}={csrf}"))
+            .form(&form)
+    })
+    .await
+}
+
+/// A provider's callback as the browser holding `binding` reaches it, with an authorization code
+/// the dead token endpoint cannot exchange.
+async fn callback(ctx: &Ctx, front: &str, path: &str, client: &str, state: &str, binding: &str) -> Result<Answer> {
+    browse(|| {
+        ctx.http_noredirect
+            .get(format!("{front}{path}"))
+            .query(&[("code", "splitproof-bad-code"), ("state", state)])
+            .header("X-Forwarded-For", client)
+            .header(COOKIE, format!("{BINDING}={binding}"))
+    })
+    .await
+}
+
+/// The first value of the query parameter `name`, empty when `url` or the parameter is absent.
+fn query_param(url: Option<&reqwest::Url>, name: &str) -> String {
+    url.and_then(|u| u.query_pairs().find(|(k, _)| k == name).map(|(_, v)| v.into_owned())).unwrap_or_default()
+}
+
+/// The `accounts.oauth_states` row for `state` as `(provider, intent, return_to)`, none when absent.
+async fn oauth_state(pool: &PgPool, state: &str) -> Result<Option<(String, String, Option<String>)>> {
+    sqlx::query_as("SELECT provider, intent, return_to FROM accounts.oauth_states WHERE state = $1")
+        .bind(state)
+        .fetch_optional(pool)
+        .await
+        .context("read the oauth state row")
 }
 
 async fn bucket_checks(ctx: &Ctx, p: &mut Proof, front: &str, tag: &str) -> Result<()> {

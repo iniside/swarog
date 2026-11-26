@@ -6907,8 +6907,11 @@ fn envelope_status(v: &serde_json::Value) -> Option<&str> {
 
 /// The federated-provider, guest, promotion and refresh proofs, driven through whatever
 /// front `base` names so the split (gateway-svc → accounts-svc over the mTLS edge) and the
-/// monolith (all Local) execute the IDENTICAL assertions. `m` is the parity suffix — `""`
-/// in the split, `"m"` in the monolith — and is the only difference between the two runs.
+/// monolith (all Local) execute the same assertions. `m` is the parity suffix — `""` in the
+/// split, `"m"` in the monolith. The one expectation it changes is google's answer in
+/// `[A6]` and `[P8]`: the Proof fleet configures google in the split only, so the split
+/// asserts a configured provider rejecting a garbage credential and the monolith the known
+/// but unconfigured one (`processctl`'s `PROOF_CLEARED_GOOGLE_ENV`).
 async fn federated_assertions(
     ctx: &Ctx,
     pool: &PgPool,
@@ -6920,15 +6923,21 @@ async fn federated_assertions(
     let suffix = format!("{}{m}", std::process::id());
 
     // [A6] the three-way provider resolution, as a client sees it. `google` is in
-    // KNOWN_PROVIDERS and this fleet deliberately leaves it unconfigured (the Proof
-    // overlay clears GOOGLE_* precisely so this arm exists), so it must answer 503, not
-    // the 400 an unbuildable name earns.
-    let a6_unconfigured = federated_status(ctx, base, "google", "irrelevant").await?;
+    // KNOWN_PROVIDERS. The monolith Proof leaves it unconfigured (its overlay clears
+    // GOOGLE_* and pins none precisely so this arm exists), so there it must answer 503,
+    // not the 400 an unbuildable name earns. The split Proof configures it against the
+    // loopback fixture, so there the garbage credential reaches its verifier: 401.
+    let (a6_google_want, a6_google_reads) = if m.is_empty() {
+        (401, "401 (configured, garbage credential)")
+    } else {
+        (503, "503 (known, unconfigured)")
+    };
+    let a6_google = federated_status(ctx, base, "google", "irrelevant").await?;
     let a6_unknown = federated_status(ctx, base, "nope", "irrelevant").await?;
     p.check(
-        &format!("[A6{m}] login_federated google -> 503 (known, unconfigured), nope -> 400"),
-        a6_unconfigured == 503 && a6_unknown == 400,
-        format!("google={a6_unconfigured} nope={a6_unknown}"),
+        &format!("[A6{m}] login_federated google -> {a6_google_reads}, nope -> 400"),
+        a6_google == a6_google_want && a6_unknown == 400,
+        format!("google={a6_google} nope={a6_unknown}"),
     );
 
     // [A7] the guest device: minted server-side, its ticket revealed once and replayable
@@ -7070,7 +7079,9 @@ async fn federated_assertions(
     // [P8] the same auth ops on the player-QUIC plane. All four are `auth = "none"`, so
     // they are reachable WITHOUT a bearer — the plane's api-key gate still applies — and
     // the provider resolution renders as the envelope statuses the HTTP front maps to
-    // 503/400.
+    // [A6]'s codes: google `Unauthorized` (401) where the split configures it,
+    // `Unavailable` (503) in the monolith, which does not; `nope` `Invalid` (400).
+    let p8_google = if m.is_empty() { "Unauthorized" } else { "Unavailable" };
     let p8_guest_call = ("accounts.createGuest", "{}".to_string());
     let p8 = player_session(ctx, &[p8_guest_call]).await?;
     let p8_secret = p8.first().and_then(|v| find_str(v, "device_secret")).unwrap_or_default();
@@ -7103,13 +7114,13 @@ async fn federated_assertions(
         .map(envelope_status)
         .collect();
     p.check(
-        &format!("[P8{m}] QUIC createGuest/loginFederated/refresh -> Ok, Ok, Unavailable, Invalid, Ok"),
+        &format!("[P8{m}] QUIC createGuest/loginFederated/refresh -> Ok, Ok, {p8_google}, Invalid, Ok"),
         !p8_secret.is_empty()
             && statuses
                 == vec![
                     Some("Ok"),
                     Some("Ok"),
-                    Some("Unavailable"),
+                    Some(p8_google),
                     Some("Invalid"),
                     Some("Ok"),
                 ],
