@@ -39,6 +39,8 @@ _None._
   Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, owner decision 1 (2026-11-25).
 - [ ] **UILayout mockup of the hosted login page**
   Add a `UILayout/` mockup that roughly matches the shipped page, then port the page to it.
+  Scheduled after roadmap Phase A (Steps 2-4) of docs/plans/2026-11-24-0004-lore-integration-roadmap-plan.md
+  (owner, 2026-11-26).
   Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, owner decision 8 (2026-11-25).
 - [ ] **No single browser-session revoke for operators**
   An operator cannot end one browser session; only Revoke all ends them.
