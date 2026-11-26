@@ -163,7 +163,7 @@ impl EpicOAuthConfig {
         authorize_url: String,
         token_url: String,
     ) -> anyhow::Result<EpicOAuthConfig> {
-        check_redirect_uri("EPIC_REDIRECT_URI", &redirect_uri)?;
+        check_redirect_uri("EPIC_REDIRECT_URI", &redirect_uri, crate::epic_oauth::SPEC.callback_path)?;
         check_endpoint("EPIC_AUTHORIZE_URL", &authorize_url)?;
         check_endpoint("EPIC_TOKEN_URL", &token_url)?;
         Ok(EpicOAuthConfig {
@@ -302,7 +302,7 @@ const EPIC_OAUTH_VARS: &[&str] = &["EPIC_REDIRECT_URI", "EPIC_AUTHORIZE_URL", "E
 const EPIC_DEFAULT_JWKS_URL: &str =
     "https://api.epicgames.dev/epic/oauth/v1/.well-known/jwks.json";
 const EPIC_DEFAULT_ISSUER_PREFIX: &str = "https://api.epicgames.dev/epic/oauth/v1";
-const EPIC_DEFAULT_REDIRECT_URI: &str = "http://localhost:8080/accounts/epic/callback";
+const EPIC_DEFAULT_REDIRECT_ORIGIN: &str = "http://localhost:8080";
 const EPIC_DEFAULT_AUTHORIZE_URL: &str = "https://www.epicgames.com/id/authorize";
 const EPIC_DEFAULT_TOKEN_URL: &str = "https://api.epicgames.dev/epic/oauth/v1/token";
 
@@ -332,7 +332,11 @@ fn epic_from_vars(vars: &BTreeMap<String, String>) -> anyhow::Result<Option<Epic
     )?;
     let oauth = EpicOAuthConfig::new(
         var_or(vars, "EPIC_CLIENT_SECRET", ""),
-        var_or(vars, "EPIC_REDIRECT_URI", EPIC_DEFAULT_REDIRECT_URI),
+        var_or(
+            vars,
+            "EPIC_REDIRECT_URI",
+            &format!("{EPIC_DEFAULT_REDIRECT_ORIGIN}{}", crate::epic_oauth::SPEC.callback_path),
+        ),
         var_or(vars, "EPIC_AUTHORIZE_URL", EPIC_DEFAULT_AUTHORIZE_URL),
         var_or(vars, "EPIC_TOKEN_URL", EPIC_DEFAULT_TOKEN_URL),
     )?;
@@ -465,12 +469,12 @@ fn checked_endpoint(key: &str, raw: &str) -> anyhow::Result<url::Url> {
 }
 
 /// The OAuth redirect URI: the endpoint rule plus the two constraints specific to a
-/// callback the IdP redirects a browser to — it must be exactly the route this module
-/// mounts, and a fragment would be dropped by the redirect anyway.
-fn check_redirect_uri(key: &str, raw: &str) -> anyhow::Result<()> {
+/// callback the IdP redirects a browser to — its path must be exactly the provider's
+/// mounted `callback_path`, and a fragment would be dropped by the redirect anyway.
+fn check_redirect_uri(key: &str, raw: &str, callback_path: &str) -> anyhow::Result<()> {
     let url = checked_endpoint(key, raw)?;
-    if url.path() != "/accounts/epic/callback" {
-        anyhow::bail!("invalid {key}: path must be /accounts/epic/callback");
+    if url.path() != callback_path {
+        anyhow::bail!("invalid {key}: path must be {callback_path}");
     }
     if url.fragment().is_some() {
         anyhow::bail!("invalid {key}: fragments are not allowed");

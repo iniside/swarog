@@ -18,7 +18,8 @@ use axum_extra::extract::CookieJar;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
-use crate::epic_oauth::{self, EpicOAuth, Intent};
+use crate::epic_oauth::EpicOAuth;
+use crate::oauth_flow::{self, Intent};
 use crate::{normalize_email, Service};
 
 pub(crate) const PREFIX: &str = "/accounts/oidc";
@@ -420,7 +421,7 @@ async fn epic_start(
         .map(|c| c.value())
         .filter(|token| crate::session_token_within_cap(token))
         .map(session::digest);
-    let binding = epic_oauth::browser_binding(&jar);
+    let binding = oauth_flow::browser_binding(&jar);
     let intent = Intent::Browser { return_to: return_to.to_string(), replaces };
     let state = match epic.new_state(intent, binding.clone()).await {
         Ok(state) => state,
@@ -441,7 +442,7 @@ async fn epic_start(
         }
     };
     let mut resp = (StatusCode::SEE_OTHER, [(header::LOCATION, location)]).into_response();
-    resp.headers_mut().append(header::SET_COOKIE, epic_oauth::binding_set_cookie(&binding, web.cookie_secure));
+    resp.headers_mut().append(header::SET_COOKIE, oauth_flow::binding_set_cookie(&binding, web.cookie_secure));
     resp
 }
 

@@ -32,6 +32,7 @@ mod admin;
 pub mod conformance;
 mod epic_oauth;
 mod guest;
+mod oauth_flow;
 mod oidc;
 mod ops;
 mod password;
@@ -238,29 +239,62 @@ CREATE TABLE IF NOT EXISTS accounts.browser_sessions (
 	created_at   timestamptz NOT NULL DEFAULT now(),
 	expires_at   timestamptz NOT NULL
 );
+"#;
 
--- Epic web-OAuth in-flight redemption store. Shared, NOT process memory, so the
--- /accounts/epic/callback can LB-route to ANY replica: new_state INSERTs and
--- take_state is a DELETE ... RETURNING (cross-replica exactly-once single-redemption,
--- 10-min TTL as a created_at predicate). intent decides the callback: login mints a
--- player session, link attaches the identity to session_token's player, browser mints
--- a browser session, ends replaces_session (the digest of the browser's previous
--- session cookie) and returns to return_to.
--- No player_id and deliberately NO cascade: a LINK row still in flight when its player is
--- deleted names only that player's session token, and it is swept by the same 10-minute
--- TTL prune as any abandoned one.
+/// The web-OAuth in-flight redemption store, shared by every provider's flow. Shared, NOT
+/// process memory, so a provider's callback can LB-route to ANY replica: new_state INSERTs
+/// and take_state is a DELETE ... RETURNING scoped to the redeeming provider
+/// (cross-replica exactly-once single-redemption, 10-min TTL as a created_at predicate).
+/// intent decides the callback: login mints a player session, link attaches the identity
+/// to session_token's player, browser mints a browser session, ends replaces_session (the
+/// digest of the browser's previous session cookie) and returns to return_to. Only Epic
+/// has login and link. No player_id and deliberately NO cascade: a LINK row still in
+/// flight when its player is deleted names only that player's session token, and it is
+/// swept by the same 10-minute TTL prune as any abandoned one.
+static OAUTH_STATES_DDL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        r#"
 CREATE TABLE IF NOT EXISTS accounts.oauth_states (
 	state            text PRIMARY KEY,
+	provider         text        NOT NULL CHECK (provider IN ('{EPIC}', '{GOOGLE}')),
 	intent           text        NOT NULL CHECK (intent IN ('login', 'link', 'browser')),
 	session_token    text,
 	return_to        text,
 	replaces_session bytea,
 	browser_binding  text        NOT NULL,
 	created_at       timestamptz NOT NULL DEFAULT now(),
+	CHECK (provider = '{EPIC}' OR intent = 'browser'),
 	CHECK ((intent = 'link') = (session_token IS NOT NULL)),
 	CHECK ((intent = 'browser') = (return_to IS NOT NULL)),
 	CHECK (intent = 'browser' OR replaces_session IS NULL)
-);"#;
+);"#,
+        EPIC = providers::EPIC,
+        GOOGLE = providers::GOOGLE,
+    )
+});
+
+/// Refuses a `{schema}.oauth_states` that predates a column every start writes:
+/// `CREATE TABLE IF NOT EXISTS` keeps the old table, and every start would then fail its
+/// INSERT.
+async fn refuse_stale_oauth_states(pool: &sqlx::PgPool, schema: &str) -> anyhow::Result<()> {
+    for column in ["intent", "provider"] {
+        let present: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = $1 AND table_name = 'oauth_states' AND column_name = $2",
+        )
+        .bind(schema)
+        .bind(column)
+        .fetch_one(pool)
+        .await?;
+        if present == 0 {
+            anyhow::bail!(
+                "accounts: {schema}.oauth_states has no {column} column. Remedy: DROP TABLE \
+                 {schema}.oauth_states; and reboot (it holds only in-flight sign-ins)."
+            );
+        }
+    }
+    Ok(())
+}
 
 /// Folds any lower-level error into an `Internal` operation error.
 fn internal<E: std::fmt::Display>(e: E) -> Error {
@@ -1511,6 +1545,7 @@ impl Module for Accounts {
             .ok_or_else(|| anyhow::anyhow!("accounts requires a DB pool"))?;
         Ddl::new(pool)
             .sql(SCHEMA_DDL)
+            .sql(OAUTH_STATES_DDL.as_str())
             // A second, DB-level constraint on `players` itself (see the claim-coverage
             // check below): `accounts.handles` decides freeness at mint time, this index
             // backs `player_by_handle`'s lookup and still refuses a duplicate pair.
@@ -1583,22 +1618,7 @@ impl Module for Accounts {
                  backfill would mint reservations for handles nothing ever claimed."
             );
         }
-        // `CREATE TABLE IF NOT EXISTS` keeps an oauth_states that predates `intent`, and
-        // every Epic start would then fail its INSERT.
-        let intent_column: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM information_schema.columns \
-             WHERE table_schema = 'accounts' AND table_name = 'oauth_states' \
-               AND column_name = 'intent'",
-        )
-        .fetch_one(pool)
-        .await?;
-        if intent_column == 0 {
-            anyhow::bail!(
-                "accounts: accounts.oauth_states has no intent column. Remedy: DROP TABLE \
-                 accounts.oauth_states; and reboot (it holds only in-flight sign-ins)."
-            );
-        }
-        Ok(())
+        refuse_stale_oauth_states(pool, "accounts").await
     }
 
     /// Only wires up — no I/O (#8). Reads the env gates, parses and validates the

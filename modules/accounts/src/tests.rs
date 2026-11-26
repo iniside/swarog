@@ -9,6 +9,7 @@ mod epic_browser;
 mod guest;
 mod hosted_login;
 mod last_used;
+mod oauth_flow;
 mod password_email;
 mod prune;
 mod refresh;

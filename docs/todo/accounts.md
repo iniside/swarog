@@ -48,8 +48,6 @@ Last updated: 2026-11-26
   Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
 - [ ] **The old `/accounts/epic` binding cookie can coexist for up to 10 minutes**
   Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
-- [ ] **The boot refusal on an old `oauth_states` table has no test**
-  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
 - [ ] **Sign-in limiter test helpers repeat 5.0/20**
   modules/accounts/src/tests.rs:1850, modules/accounts/src/tests/hosted_login.rs:24 and
   modules/accounts/src/tests/epic_browser.rs:60 should use `accountsapi::LOGIN_LIMIT_PER_SEC` and

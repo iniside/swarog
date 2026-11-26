@@ -1,23 +1,18 @@
-//! The Epic Account Services authorization-code flow (port of Go's
-//! `modules/accounts/epic_oauth.go`). The backend is the confidential client (holds
-//! the secret); the browser only ever sees the redirect. A short-lived state store
-//! (shared Postgres, `accounts.oauth_states`) binds an in-flight authorization to
-//! its [`Intent`], so the callback knows whether to LINK (bearer present at the JSON
-//! start), LOG IN (no bearer), or sign a browser in on the hosted pages (the form on
-//! `/accounts/oidc/login`). The store lives in Postgres — NOT process memory —
-//! so the callback can LB-route to ANY replica: `new_state` INSERTs and `take_state`
-//! is a `DELETE ... RETURNING` (cross-replica exactly-once single-redemption).
+//! Epic's own surface on the neutral OAuth flow ([`crate::oauth_flow`], port of Go's
+//! `modules/accounts/epic_oauth.go`): the JSON start for the demo page, the LOGIN (no
+//! bearer) and LINK (bearer present at the start) intents, and the `/accounts/epic/*`
+//! routes. The hosted sign-in form's `Browser` intent runs in the neutral flow.
 //!
 //! These two routes are HTTP-NATIVE (a browser redirect flow with an external
 //! contract), NOT typed operations: they are mounted on the shared `Context` router
 //! (`ctx.mount`, the Rust twin of Go's `ctx.Mux`) by the module's `init`, so they
 //! serve on whichever process hosts the accounts module — monolith and accounts-svc
-//! alike (the gateway HTTP passthrough for the split front lands in Step 7).
+//! alike.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::ops::Deref;
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::extract::{ConnectInfo, Query};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -25,48 +20,31 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_extra::extract::CookieJar;
-use base64::Engine as _;
 use sqlx::PgPool;
 
-use crate::oidc::{short_id, truncate, OidcVerifier};
-use crate::providers::EpicOAuthConfig;
+use crate::oauth_flow::{self, browser_binding, binding_set_cookie, ClientConfig, OAuthFlow, Outcome, ProviderSpec};
+pub(crate) use crate::oauth_flow::Intent;
+use crate::oidc::OidcVerifier;
+use crate::providers::{EpicOAuthConfig, EPIC};
 use crate::{web, Service};
 
-/// How long an issued OAuth `state` stays redeemable (Go's `stateTTL`). Enforced as
-/// a `created_at` predicate in SQL (`STATE_TTL_SQL`), not an in-process clock.
-const STATE_TTL_SQL: &str = "10 minutes";
-const BINDING_COOKIE: &str = "epic_oauth_binding";
-const BINDING_TOKEN_LEN: usize = 43;
-/// Covers both starts (`/accounts/epic/start`, the hosted form's `/accounts/oidc/epic`) and
-/// the callback, so every start in one browser reuses the same binding.
-const BINDING_PATH: &str = "/accounts";
+pub(crate) static SPEC: ProviderSpec = ProviderSpec {
+    name: EPIC,
+    scope: "openid basic_profile",
+    callback_path: "/accounts/epic/callback",
+    error_key: "epic",
+    display_prefix: "epic",
+};
 
-/// What the callback does with a redeemed state (`accounts.oauth_states.intent`).
-#[derive(Debug, PartialEq)]
-pub(crate) enum Intent {
-    /// Find or create the player and hand a player session to the demo page.
-    Login,
-    /// Attach the identity to the player behind this bearer session.
-    Link { session_token: String },
-    /// Find or create the player, end the browser session whose digest is `replaces`,
-    /// mint a browser session and go to `return_to`.
-    Browser { return_to: String, replaces: Option<Vec<u8>> },
-}
+/// The EAS web OAuth flow: the neutral flow under Epic's [`SPEC`].
+pub(crate) struct EpicOAuth(OAuthFlow);
 
-/// The confidential-client half of the EAS web OAuth flow: builds authorize URLs,
-/// persists/redeems states in shared Postgres, exchanges codes for id_tokens.
-pub(crate) struct EpicOAuth {
-    pub client_id: String,
-    pub client_secret: String,
-    pub redirect_uri: String,
-    pub authorize_url: String,
-    pub token_url: String,
-    pub verifier: Arc<OidcVerifier>,
-    pub http: reqwest::Client,
-    cookie_secure: bool,
-    /// The shared Postgres pool backing `accounts.oauth_states` — the redemption
-    /// authority. Any replica INSERTs on start and any replica redeems on callback.
-    pool: PgPool,
+impl Deref for EpicOAuth {
+    type Target = OAuthFlow;
+
+    fn deref(&self) -> &OAuthFlow {
+        &self.0
+    }
 }
 
 impl EpicOAuth {
@@ -81,178 +59,15 @@ impl EpicOAuth {
         pool: PgPool,
         cookie_secure: bool,
     ) -> anyhow::Result<EpicOAuth> {
-        Ok(EpicOAuth {
+        let client = ClientConfig {
             client_id,
             client_secret: oauth.client_secret,
             redirect_uri: oauth.redirect_uri,
             authorize_url: oauth.authorize_url,
             token_url: oauth.token_url,
-            verifier,
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(10))
-                .build()?,
-            cookie_secure,
-            pool,
-        })
-    }
-
-    /// Issues a fresh `state` carrying `intent` by INSERTing it into shared Postgres,
-    /// opportunistically pruning expired rows first (piggyback GC — no background task;
-    /// Go's `newState`). Any replica can later redeem it. A persistence failure is a
-    /// transient/retryable condition the caller surfaces as 503.
-    pub(crate) async fn new_state(
-        &self,
-        intent: Intent,
-        browser_binding: String,
-    ) -> anyhow::Result<String> {
-        self.prune_expired().await;
-        let s = crate::store::new_token();
-        let (name, session_token, return_to, replaces) = match intent {
-            Intent::Login => ("login", None, None, None),
-            Intent::Link { session_token } => ("link", Some(session_token), None, None),
-            Intent::Browser { return_to, replaces } => ("browser", None, Some(return_to), replaces),
         };
-        sqlx::query(
-            "INSERT INTO accounts.oauth_states \
-               (state, intent, session_token, return_to, replaces_session, browser_binding) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
-        )
-        .bind(&s)
-        .bind(name)
-        .bind(session_token)
-        .bind(return_to)
-        .bind(replaces)
-        .bind(&browser_binding)
-        .execute(&self.pool)
-        .await?;
-        Ok(s)
+        Ok(EpicOAuth(OAuthFlow::new(&SPEC, client, verifier, pool, cookie_secure)?))
     }
-
-    /// Redeems a `state` exactly once from the browser that started it via
-    /// `DELETE ... RETURNING`: whichever replica runs the DELETE first wins, the rest
-    /// get zero rows → `None`. A missing binding never consumes a state (early
-    /// `None`); a wrong binding or an expired row fails the `WHERE` so no row is
-    /// deleted and the state survives (matches the pre-shared behavior). The 10-min
-    /// TTL is the `created_at` predicate. A `WHERE`-clause miss (unknown, expired,
-    /// wrong binding, already redeemed) is `Ok(None)` — legitimately bad input the
-    /// caller answers with 400. A genuine query error is `Err`: a transient store
-    /// condition the caller surfaces as 503, never as bad input.
-    pub(crate) async fn take_state(
-        &self,
-        s: &str,
-        browser_binding: Option<&str>,
-    ) -> Result<Option<Intent>, sqlx::Error> {
-        // A missing binding cookie can never consume a state.
-        let Some(binding) = browser_binding else {
-            return Ok(None);
-        };
-        // Deliberately NOT logged here: the terminal handler logs this error once as
-        // it renders the response, exactly as `new_state` above leaves its persistence
-        // failure to `handle_start`. Logging at both ends would make one store outage
-        // count twice in the ERROR rate.
-        type Row = (String, Option<String>, Option<String>, Option<Vec<u8>>);
-        let row: Option<Row> = sqlx::query_as(&format!(
-            "DELETE FROM accounts.oauth_states \
-             WHERE state = $1 AND browser_binding = $2 \
-               AND created_at > now() - interval '{STATE_TTL_SQL}' \
-             RETURNING intent, session_token, return_to, replaces_session"
-        ))
-        .bind(s)
-        .bind(binding)
-        .fetch_optional(&self.pool)
-        .await?;
-        let Some((intent, session_token, return_to, replaces)) = row else {
-            return Ok(None);
-        };
-        match (intent.as_str(), session_token, return_to) {
-            ("login", None, None) => Ok(Some(Intent::Login)),
-            ("link", Some(session_token), None) => Ok(Some(Intent::Link { session_token })),
-            ("browser", None, Some(return_to)) => Ok(Some(Intent::Browser { return_to, replaces })),
-            _ => Err(sqlx::Error::Protocol(format!("oauth state row with intent {intent:?} is malformed"))),
-        }
-    }
-
-    /// Opportunistic GC of expired states (piggybacked on `new_state`, no background
-    /// task). Best-effort: a prune failure is logged, never fatal to minting.
-    async fn prune_expired(&self) {
-        if let Err(err) = sqlx::query(&format!(
-            "DELETE FROM accounts.oauth_states \
-             WHERE created_at <= now() - interval '{STATE_TTL_SQL}'"
-        ))
-        .execute(&self.pool)
-        .await
-        {
-            tracing::warn!(%err, "epic oauth: expired-state prune failed");
-        }
-    }
-
-    /// The full authorize URL the page redirects the browser to.
-    pub(crate) fn authorize_url_for(&self, state: &str) -> anyhow::Result<String> {
-        let mut u = url::Url::parse(&self.authorize_url)?;
-        u.query_pairs_mut()
-            .append_pair("client_id", &self.client_id)
-            .append_pair("response_type", "code")
-            .append_pair("scope", "openid basic_profile")
-            .append_pair("redirect_uri", &self.redirect_uri)
-            .append_pair("state", state);
-        Ok(u.into())
-    }
-
-    /// Swaps an authorization code for tokens at the token endpoint (client-secret
-    /// basic auth, form body) and returns the `id_token` (Go's `exchangeCode`).
-    pub(crate) async fn exchange_code(&self, code: &str) -> anyhow::Result<String> {
-        let resp = self
-            .http
-            .post(&self.token_url)
-            .basic_auth(&self.client_id, Some(&self.client_secret))
-            .form(&[
-                ("grant_type", "authorization_code"),
-                ("code", code),
-                ("redirect_uri", &self.redirect_uri),
-            ])
-            .send()
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("token endpoint returned {status}: {}", truncate(&body, 2048));
-        }
-        #[derive(serde::Deserialize)]
-        struct TokenResp {
-            #[serde(default)]
-            id_token: String,
-        }
-        let tr: TokenResp = resp.json().await?;
-        if tr.id_token.is_empty() {
-            anyhow::bail!("no id_token in token response (is the openid scope enabled for the app?)");
-        }
-        Ok(tr.id_token)
-    }
-}
-
-fn valid_binding(value: &str) -> bool {
-    value.len() == BINDING_TOKEN_LEN
-        && base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(value)
-            .is_ok_and(|bytes| bytes.len() == 32)
-}
-
-/// The browser's binding for a new state: its valid binding cookie, else a fresh one. Reusing
-/// it keeps every state already started in this browser redeemable.
-pub(crate) fn browser_binding(jar: &CookieJar) -> String {
-    jar.get(BINDING_COOKIE)
-        .map(|cookie| cookie.value())
-        .filter(|value| valid_binding(value))
-        .map(str::to_owned)
-        .unwrap_or_else(crate::store::new_token)
-}
-
-pub(crate) fn binding_set_cookie(binding: &str, secure: bool) -> axum::http::HeaderValue {
-    let secure = if secure { "; Secure" } else { "" };
-    axum::http::HeaderValue::from_str(&format!(
-        "{BINDING_COOKIE}={binding}; HttpOnly; SameSite=Lax; Path={BINDING_PATH}; Max-Age=600{secure}"
-    ))
-    .expect("generated OAuth binding is ASCII")
 }
 
 /// The two HTTP-native routes, as an axum sub-router the module `ctx.mount`s:
@@ -278,11 +93,13 @@ pub(crate) fn router(oauth: Arc<EpicOAuth>, svc: Arc<Service>, limiter: Arc<web:
             }),
         )
         .route(
-            "/accounts/epic/callback",
+            SPEC.callback_path,
             get(move |jar: CookieJar, Query(q): Query<HashMap<String, String>>| {
                 let oauth = oauth.clone();
                 let svc = svc.clone();
-                async move { handle_callback(oauth, svc, jar, q).await }
+                async move {
+                    oauth_flow::handle_callback(&oauth, &svc, &jar, &q, |outcome| complete(&svc, outcome)).await
+                }
             }),
         )
 }
@@ -343,69 +160,20 @@ async fn handle_start(
     response
 }
 
-/// Where Epic redirects back. Exchanges the code, verifies the id_token, then acts on
-/// the state's [`Intent`]: LINK to the originating session's player, LOG IN, or sign a
-/// browser in (both provisioning on first sight, which emits `player.registered`
-/// durably inside the store tx). Login and link failures redirect to `/?epic=error`
-/// exactly as Go's `handleEpicCallback`; browser failures go back to the sign-in page.
-async fn handle_callback(
-    oauth: Arc<EpicOAuth>,
-    svc: Arc<Service>,
-    jar: CookieJar,
-    q: HashMap<String, String>,
-) -> Response {
-    let code = q.get("code").cloned().unwrap_or_default();
-    let state = q.get("state").cloned().unwrap_or_default();
-    if code.is_empty() || state.is_empty() {
-        return (StatusCode::BAD_REQUEST, "missing code or state").into_response();
-    }
-    let browser_binding = jar.get(BINDING_COOKIE).map(|cookie| cookie.value());
-    let intent = match oauth.take_state(&state, browser_binding).await {
-        Ok(Some(intent)) => intent,
-        // A `WHERE`-clause miss (unknown/expired/wrong-binding/already-redeemed) is
-        // genuinely bad input — 400, unchanged.
-        Ok(None) => {
-            return (StatusCode::BAD_REQUEST, "invalid or expired state").into_response();
-        }
-        // A store outage is transient/retryable, never the browser's fault: 503, the
-        // same precedent as the `new_state` persistence failure in `handle_start`.
-        //
-        // KNOWN GAP (deliberate, out of this step's scope): `handle_callback` renders
-        // the SAME condition — Postgres down — two ways depending on which query the
-        // outage hits. Here it is a 503 body; the LINK-flow `player_by_session` below
-        // answers `Redirect::to("/?epic=error")` on `Err`, reasoning that a browser
-        // callback cannot render a status body meaningfully. Both readings are
-        // defensible and the divergence predates this change; picking ONE
-        // failure-rendering policy for this handler is a separate decision, not a
-        // drive-by here.
-        Err(err) => {
-            tracing::error!(%err, "epic callback: state redemption failed");
-            return (StatusCode::SERVICE_UNAVAILABLE, "internal error, try again")
-                .into_response();
-        }
+/// Epic's own intents once the neutral callback has redeemed the state and verified the
+/// id_token: LINK to the originating session's player or LOG IN (provisioning on first
+/// sight, which emits `player.registered` durably inside the store tx). Every failure
+/// redirects to `/?epic=error` exactly as Go's `handleEpicCallback`.
+async fn complete(svc: &Service, outcome: Outcome) -> Response {
+    let (intent, subject) = match outcome {
+        Outcome::Verified { intent, subject } => (intent, subject),
+        Outcome::Failed => return Redirect::to("/?epic=error").into_response(),
     };
-
-    let id_token = match oauth.exchange_code(&code).await {
-        Ok(t) => t,
-        Err(err) => {
-            tracing::error!(%err, "epic code exchange failed");
-            return failed(&intent);
-        }
-    };
-    let subject = match oauth.verifier.verify(&id_token).await {
-        Ok(s) => s,
-        Err(err) => {
-            tracing::warn!(%err, "epic id_token rejected");
-            return failed(&intent);
-        }
-    };
-
     let session_token = match intent {
         Intent::Link { session_token } => session_token,
-        Intent::Login => return login(&svc, &subject).await,
-        Intent::Browser { return_to, replaces } => {
-            return browser_sign_in(&oauth, &svc, &subject, &return_to, replaces.as_deref()).await;
-        }
+        Intent::Login => return login(svc, &subject).await,
+        // The neutral callback signs a browser in itself and never hands it here.
+        Intent::Browser { .. } => return Redirect::to("/?epic=error").into_response(),
     };
     // LINK flow: attach the Epic identity to the already-logged-in player.
     let p = match svc.store.player_by_session(&session_token).await {
@@ -423,7 +191,7 @@ async fn handle_callback(
             return Redirect::to("/?epic=error").into_response();
         }
     };
-    match svc.link_identity(&p.id, crate::providers::EPIC, &subject).await {
+    match svc.link_identity(&p.id, SPEC.name, &subject).await {
         Ok(_) => {}
         Err(err) if err.status == opsapi::Status::Conflict => {
             tracing::warn!(player_id = %p.id, "epic link: identity already linked to a different player");
@@ -437,30 +205,13 @@ async fn handle_callback(
     Redirect::to("/?epic=linked").into_response()
 }
 
-/// Where a failed callback sends the browser: the demo page for login and link, the
-/// sign-in page (with its `return_to`) for a browser sign-in.
-fn failed(intent: &Intent) -> Response {
-    match intent {
-        Intent::Browser { return_to, .. } => {
-            let return_to: String = url::form_urlencoded::byte_serialize(return_to.as_bytes()).collect();
-            web::see_other(&format!("{}?epic=error&return_to={return_to}", web::LOGIN))
-        }
-        Intent::Login | Intent::Link { .. } => Redirect::to("/?epic=error").into_response(),
-    }
-}
-
 /// LOGIN flow: find or create a player for this Epic identity (durable
 /// player.registered on first sight), mint a session, hand BOTH tokens back via the
 /// URL fragment for the page to pick up — the access token alone would strand the
 /// browser at its 60-minute expiry with nothing to renew from.
 async fn login(svc: &Service, subject: &str) -> Response {
     let session = match svc
-        .external_login(
-            crate::providers::EPIC,
-            subject,
-            &format!("epic:{}", short_id(subject)),
-            None,
-        )
+        .external_login(SPEC.name, subject, &SPEC.display_name(subject), None)
         .await
     {
         Ok((session, _created)) => session,
@@ -474,50 +225,6 @@ async fn login(svc: &Service, subject: &str) -> Response {
         session.token, session.refresh_token
     ))
     .into_response()
-}
-
-/// BROWSER flow: find or create the player without a player session, end the session
-/// the browser held when it started (its cookie is not sent to this path), mint a
-/// browser session and follow `return_to`.
-async fn browser_sign_in(
-    oauth: &EpicOAuth,
-    svc: &Service,
-    subject: &str,
-    return_to: &str,
-    replaces: Option<&[u8]>,
-) -> Response {
-    let return_to = web::safe_return_to(Some(return_to));
-    let fail = || failed(&Intent::Browser { return_to: return_to.to_string(), replaces: None });
-    let player = match svc
-        .external_browser_login(crate::providers::EPIC, subject, &format!("epic:{}", short_id(subject)))
-        .await
-    {
-        Ok((player, _created)) => player,
-        Err(err) => {
-            tracing::error!(%err, "epic browser sign-in failed");
-            return fail();
-        }
-    };
-    if let Some(old) = replaces {
-        if let Err(err) = svc.store.delete_browser_session_digest(old).await {
-            tracing::error!(%err, "replaced browser session delete failed");
-            return fail();
-        }
-    }
-    let minted = match svc.store.create_browser_session(&player.id).await {
-        Ok(Some(minted)) => minted,
-        // The player was deleted between the find and the mint.
-        Ok(None) => return fail(),
-        Err(err) => {
-            tracing::error!(%err, "browser session mint failed");
-            return fail();
-        }
-    };
-    let mut resp = web::see_other(return_to);
-    let h = resp.headers_mut();
-    h.append(header::SET_COOKIE, web::session_cookie(oauth.cookie_secure, &minted.token));
-    h.append(header::SET_COOKIE, web::cookie(oauth.cookie_secure, web::LOGIN_CSRF_COOKIE, "", "Strict", 0));
-    resp
 }
 
 /// Extracts the token from an `Authorization: Bearer <token>` header, or `None`.
