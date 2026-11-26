@@ -1,7 +1,8 @@
 //! The `accounts` control-plane provider: the Users & players page, the `player` entity
 //! (header, facts, the Profile & identities tab), the player search, the active-players
-//! tile, the nav counter, the operator session revocations, and the operator's Create
-//! account and Reset password, which reveal a generated password once.
+//! tile, the nav counter, the operator session revocations, the operator's Create
+//! account and Reset password, which reveal a generated password once, and the OIDC clients
+//! page with its Create client and Delete client.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -16,8 +17,11 @@ use controlplane::{
     SearchQuery, SecretReveal, SortDir, Then, DEFAULT_PANEL_DEADLINE_MS,
     DEFAULT_SEARCH_DEADLINE_MS,
 };
-use controlplane::order;
+use controlplane::{decode_field, encode_field, order, FieldValue};
+use accountsapi::grant_types;
 use opsapi::Error;
+
+use crate::clients::{canonical_grants, ClientRow, MAX_CLIENT_NAME_BYTES};
 
 use crate::providers::{EPIC, GOOGLE, GUEST, PASSWORD};
 use crate::store::{render_handle, FamilyRow, IdentityRow, PlayerListRow, PlayerListing};
@@ -50,6 +54,16 @@ pub(crate) const REVOKE_ALL: &str = "revoke-all";
 pub(crate) const REVOKE_SESSION: &str = "revoke-session";
 pub(crate) const CREATE_ACCOUNT: &str = "create-account";
 pub(crate) const RESET_PASSWORD: &str = "reset-password";
+pub(crate) const CREATE_CLIENT: &str = "create-client";
+pub(crate) const DELETE_CLIENT: &str = "delete-client";
+
+/// The OIDC clients page, its table and the client entity its rows bind.
+pub(crate) const CLIENTS_PAGE: &str = "clients";
+pub(crate) const CLIENTS: &str = "clients";
+const CLIENT_KIND: &str = "oidc_client";
+
+/// Create client's grant types field; its display name is [`FIELD_DISPLAY_NAME`].
+pub(crate) const FIELD_GRANTS: &str = "grant_types";
 
 /// Create account's form fields.
 pub(crate) const FIELD_EMAIL: &str = "email";
@@ -265,6 +279,111 @@ fn text(kind: CellKind, value: impl Into<String>) -> Cell {
     }
 }
 
+/// The client an action is bound to: its entity, a `oidc_client` ref within the id cap,
+/// checked before any statement.
+fn bound_client(entity: Option<&EntityRef>) -> Result<&str, Error> {
+    match entity {
+        Some(e) if e.kind == CLIENT_KIND && !e.id.is_empty() && e.id.len() <= accountsapi::MAX_CLIENT_ID_BYTES => {
+            Ok(&e.id)
+        }
+        Some(e) if e.kind == CLIENT_KIND => Err(Error::invalid("accounts: malformed client id")),
+        _ => Err(Error::invalid("accounts: this action needs a client")),
+    }
+}
+
+fn no_client(id: &str) -> Error {
+    Error::not_found(format!("accounts: no client {id}"))
+}
+
+fn grants_kind() -> FieldKind {
+    FieldKind::Multi(grant_types::ALL.map(String::from).to_vec())
+}
+
+/// Create client's form: the display name and the grant types, all picked by default; the
+/// id is generated.
+pub(crate) fn create_client_form() -> FormSpec {
+    let kind = grants_kind();
+    let all = FieldValue::Multi(grant_types::ALL.map(String::from).to_vec());
+    let grants = Field {
+        kind: kind.clone(),
+        default: Some(encode_field(&kind, &all)),
+        placeholder: None,
+        ..form_field(FIELD_GRANTS, "Grant types", "The ways a token may be minted for this client.", "", true)
+    };
+    FormSpec {
+        fields: vec![
+            form_field(FIELD_DISPLAY_NAME, "Display name", "Shown to operators.", "Game client", false),
+            grants,
+        ],
+        hidden: BTreeMap::new(),
+        submit_label: "Create client".to_string(),
+        note: Some("The client id is generated.".to_string()),
+        revision: None,
+        title: Some("Create OIDC client".to_string()),
+        modes: Vec::new(),
+        reason: ReasonReq::None,
+        reason_label: None,
+        reason_hint: None,
+    }
+}
+
+/// `delete-client`'s modal; `prepare` names the client and asks for its id.
+fn delete_client_spec(title: String, impact: Vec<(String, Cell)>, type_to_confirm: Option<String>) -> ConfirmSpec {
+    ConfirmSpec {
+        title,
+        body: "The client is deleted. This cannot be undone.".to_string(),
+        tone: ConfirmTone::Danger,
+        impact,
+        reason: ReasonReq::None,
+        reason_hint: None,
+        type_to_confirm,
+        confirm_label: "Delete client".to_string(),
+    }
+}
+
+fn oidc_client_row(row: &ClientRow) -> Row {
+    let mut grants = row.grant_types.iter().map(|g| text(CellKind::Ref, g.clone()));
+    let first = grants.next().unwrap_or_else(|| text(CellKind::Muted, "—"));
+    Row {
+        entity: Some(EntityRef { kind: CLIENT_KIND.to_string(), id: row.client_id.clone() }),
+        cells: vec![
+            text(CellKind::Strong, row.display_name.clone()),
+            text(CellKind::Mono, row.client_id.clone()),
+            Cell { more: grants.collect(), ..first },
+            text(CellKind::MonoMuted, row.audience.clone()),
+            text(CellKind::Dim, row.created.clone()),
+        ],
+        highlight: false,
+        item: None,
+        actions: Vec::new(),
+    }
+}
+
+/// The clients table: every client, newest first, with no pager.
+pub(crate) fn clients_body(rows: &[ClientRow]) -> PanelBody {
+    let table = DataTable {
+        columns: vec![
+            column("name", "Name", CellKind::Strong),
+            column("client_id", "Client id", CellKind::Mono),
+            Column { wrap: true, ..column("grants", "Grant types", CellKind::Ref) },
+            column("audience", "Audience", CellKind::MonoMuted),
+            column("created", "Created", CellKind::Dim),
+        ],
+        rows: rows.iter().map(oidc_client_row).collect(),
+        page: PageInfo { next_cursor: None, size: 0, total: None },
+        filters: Vec::new(),
+        search_placeholder: None,
+        selectable: false,
+        list_columns_for: None,
+        list_columns_at: 0,
+        item_noun: Some(Noun::new("client", "clients")),
+    };
+    PanelBody {
+        meta: Some(rows.len().to_string()),
+        ..PanelBody::new(Primitive::DataTable(table))
+    }
+}
+
 fn player_ref(id: &str) -> EntityRef {
     EntityRef {
         kind: KIND.to_string(),
@@ -451,31 +570,61 @@ fn manifest() -> Manifest {
     Manifest {
         module: MODULE.to_string(),
         sections: Vec::new(),
-        entries: vec![NavEntry {
-            section: "players".to_string(),
-            id: PAGE.to_string(),
-            label: "Users & players".to_string(),
-            icon: "users".to_string(),
-            order: 10,
-            page: PAGE.to_string(),
-            counter: Some(NAV_PLAYERS.to_string()),
-        }],
-        pages: vec![PageDecl {
-            id: PAGE.to_string(),
-            title: "Users & players".to_string(),
-            subtitle: "Staff and players share one account space; Lore access is a role on the \
-                       account."
-                .to_string(),
-            head_actions: vec![CREATE_ACCOUNT.to_string()],
-            tiles: Vec::new(),
-            layout: Layout::Stack(vec![PLAYERS.to_string()]),
-            params: [FILTER_KIND, FILTER_STATUS, FILTER_PROVIDER].map(str::to_string).to_vec(),
-        }],
-        entity_kinds: vec![EntityKindDecl {
-            kind: KIND.to_string(),
-            label: "Player".to_string(),
-            icon: "user".to_string(),
-        }],
+        entries: vec![
+            NavEntry {
+                section: "players".to_string(),
+                id: PAGE.to_string(),
+                label: "Users & players".to_string(),
+                icon: "users".to_string(),
+                order: 10,
+                page: PAGE.to_string(),
+                counter: Some(NAV_PLAYERS.to_string()),
+            },
+            NavEntry {
+                section: "platform".to_string(),
+                id: CLIENTS_PAGE.to_string(),
+                label: "OIDC clients".to_string(),
+                icon: "lock".to_string(),
+                order: order::platform_nav::ACCOUNTS_CLIENTS,
+                page: CLIENTS_PAGE.to_string(),
+                counter: None,
+            },
+        ],
+        pages: vec![
+            PageDecl {
+                id: PAGE.to_string(),
+                title: "Users & players".to_string(),
+                subtitle: "Staff and players share one account space; Lore access is a role on the \
+                           account."
+                    .to_string(),
+                head_actions: vec![CREATE_ACCOUNT.to_string()],
+                tiles: Vec::new(),
+                layout: Layout::Stack(vec![PLAYERS.to_string()]),
+                params: [FILTER_KIND, FILTER_STATUS, FILTER_PROVIDER].map(str::to_string).to_vec(),
+            },
+            PageDecl {
+                id: CLIENTS_PAGE.to_string(),
+                title: "OIDC clients".to_string(),
+                subtitle: "The programs players sign in through, each with the grant types it may use."
+                    .to_string(),
+                head_actions: vec![CREATE_CLIENT.to_string()],
+                tiles: Vec::new(),
+                layout: Layout::Stack(vec![CLIENTS.to_string()]),
+                params: Vec::new(),
+            },
+        ],
+        entity_kinds: vec![
+            EntityKindDecl {
+                kind: KIND.to_string(),
+                label: "Player".to_string(),
+                icon: "user".to_string(),
+            },
+            EntityKindDecl {
+                kind: CLIENT_KIND.to_string(),
+                label: "OIDC client".to_string(),
+                icon: "lock".to_string(),
+            },
+        ],
         contributions: vec![
             contribution(NAV_PLAYERS, Point::NavCounter, 0, "Users & players", "users", Some(60)),
             contribution(
@@ -509,6 +658,7 @@ fn manifest() -> Manifest {
             tab(IDENTITIES, order::player_tab::ACCOUNTS_IDENTITIES, "Linked identities"),
             tab(SESSIONS, order::player_tab::ACCOUNTS_SESSIONS, "Active sessions"),
             contribution(LABEL, Point::EntityLabel { kind: KIND.to_string() }, 0, "Player", "", None),
+            contribution(CLIENTS, Point::Page(CLIENTS_PAGE.to_string()), 10, "Clients", "", None),
         ],
         actions: vec![
             ActionDecl {
@@ -573,6 +723,28 @@ fn manifest() -> Manifest {
                 Then::Confirm(revoke_all_spec("Revoke all sessions?".to_string(), Vec::new())),
             ),
             implemented(REVOKE_SESSION, table_row(SESSIONS), "Revoke", false, ghost, Then::Invoke),
+            ActionDecl {
+                icon: "plus".to_string(),
+                ..implemented(
+                    CREATE_CLIENT,
+                    ActionPoint::PageHead(CLIENTS_PAGE.to_string()),
+                    "Create client",
+                    false,
+                    Emphasis::Primary,
+                    Then::Form(create_client_form()),
+                )
+            },
+            ActionDecl {
+                icon: "trash".to_string(),
+                ..implemented(
+                    DELETE_CLIENT,
+                    ActionPoint::RowAction(CLIENT_KIND.to_string()),
+                    "Delete client…",
+                    true,
+                    plain,
+                    Then::Confirm(delete_client_spec("Delete client?".to_string(), Vec::new(), None)),
+                )
+            },
         ],
         search: vec![SearchDecl {
             kind: KIND.to_string(),
@@ -910,6 +1082,55 @@ impl AccountsAdmin {
         Ok(Then::Confirm(reset_password_spec(format!("Reset the password of {handle}?"), impact)))
     }
 
+    async fn clients(&self) -> Result<PanelBody, Error> {
+        let rows = self.svc.store.clients().await.map_err(internal)?;
+        Ok(clients_body(&rows))
+    }
+
+    /// Create client: a generated id for the Swarog audience, named in the message. The grants
+    /// are stored in `grant_types::ALL` order.
+    async fn create_client(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let display = req.input.get(FIELD_DISPLAY_NAME).map(|d| d.trim()).unwrap_or_default();
+        if display.is_empty() {
+            return Ok(field_error(FIELD_DISPLAY_NAME, "required"));
+        }
+        if display.len() > MAX_CLIENT_NAME_BYTES {
+            return Ok(field_error(FIELD_DISPLAY_NAME, format!("at most {MAX_CLIENT_NAME_BYTES} bytes")));
+        }
+        let picked = match req.input.get(FIELD_GRANTS).map(String::as_str) {
+            None | Some("") => Vec::new(),
+            Some(raw) => match decode_field(&grants_kind(), raw) {
+                Ok(FieldValue::Multi(picked)) => picked,
+                Ok(_) => Vec::new(),
+                Err(e) => return Ok(field_error(FIELD_GRANTS, e.reason)),
+            },
+        };
+        let grants = canonical_grants(&picked);
+        if grants.is_empty() {
+            return Ok(field_error(FIELD_GRANTS, "pick at least one grant type"));
+        }
+        let client_id = self.svc.store.insert_client(display, &grants).await.map_err(internal)?;
+        Ok(done(&format!("Client created — {client_id}")))
+    }
+
+    async fn delete_client(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let id = bound_client(req.entity.as_ref())?;
+        if self.svc.store.delete_client(id).await.map_err(internal)? {
+            Ok(done("Client deleted"))
+        } else {
+            Err(no_client(id))
+        }
+    }
+
+    /// The Delete client modal, naming the client; its id is the type-to-confirm token.
+    async fn prepare_delete_client(&self, req: &PrepareCall) -> Result<Then, Error> {
+        let id = bound_client(req.entity.as_ref())?;
+        let row = self.svc.store.client(id).await.map_err(internal)?.ok_or_else(|| no_client(id))?;
+        let impact = vec![("Client id".to_string(), text(CellKind::Mono, row.client_id.clone()))];
+        let title = format!("Delete client {}?", row.display_name);
+        Ok(Then::Confirm(delete_client_spec(title, impact, Some(row.client_id))))
+    }
+
     /// Each requested player's handle, keyed by id; an id naming no player is left out.
     async fn labels(&self, req: &PanelQuery) -> Result<Primitive, Error> {
         let players = self.svc.store.players_by_id(&req.refs).await.map_err(internal)?;
@@ -1029,6 +1250,7 @@ impl Provider for AccountsAdmin {
             IDENTITIES => self.identities(&req).await,
             SESSIONS => self.sessions(&req).await,
             LABEL => self.labels(&req).await.map(PanelBody::new),
+            CLIENTS => self.clients().await,
             other => Err(Error::not_found(format!(
                 "{MODULE} has no contribution {other:?}"
             ))),
@@ -1070,6 +1292,8 @@ impl Provider for AccountsAdmin {
             REVOKE_ALL => self.revoke_all(&req).await,
             CREATE_ACCOUNT => self.create_account(&req).await,
             RESET_PASSWORD => self.reset_password(&req).await,
+            CREATE_CLIENT => self.create_client(&req).await,
+            DELETE_CLIENT => self.delete_client(&req).await,
             SUSPEND | DELETE_ACCOUNT | SUSPEND_HEADER => {
                 Err(Error::forbidden("not implemented yet"))
             }
@@ -1082,6 +1306,7 @@ impl Provider for AccountsAdmin {
             REVOKE_ALL => self.prepare_revoke_all(&req).await,
             CREATE_ACCOUNT => Ok(Then::Form(create_form())),
             RESET_PASSWORD => self.prepare_reset_password(&req).await,
+            DELETE_CLIENT => self.prepare_delete_client(&req).await,
             other => Err(Error::not_found(format!("{MODULE} prepares no action {other:?}"))),
         }
     }

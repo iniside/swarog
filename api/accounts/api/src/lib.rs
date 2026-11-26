@@ -61,6 +61,30 @@ macro_rules! default_front_origin {
 /// own front door. A launcher whose accounts sits behind another port sets the variable.
 pub const DEFAULT_OIDC_ISSUER: &str = concat!(crate::default_front_origin!(), "/accounts/oidc");
 
+/// The audience of a token issued for the Swarog game API: the audience of the dev client
+/// and of every client the admin portal creates.
+pub const SWAROG_AUDIENCE: &str = "swarog";
+
+/// The client the explicit-only `ACCOUNTS_DEV_SEED` inserts when absent on a dev or proof
+/// boot, listing every grant in [`grant_types::ALL`] and the [`SWAROG_AUDIENCE`].
+pub const DEV_GAME_CLIENT_ID: &str = "dev-game";
+
+/// Maximum accepted OIDC client id size in bytes, checked before any lookup. A generated id
+/// is `c_` and 22 base64url characters.
+pub const MAX_CLIENT_ID_BYTES: usize = 64;
+
+/// The grant types an OIDC client lists: the ways a token may be minted for it.
+pub mod grant_types {
+    /// Email and password register and login.
+    pub const PASSWORD: &str = "password";
+    /// Guest creation and a returning guest's login.
+    pub const GUEST: &str = "guest";
+    /// Refresh-token rotation.
+    pub const REFRESH_TOKEN: &str = "refresh_token";
+    /// Every grant type, in the order a client stores and the portal offers them.
+    pub const ALL: [&str; 3] = [PASSWORD, GUEST, REFRESH_TOKEN];
+}
+
 /// Epic's whole environment surface: every variable accounts' provider parse reads for
 /// epic. Presence of ANY of these means the operator is configuring epic, including the
 /// browser-flow keys, so accounts rejects a malformed browser-flow endpoint even when

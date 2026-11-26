@@ -32,6 +32,7 @@
 //! transaction — the event is durable iff the player row is.
 
 mod admin;
+mod clients;
 pub mod conformance;
 mod discovery;
 mod epic_oauth;
@@ -247,6 +248,16 @@ CREATE TABLE IF NOT EXISTS accounts.browser_sessions (
 	csrf_token   text        NOT NULL,
 	created_at   timestamptz NOT NULL DEFAULT now(),
 	expires_at   timestamptz NOT NULL
+);
+
+-- A program tokens are issued to, created and deleted in the admin portal or seeded as
+-- the dev client.
+CREATE TABLE IF NOT EXISTS accounts.oidc_clients (
+	client_id    text PRIMARY KEY,
+	display_name text        NOT NULL CHECK (display_name <> ''),
+	grant_types  text[]      NOT NULL CHECK (cardinality(grant_types) > 0),
+	audience     text        NOT NULL,
+	created_at   timestamptz NOT NULL DEFAULT now()
 );
 "#;
 
@@ -1489,6 +1500,7 @@ pub struct Accounts {
     web_limiter_reaper: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     signing_kek: OnceLock<signing_keys::SigningKek>,
     issuer: OnceLock<String>,
+    dev_seed: OnceLock<bool>,
 }
 
 impl Default for Accounts {
@@ -1505,6 +1517,7 @@ impl Accounts {
             web_limiter_reaper: std::sync::Mutex::new(None),
             signing_kek: OnceLock::new(),
             issuer: OnceLock::new(),
+            dev_seed: OnceLock::new(),
         }
     }
 
@@ -1607,7 +1620,11 @@ impl Accounts {
             );
         }
         refuse_stale_oauth_states(pool, "accounts").await?;
-        signing_keys::migrate_signing_keys(pool, SIGNING_KEYS_SCHEMA, &kek).await
+        signing_keys::migrate_signing_keys(pool, SIGNING_KEYS_SCHEMA, &kek).await?;
+        if self.dev_seed.get().copied().unwrap_or(false) {
+            clients::seed_dev_client(pool).await?;
+        }
+        Ok(())
     }
 
     fn svc(&self) -> Arc<Service> {
@@ -1825,6 +1842,13 @@ impl Module for Accounts {
             .issuer
             .get()
             .ok_or_else(|| anyhow::anyhow!("accounts.register must run before init"))?;
+        if *self.dev_seed.get_or_init(|| clients::dev_seed_from(std::env::var_os(clients::DEV_SEED_ENV))) {
+            tracing::warn!(
+                "ACCOUNTS_DEV_SEED is ON — inserting the well-known client `{}` if absent; \
+                 never enable it in production, where clients come from the admin portal",
+                accountsapi::DEV_GAME_CLIENT_ID
+            );
+        }
         self.init_with(ctx, config, cookie_secure, trusted, issuer)
     }
 
@@ -1885,11 +1909,13 @@ pub fn argon2_params_for_parity_test() -> (u32, u32, u32, usize) {
 /// unset/empty returns `default`.
 fn env_bool(key: &str, default: bool) -> bool {
     match std::env::var(key) {
-        Ok(v) if !v.is_empty() => {
-            v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("on")
-        }
+        Ok(v) if !v.is_empty() => truthy(&v),
         _ => default,
     }
+}
+
+fn truthy(v: &str) -> bool {
+    v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("on")
 }
 
 // ============================================================================

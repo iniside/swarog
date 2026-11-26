@@ -4,6 +4,7 @@
 /// `NavEntry` in the `platform` section.
 pub mod platform_nav {
     pub const APIKEYS: i32 = 10;
+    pub const ACCOUNTS_CLIENTS: i32 = 15;
     pub const MAIL: i32 = 20;
     pub const SCHEDULER: i32 = 30;
     pub const CONFIG: i32 = 40;

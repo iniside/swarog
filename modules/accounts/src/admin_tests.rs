@@ -356,7 +356,9 @@ fn manifest_declares_only_the_actions_the_portal_can_refuse() {
         ids,
         [
             "create-account",
+            "create-client",
             "delete-account",
+            "delete-client",
             "reset-password",
             "revoke-all",
             "revoke-session",

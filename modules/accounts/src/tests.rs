@@ -629,7 +629,7 @@ async fn third_login_queues_and_thirty_third_is_shed() {
 use testdb::test_pool;
 
 /// Migrate's closing check fails while any committed player lacks a claim; hold for write while committing one.
-static GHOST_PLAYER: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+pub(crate) static GHOST_PLAYER: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
 
 /// The KEK every test that migrates schema `accounts` seals with, so a test run and a dev
 /// fleet on the same database open each other's keys.
