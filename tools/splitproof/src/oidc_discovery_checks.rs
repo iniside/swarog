@@ -7,23 +7,32 @@
 //! - [SK2] that `jwks_uri`, fetched exactly as served (not rebuilt from the front), answers 200 with a
 //!   `keys` array, so the issuer a launcher pins resolves to the front that serves it.
 //! - [SK3] the JWKS holds exactly one key, a public ES256 P-256 signing key with no private member, and
-//!   its `kid` is the one `active` row of `accounts.signing_keys` with no `retiring` row beside it.
-//! - [SK4] (split only) after accounts-svc is killed and respawned from its canonical spec, the JWKS
-//!   through gateway-svc still serves that one key, and the table still holds that one active row: the
-//!   new process kept the stored key instead of minting one at boot. The old process is gone before the
-//!   respawn (`Running`'s drop kills and waits), so its cache cannot serve the answer.
+//!   its `kid` is the one `active` row of `accounts.signing_keys` with no `retiring` row beside it;
+//!   that row's stored `public_jwk` has no private member either.
+//! - [SK4] (split only) after accounts-svc is killed and respawned from its canonical spec, the JWKS at
+//!   the pinned issuer's `/jwks` (gateway-svc) still serves that one key, and the table still holds that
+//!   one active row: the new process kept the stored key instead of minting one at boot. The old process
+//!   is gone before the respawn (`Running`'s drop kills and waits), so its cache cannot serve the
+//!   answer. When [SK3] is red there is no kid to compare, so the pass records "[SK4] not run" red
+//!   instead of skipping it.
+//! - [SK0] / [SK0m] report only a fault no check records: a transport error, an unreadable body, or a
+//!   failed read of `accounts.signing_keys`. A discovery document without a `jwks_uri` still records
+//!   [SK2] and [SK3] red.
 //!
 //! The split pass runs after [REPLICAS] and before [LV2], so the respawned accounts-svc is in the
 //! liveness sweep and no earlier check meets a gateway connection to the killed process.
 //!
-//! Break run (a full splitproof run, then reverted): the JWKS route mounted at
-//! `/accounts/oidc/jwks-break-run` instead of `JWKS` (`modules/accounts/src/discovery.rs`), run
-//! splitproof-90564: SK2, SK3, SK0, SK2m, SK3m and SK0m red as new (`code=404` at the served
-//! `jwks_uri`), SK1 and SK1m green, so [SK4] did not run (2026-11-26, step 4).
+//! Break runs (each a full splitproof run, then reverted; 2026-11-26, step 4):
+//! - The JWKS route mounted at `/accounts/oidc/jwks-break-run` instead of `JWKS`
+//!   (`modules/accounts/src/discovery.rs`), run splitproof-65188: SK2, SK3, "[SK4] not run", SK2m and
+//!   SK3m red as the only new reds (`code=404` at the served `jwks_uri`), SK1 and SK1m green, no SK0.
+//! - `ensure_active_key` (`modules/accounts/src/signing_keys.rs`) retiring the active row before it
+//!   ensures one, so every boot mints a new key, run splitproof-91936: [SK4] the only new red
+//!   (`before` and the respawned `kid` differ), SK1-SK3 and SK1m-SK3m green.
 
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde_json::Value;
 use sqlx::PgPool;
 use splitproof::Running;
@@ -42,13 +51,17 @@ pub(super) async fn split(ctx: &Ctx, pool: &PgPool, fleet: &mut Vec<Running>, p:
     println!("\n[splitproof] === [SK] OIDC discovery and JWKS through gateway-svc ===");
     let g = format!("http://127.0.0.1:{}", ctx.http_port("gateway-svc"));
     let kid = match served_key(ctx, pool, p, &g, processctl::PROOF_ACCOUNTS_ISSUER_SPLIT, "").await {
-        Ok(kid) => kid,
+        Ok(Some(kid)) => kid,
+        Ok(None) => {
+            p.check("[SK4] not run: [SK3] red", false, "accounts-svc not restarted: no served kid to compare");
+            return;
+        }
         Err(e) => {
             p.check("[SK0] OIDC discovery and JWKS pass completes", false, format!("{e:#}"));
             return;
         }
     };
-    if let Err(e) = restart_keeps_kid(ctx, pool, fleet, p, &g, &kid).await {
+    if let Err(e) = restart_keeps_kid(ctx, pool, fleet, p, &kid).await {
         p.check("[SK4] accounts-svc restart keeps the signing key", false, format!("{e:#}"));
     }
 }
@@ -60,8 +73,16 @@ pub(super) async fn monolith(ctx: &Ctx, pool: &PgPool, p: &mut Proof, m: &str) {
     }
 }
 
-/// [SK1]-[SK3] on `front`; the served `kid` once [SK3] passes.
-async fn served_key(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, issuer: &str, tag: &str) -> Result<String> {
+/// [SK1]-[SK3] on `front`: the served `kid` once [SK3] passes, `None` when [SK3] recorded the failure,
+/// and `Err` only for a fault no check records (a transport error, an unreadable body, the table read).
+async fn served_key(
+    ctx: &Ctx,
+    pool: &PgPool,
+    p: &mut Proof,
+    front: &str,
+    issuer: &str,
+    tag: &str,
+) -> Result<Option<String>> {
     let (code, doc) = get_json(ctx, &format!("{front}{DISCOVERY}")).await?;
     let served_issuer = doc.get("issuer").and_then(Value::as_str).unwrap_or_default().to_string();
     let jwks_uri = doc.get("jwks_uri").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -71,11 +92,12 @@ async fn served_key(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, issuer
         code == 200 && served_issuer == issuer && jwks_uri == want_uri,
         format!("code={code} issuer={served_issuer} jwks_uri={jwks_uri}"),
     );
-    if jwks_uri.is_empty() {
-        bail!("discovery served no jwks_uri (code={code})");
-    }
 
-    let (code, set) = get_json(ctx, &jwks_uri).await?;
+    // No served `jwks_uri`: nothing to fetch, so [SK2] and [SK3] record red on `code=0` and no keys.
+    let (code, set) = match jwks_uri.as_str() {
+        "" => (0, Value::Null),
+        uri => get_json(ctx, uri).await?,
+    };
     let keys = set.get("keys").and_then(Value::as_array).cloned();
     p.check(
         &format!("[SK2{tag}] GET the served jwks_uri -> 200 + a keys array"),
@@ -91,19 +113,16 @@ async fn served_key(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, issuer
         ok,
         detail,
     );
-    if !ok {
-        bail!("[SK3{tag}] failed; no kid to carry");
-    }
-    Ok(kid)
+    Ok(ok.then_some(kid))
 }
 
-/// [SK4]: kill accounts-svc, respawn it from its canonical spec, and read the JWKS through gateway-svc.
+/// [SK4]: kill accounts-svc, respawn it from its canonical spec, and read the JWKS at the pinned split
+/// issuer, which is gateway-svc's front.
 async fn restart_keeps_kid(
     ctx: &Ctx,
     pool: &PgPool,
     fleet: &mut Vec<Running>,
     p: &mut Proof,
-    g: &str,
     kid: &str,
 ) -> Result<()> {
     let idx = fleet
@@ -120,7 +139,7 @@ async fn restart_keeps_kid(
     fleet.insert(idx, running);
     println!("[splitproof] accounts-svc respawned on :{}", spec.http_port);
 
-    let url = format!("{g}/accounts/oidc/jwks");
+    let url = format!("{}/jwks", processctl::PROOF_ACCOUNTS_ISSUER_SPLIT);
     let deadline = Instant::now() + RESPAWN_BUDGET;
     let (code, set) = loop {
         let answer = get_json(ctx, &url).await;
@@ -140,37 +159,63 @@ async fn restart_keeps_kid(
     Ok(())
 }
 
-/// Whether `keys` is exactly one public ES256 key and `stored` exactly one `active` row with its `kid`;
-/// the served `kid` and the detail either way.
-fn one_stored_key(keys: &[Value], stored: &[(String, String)]) -> (bool, String, String) {
+/// Whether `keys` is exactly one public ES256 key and `stored` exactly one `active` row with its `kid`,
+/// no stored `public_jwk` holding a private member; the served `kid` and the detail either way.
+fn one_stored_key(keys: &[Value], stored: &[StoredKey]) -> (bool, String, String) {
     let member = |key: &Value, name: &str| key.get(name).and_then(Value::as_str).unwrap_or_default().to_string();
     let key = keys.first().cloned().unwrap_or(Value::Null);
     let kid = member(&key, "kid");
     let (kty, crv, alg, use_) = (member(&key, "kty"), member(&key, "crv"), member(&key, "alg"), member(&key, "use"));
     let coords = !member(&key, "x").is_empty() && !member(&key, "y").is_empty();
-    let private: Vec<&str> = PRIVATE_MEMBERS.iter().copied().filter(|name| key.get(*name).is_some()).collect();
+    let private = private_members(&key);
+    let rows: Vec<(&str, &str)> = stored.iter().map(|row| (row.kid.as_str(), row.status.as_str())).collect();
+    let stored_private: Vec<(&str, Vec<&str>)> = stored
+        .iter()
+        .map(|row| (row.kid.as_str(), private_members(&row.public_jwk)))
+        .filter(|(_, members)| !members.is_empty())
+        .collect();
     let ok = keys.len() == 1
         && !kid.is_empty()
         && (kty.as_str(), crv.as_str(), alg.as_str(), use_.as_str()) == ("EC", "P-256", "ES256", "sig")
         && coords
         && private.is_empty()
-        && stored.len() == 1
-        && stored[0] == (kid.clone(), "active".to_string());
+        && rows == [(kid.as_str(), "active")]
+        && stored_private.is_empty();
     let detail = format!(
-        "keys={} kid={kid} kty={kty} crv={crv} alg={alg} use={use_} x_y={coords} private={private:?} stored={stored:?}",
+        "keys={} kid={kid} kty={kty} crv={crv} alg={alg} use={use_} x_y={coords} private={private:?} \
+         stored={rows:?} stored_private={stored_private:?}",
         keys.len()
     );
     (ok, kid, detail)
 }
 
+/// The members of `jwk` that only a private key fills.
+fn private_members(jwk: &Value) -> Vec<&'static str> {
+    PRIVATE_MEMBERS.iter().copied().filter(|name| jwk.get(*name).is_some()).collect()
+}
+
+/// One `active` or `retiring` row of `accounts.signing_keys`.
+struct StoredKey {
+    kid: String,
+    status: String,
+    public_jwk: Value,
+}
+
 /// Every `active` and `retiring` row of `accounts.signing_keys`, the rows the JWKS serves.
-async fn stored_keys(pool: &PgPool) -> Result<Vec<(String, String)>> {
-    sqlx::query_as::<_, (String, String)>(
-        "SELECT kid, status FROM accounts.signing_keys WHERE status IN ('active', 'retiring') ORDER BY kid",
+async fn stored_keys(pool: &PgPool) -> Result<Vec<StoredKey>> {
+    let rows = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT kid, status, public_jwk::text FROM accounts.signing_keys \
+         WHERE status IN ('active', 'retiring') ORDER BY kid",
     )
     .fetch_all(pool)
     .await
-    .context("read accounts.signing_keys")
+    .context("read accounts.signing_keys")?;
+    rows.into_iter()
+        .map(|(kid, status, jwk)| {
+            let public_jwk = serde_json::from_str(&jwk).with_context(|| format!("parse the public_jwk of {kid}"))?;
+            Ok(StoredKey { kid, status, public_jwk })
+        })
+        .collect()
 }
 
 /// The status and JSON body of a GET; a body that is not JSON reads as `null`.
