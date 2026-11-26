@@ -8,7 +8,7 @@ const SECURE: bool = true;
 
 async fn serve_web(svc: Arc<Service>, trusted: &str, limiter: Arc<httpmw::IpLimiter>) -> String {
     let trusted = httpmw::parse_cidrs(trusted).unwrap();
-    let hosted = web::Web::new(svc, SECURE, web::LoginLimiter::new(limiter, trusted), None).unwrap();
+    let hosted = web::Web::new(svc, SECURE, web::LoginLimiter::new(limiter, trusted), web::Flows::default()).unwrap();
     let app = web::router(Arc::new(hosted));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

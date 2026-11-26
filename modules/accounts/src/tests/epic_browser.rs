@@ -64,7 +64,8 @@ async fn serve(svc: Arc<Service>, oauth: Arc<EpicOAuth>) -> String {
 /// `serve` with the given sign-in bucket, shared by both mounts as in `init`.
 async fn serve_limited(svc: Arc<Service>, oauth: Arc<EpicOAuth>, limiter: Arc<httpmw::IpLimiter>) -> String {
     let limiter = web::LoginLimiter::new(limiter, Vec::new());
-    let hosted = web::Web::new(svc.clone(), false, limiter.clone(), Some(oauth.clone())).unwrap();
+    let flows = web::Flows { epic: Some(oauth.clone()), google: None };
+    let hosted = web::Web::new(svc.clone(), false, limiter.clone(), flows).unwrap();
     let app = web::router(Arc::new(hosted)).merge(epic_oauth::router(oauth, svc, limiter));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

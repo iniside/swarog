@@ -12,8 +12,11 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::Query;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::Router;
 use axum_extra::extract::CookieJar;
 use base64::Engine as _;
 use sqlx::PgPool;
@@ -81,6 +84,7 @@ pub(crate) enum Outcome {
 
 /// The confidential client's credentials and endpoints, already validated by the
 /// provider's config parse.
+#[derive(Clone)]
 pub(crate) struct ClientConfig {
     pub client_id: String,
     pub client_secret: String,
@@ -103,6 +107,11 @@ pub(crate) struct OAuthFlow {
 }
 
 impl OAuthFlow {
+    /// The identity provider this flow signs in with.
+    pub(crate) fn provider(&self) -> &'static str {
+        self.spec.name
+    }
+
     /// `cookie_secure` is the accounts-wide `ACCOUNTS_COOKIE_SECURE` rule.
     pub(crate) fn new(
         spec: &'static ProviderSpec,
@@ -305,6 +314,28 @@ pub(crate) fn binding_set_cookie(binding: &str, secure: bool) -> HeaderValue {
         "{BINDING_COOKIE}={binding}; HttpOnly; SameSite=Lax; Path={BINDING_PATH}; Max-Age=600{secure}"
     ))
     .expect("generated OAuth binding is ASCII")
+}
+
+/// The callback route of a provider whose only intent is `Browser` (Google). The
+/// `oauth_states_epic_only` CHECK keeps every other intent out of its rows, so its hook
+/// answers only a row that got past that CHECK.
+pub(crate) fn browser_router(flow: Arc<OAuthFlow>, svc: Arc<Service>) -> Router {
+    let path = flow.spec.callback_path;
+    Router::new().route(
+        path,
+        get(move |jar: CookieJar, Query(q): Query<HashMap<String, String>>| {
+            let flow = flow.clone();
+            let svc = svc.clone();
+            async move {
+                let provider = flow.spec.name;
+                handle_callback(&flow, &svc, &jar, &q, |_| async move {
+                    tracing::error!("{provider} callback: state row with a non-browser intent");
+                    (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+                })
+                .await
+            }
+        }),
+    )
 }
 
 /// Where the provider redirects back. Redeems the state, exchanges the code and verifies

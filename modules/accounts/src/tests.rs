@@ -6,6 +6,7 @@ mod browser_session;
 mod delete;
 mod directory;
 mod epic_browser;
+mod google_browser;
 mod guest;
 mod hosted_login;
 mod last_used;

@@ -1,6 +1,6 @@
 //! The hosted browser pages under `/accounts/oidc`: the email-and-password sign-in form
-//! with "Continue with Epic" when Epic web OAuth is configured, the signed-in landing page
-//! and logout. A successful sign-in mints a browser session (`session.rs`), never a
+//! with "Continue with Epic" and "Continue with Google", each shown when that provider's
+//! web OAuth is configured, the signed-in landing page and logout. A successful sign-in mints a browser session (`session.rs`), never a
 //! player bearer.
 
 pub(crate) mod session;
@@ -19,7 +19,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use crate::epic_oauth::EpicOAuth;
-use crate::oauth_flow::{self, Intent};
+use crate::oauth_flow::{self, Intent, OAuthFlow};
 use crate::{normalize_email, Service};
 
 pub(crate) const PREFIX: &str = "/accounts/oidc";
@@ -33,6 +33,7 @@ const GENERIC_LOGIN_ERROR: &str = "Invalid email or password.";
 const EXPIRED_FORM_ERROR: &str = "The sign-in form expired. Please try again.";
 const BUSY_ERROR: &str = "Sign-in is busy. Please try again in a moment.";
 const EPIC_ERROR: &str = "Sign-in with Epic failed. Please try again.";
+const GOOGLE_ERROR: &str = "Sign-in with Google failed. Please try again.";
 
 const TOKENS_CSS: &str = include_str!("../../../../UILayout/design-system/tokens.css");
 const BUNDLE_CSS: &str = include_str!("../../../../UILayout/design-system/components/bundle.css");
@@ -88,14 +89,21 @@ impl LoginLimiter {
     }
 }
 
+/// The web OAuth flows the sign-in form starts, each `Some` when that provider is configured.
+#[derive(Default)]
+pub(crate) struct Flows {
+    pub(crate) epic: Option<Arc<EpicOAuth>>,
+    pub(crate) google: Option<Arc<OAuthFlow>>,
+}
+
 /// What the hosted pages share: the service, the templates, the per-IP login limiter and
-/// the Epic web OAuth flow when it is configured.
+/// the configured web OAuth flows.
 pub(crate) struct Web {
     svc: Arc<Service>,
     env: minijinja::Environment<'static>,
     cookie_secure: bool,
     limiter: Arc<LoginLimiter>,
-    epic: Option<Arc<EpicOAuth>>,
+    flows: Flows,
 }
 
 impl Web {
@@ -103,7 +111,7 @@ impl Web {
         svc: Arc<Service>,
         cookie_secure: bool,
         limiter: Arc<LoginLimiter>,
-        epic: Option<Arc<EpicOAuth>>,
+        flows: Flows,
     ) -> anyhow::Result<Web> {
         let mut env = minijinja::Environment::new();
         for (name, source) in [
@@ -113,7 +121,7 @@ impl Web {
         ] {
             env.add_template(name, source)?;
         }
-        Ok(Web { svc, env, cookie_secure, limiter, epic })
+        Ok(Web { svc, env, cookie_secure, limiter, flows })
     }
 
     /// The per-IP sign-in limiter both form POSTs check first: `Some` is the 429 form.
@@ -144,7 +152,13 @@ impl Web {
     fn render_login(&self, jar: &CookieJar, status: StatusCode, error: &str, return_to: &str) -> Response {
         let existing = jar.get(LOGIN_CSRF_COOKIE).map(|c| c.value()).filter(|v| well_formed_token(v));
         let csrf = existing.map_or_else(crate::store::new_token, str::to_string);
-        let view = LoginView { error, csrf: &csrf, return_to, epic: self.epic.is_some() };
+        let view = LoginView {
+            error,
+            csrf: &csrf,
+            return_to,
+            epic: self.flows.epic.is_some(),
+            google: self.flows.google.is_some(),
+        };
         let mut resp = self.render("login.html", status, view);
         resp.headers_mut().append(header::SET_COOKIE, self.login_csrf_cookie(&csrf));
         resp
@@ -177,6 +191,7 @@ struct LoginView<'a> {
     csrf: &'a str,
     return_to: &'a str,
     epic: bool,
+    google: bool,
 }
 
 #[derive(Serialize)]
@@ -190,6 +205,7 @@ struct LandingView<'a> {
 struct LoginQuery {
     return_to: Option<String>,
     epic: Option<String>,
+    google: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -203,7 +219,7 @@ struct LoginForm {
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
-struct EpicForm {
+struct StartForm {
     csrf: String,
     return_to: String,
 }
@@ -222,6 +238,7 @@ pub(crate) fn router(web: Arc<Web>) -> Router {
         .route(LANDING, get(landing))
         .route(LOGIN, get(login_page).post(login_submit))
         .route("/accounts/oidc/epic", post(epic_start))
+        .route("/accounts/oidc/google", post(google_start))
         .route("/accounts/oidc/logout", post(logout))
         .route("/accounts/oidc/assets/tokens.css", get(|| css(TOKENS_CSS)))
         .route("/accounts/oidc/assets/bundle.css", get(|| css(BUNDLE_CSS)))
@@ -332,7 +349,13 @@ async fn login_page(
     Query(q): Query<LoginQuery>,
 ) -> Response {
     let return_to = safe_return_to(q.return_to.as_deref());
-    let error = if q.epic.as_deref() == Some("error") { EPIC_ERROR } else { "" };
+    let error = if q.epic.as_deref() == Some("error") {
+        EPIC_ERROR
+    } else if q.google.as_deref() == Some("error") {
+        GOOGLE_ERROR
+    } else {
+        ""
+    };
     match web.signed_in(&jar).await {
         Ok(Some(_)) => see_other(return_to),
         Ok(None) => web.render_login(&jar, StatusCode::OK, error, return_to),
@@ -395,25 +418,50 @@ async fn login_submit(
     resp
 }
 
-/// `POST /accounts/oidc/epic` — per-IP limiter, login-CSRF double submit, then a `browser`
-/// state row and a 303 to the Epic authorize URL. 404 when Epic web OAuth is not configured.
+/// `POST /accounts/oidc/epic` — the Epic start: [`oauth_start`] over the Epic flow.
 async fn epic_start(
     State(web): State<Arc<Web>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     jar: CookieJar,
-    Form(form): Form<EpicForm>,
+    Form(form): Form<StartForm>,
+) -> Response {
+    let flow = web.flows.epic.as_deref().map(|epic| &**epic);
+    oauth_start(&web, flow, peer, &headers, &jar, form).await
+}
+
+/// `POST /accounts/oidc/google` — the Google start: [`oauth_start`] over the Google flow.
+async fn google_start(
+    State(web): State<Arc<Web>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    jar: CookieJar,
+    Form(form): Form<StartForm>,
+) -> Response {
+    oauth_start(&web, web.flows.google.as_deref(), peer, &headers, &jar, form).await
+}
+
+/// The form start every provider shares: per-IP limiter, 404 when `flow` is not
+/// configured, login-CSRF double submit, then a `browser` state row and a 303 to the
+/// provider's authorize URL with the binding cookie.
+async fn oauth_start(
+    web: &Web,
+    flow: Option<&OAuthFlow>,
+    peer: SocketAddr,
+    headers: &HeaderMap,
+    jar: &CookieJar,
+    form: StartForm,
 ) -> Response {
     let return_to = safe_return_to(Some(&form.return_to));
-    if let Some(busy) = web.limited(peer, &headers, &jar, return_to) {
+    if let Some(busy) = web.limited(peer, headers, jar, return_to) {
         return busy;
     }
-    let Some(epic) = web.epic.clone() else {
+    let Some(flow) = flow else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let cookie_csrf = jar.get(LOGIN_CSRF_COOKIE).map(|c| c.value()).unwrap_or("");
     if cookie_csrf.is_empty() || !ct_eq(cookie_csrf.as_bytes(), form.csrf.as_bytes()) {
-        return web.render_login(&jar, StatusCode::FORBIDDEN, EXPIRED_FORM_ERROR, return_to);
+        return web.render_login(jar, StatusCode::FORBIDDEN, EXPIRED_FORM_ERROR, return_to);
     }
     // The callback path never receives this cookie, so the state carries the session it replaces.
     let replaces = jar
@@ -421,23 +469,24 @@ async fn epic_start(
         .map(|c| c.value())
         .filter(|token| crate::session_token_within_cap(token))
         .map(session::digest);
-    let binding = oauth_flow::browser_binding(&jar);
+    let binding = oauth_flow::browser_binding(jar);
     let intent = Intent::Browser { return_to: return_to.to_string(), replaces };
-    let state = match epic.new_state(intent, binding.clone()).await {
+    let provider = flow.provider();
+    let state = match flow.new_state(intent, binding.clone()).await {
         Ok(state) => state,
         Err(e) => {
-            tracing::error!(err = %e, "epic browser start: state persistence failed");
-            return web.render_login(&jar, StatusCode::SERVICE_UNAVAILABLE, BUSY_ERROR, return_to);
+            tracing::error!(err = %e, "{provider} browser start: state persistence failed");
+            return web.render_login(jar, StatusCode::SERVICE_UNAVAILABLE, BUSY_ERROR, return_to);
         }
     };
-    let location = match epic.authorize_url_for(&state).map(|url| HeaderValue::from_str(&url)) {
+    let location = match flow.authorize_url_for(&state).map(|url| HeaderValue::from_str(&url)) {
         Ok(Ok(location)) => location,
         Ok(Err(e)) => {
-            tracing::error!(err = %e, "epic browser start: authorize url is not a header value");
+            tracing::error!(err = %e, "{provider} browser start: authorize url is not a header value");
             return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
         Err(e) => {
-            tracing::error!(err = %e, "epic browser start: authorize url build failed");
+            tracing::error!(err = %e, "{provider} browser start: authorize url build failed");
             return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     };

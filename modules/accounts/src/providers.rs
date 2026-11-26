@@ -19,7 +19,7 @@ use std::sync::{Arc, LazyLock};
 use async_trait::async_trait;
 
 use crate::guest::guest_credentials;
-use crate::oauth_flow::{ClientConfig, ProviderSpec};
+use crate::oauth_flow::{ClientConfig, OAuthFlow, ProviderSpec};
 use crate::oidc::{short_id, IssuerMatch, OidcVerifier};
 use crate::store::Store;
 
@@ -184,6 +184,25 @@ pub(crate) struct GoogleConfig {
     /// `Some` iff `GOOGLE_CLIENT_SECRET` enables the browser sign-in flow, which reuses
     /// [`GoogleConfig::verifier`]. The endpoint VALUES are validated either way.
     pub(crate) oauth: Option<GoogleOAuthConfig>,
+}
+
+impl GoogleConfig {
+    /// Google's browser sign-in flow over the shared verifier, `Some` iff
+    /// `GOOGLE_CLIENT_SECRET` enabled it. `cookie_secure` is the accounts-wide
+    /// `ACCOUNTS_COOKIE_SECURE` rule.
+    pub(crate) fn browser_flow(&self, pool: &sqlx::PgPool, cookie_secure: bool) -> anyhow::Result<Option<OAuthFlow>> {
+        let Some(oauth) = &self.oauth else {
+            return Ok(None);
+        };
+        let flow = OAuthFlow::new(
+            &GOOGLE_SPEC,
+            oauth.client.clone(),
+            self.verifier.clone(),
+            pool.clone(),
+            cookie_secure,
+        )?;
+        Ok(Some(flow))
+    }
 }
 
 /// The validated browser-flow half of Google's configuration. Its client id is
