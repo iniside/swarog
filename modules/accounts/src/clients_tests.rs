@@ -3,12 +3,10 @@
 use std::ffi::OsString;
 
 use accountsapi::{grant_types, DEV_GAME_CLIENT_ID, MAX_CLIENT_ID_BYTES, SWAROG_AUDIENCE};
-use lifecycle::{Context, Module as _};
 use testdb::test_pool;
 
-use super::{canonical_grants, dev_seed_from, new_client_id, seed_dev_client};
-use crate::tests::{dev_kek, wired, GHOST_PLAYER};
-use crate::Accounts;
+use super::{canonical_grants, dev_seed_from, migrate_dev_seed, new_client_id, seed_dev_client};
+use crate::tests::wired;
 
 #[test]
 fn dev_seed_is_on_only_for_an_explicitly_truthy_value() {
@@ -19,7 +17,6 @@ fn dev_seed_is_on_only_for_an_explicitly_truthy_value() {
     for on in ["1", "true", "TRUE", "on", "On"] {
         assert!(dev_seed_from(Some(OsString::from(on))), "{on:?} is on");
     }
-    assert!(Accounts::new().dev_seed.get().is_none(), "migrate before init seeds nothing");
 }
 
 #[test]
@@ -81,18 +78,23 @@ async fn the_dev_seed_inserts_the_dev_client_once_and_keeps_an_edited_row() {
     tx.rollback().await.unwrap();
 }
 
+/// The switch `migrate` passes `ACCOUNTS_DEV_SEED` to: off (the default) inserts nothing, on
+/// inserts the dev client. In one rolled-back transaction like the test above.
 #[tokio::test]
-async fn migrate_with_the_flag_on_leaves_the_dev_client_in_place() {
+async fn the_dev_seed_switch_inserts_the_dev_client_only_when_on() {
     let Some(pool) = test_pool().await else { return };
     wired(&pool).await;
-    let ctx = Context::with_db(pool.clone());
-    let accounts = Accounts::with_signing_kek(dev_kek());
-    accounts.dev_seed.set(true).unwrap();
-    accounts.register(&ctx).unwrap();
-    {
-        let _no_ghost = GHOST_PLAYER.read().await;
-        accounts.migrate(&ctx).await.unwrap();
-    }
-    let mut conn = pool.acquire().await.unwrap();
-    assert_eq!(dev_client(&mut conn).await.len(), 1);
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("DELETE FROM accounts.oidc_clients WHERE client_id = $1")
+        .bind(DEV_GAME_CLIENT_ID)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    migrate_dev_seed(false, &mut *tx).await.unwrap();
+    assert!(dev_client(&mut tx).await.is_empty(), "the switch off seeds nothing");
+
+    migrate_dev_seed(true, &mut *tx).await.unwrap();
+    assert_eq!(dev_client(&mut tx).await.len(), 1, "the switch on seeds the dev client");
+    tx.rollback().await.unwrap();
 }

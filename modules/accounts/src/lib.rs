@@ -1621,9 +1621,7 @@ impl Accounts {
         }
         refuse_stale_oauth_states(pool, "accounts").await?;
         signing_keys::migrate_signing_keys(pool, SIGNING_KEYS_SCHEMA, &kek).await?;
-        if self.dev_seed.get().copied().unwrap_or(false) {
-            clients::seed_dev_client(pool).await?;
-        }
+        clients::migrate_dev_seed(self.dev_seed.get().copied().unwrap_or(false), pool).await?;
         Ok(())
     }
 

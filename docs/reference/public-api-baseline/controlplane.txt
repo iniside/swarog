@@ -208,6 +208,7 @@ pub const controlplane::order::dashboard_tile::WALLET: i32
 pub mod controlplane::order::dashboard_wide
 pub const controlplane::order::dashboard_wide::PORTAL_HEALTH: i32
 pub mod controlplane::order::platform_nav
+pub const controlplane::order::platform_nav::ACCOUNTS_CLIENTS: i32
 pub const controlplane::order::platform_nav::APIKEYS: i32
 pub const controlplane::order::platform_nav::AUDIT: i32
 pub const controlplane::order::platform_nav::CONFIG: i32

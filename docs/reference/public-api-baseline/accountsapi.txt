@@ -371,6 +371,11 @@ pub fn accountsapi::directory_rpc::describe() -> opsapi::DescribeManifest
 pub fn accountsapi::directory_rpc::operations(alloc::rcs::arc::Arc<(dyn accountsapi::Directory + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn accountsapi::directory_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn accountsapi::directory_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
+pub mod accountsapi::grant_types
+pub const accountsapi::grant_types::ALL: [&str; 3]
+pub const accountsapi::grant_types::GUEST: &str
+pub const accountsapi::grant_types::PASSWORD: &str
+pub const accountsapi::grant_types::REFRESH_TOKEN: &str
 pub mod accountsapi::sessions_rpc
 pub struct accountsapi::sessions_rpc::VerifySessionRequest
 pub accountsapi::sessions_rpc::VerifySessionRequest::token: alloc::string::String
@@ -594,14 +599,17 @@ impl core::marker::UnsafeUnpin for accountsapi::Session
 impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::Session
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::Session
 pub const accountsapi::DEFAULT_OIDC_ISSUER: &str
+pub const accountsapi::DEV_GAME_CLIENT_ID: &str
 pub const accountsapi::EPIC_ENV_KEYS: &[&str]
 pub const accountsapi::GOOGLE_ENV_KEYS: &[&str]
 pub const accountsapi::LOGIN_LIMIT_BURST: u32
 pub const accountsapi::LOGIN_LIMIT_PER_SEC: f64
+pub const accountsapi::MAX_CLIENT_ID_BYTES: usize
 pub const accountsapi::MAX_DISPLAY_NAME_BYTES: usize
 pub const accountsapi::MAX_HANDLE_BYTES: usize
 pub const accountsapi::MAX_LOOKUP_IDS: usize
 pub const accountsapi::MAX_SESSION_TOKEN_BYTES: usize
+pub const accountsapi::SWAROG_AUDIENCE: &str
 pub trait accountsapi::Auth: core::marker::Send + core::marker::Sync
 pub fn accountsapi::Auth::begin_delete<'life0, 'async_trait>(&'life0 self, opsapi::Identity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::DeleteTicket, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Auth::create_guest<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::GuestSession, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

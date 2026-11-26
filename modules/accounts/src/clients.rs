@@ -70,6 +70,15 @@ pub(crate) async fn seed_dev_client<'e, E: sqlx::PgExecutor<'e>>(db: E) -> sqlx:
     Ok(())
 }
 
+/// The seed `migrate` runs: the dev client when `on` (`ACCOUNTS_DEV_SEED` read at init),
+/// nothing otherwise.
+pub(crate) async fn migrate_dev_seed<'e, E: sqlx::PgExecutor<'e>>(on: bool, db: E) -> sqlx::Result<()> {
+    if on {
+        seed_dev_client(db).await?;
+    }
+    Ok(())
+}
+
 impl Store {
     /// Every client, newest first.
     pub(crate) async fn clients(&self) -> sqlx::Result<Vec<ClientRow>> {
