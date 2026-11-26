@@ -22,7 +22,7 @@ pub const SERVICE_ENV_ALLOWLIST: &[&str] = &[
 /// The accounts credential-provider configuration an operator may hand a fleet.
 /// `runtime_environment` is allowlist-filtered, so a value absent from this list is a
 /// value `EPIC_*`/`GOOGLE_*` in the operator's shell can never reach accounts with.
-const ACCOUNTS_OVERRIDEABLE_ENV: &[&str] = &[
+pub(crate) const ACCOUNTS_OVERRIDEABLE_ENV: &[&str] = &[
     "ACCOUNTS_OPEN_REGISTRATION", "ACCOUNTS_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS",
     "EPIC_CLIENT_ID", "EPIC_JWKS_URL", "EPIC_ISSUER_PREFIX", "EPIC_CLIENT_SECRET",
     "EPIC_REDIRECT_URI", "EPIC_AUTHORIZE_URL", "EPIC_TOKEN_URL",
@@ -75,31 +75,42 @@ const fn concat_env_23_10(a: &[&'static str; 23], b: &[&'static str; 10]) -> [&'
 }
 
 const MONOLITH_OVERRIDEABLE_ENV_ARR: [&str; 33] = concat_env_23_10(MONOLITH_BASE_ENV, MAIL_OVERRIDEABLE_ENV);
-const MONOLITH_OVERRIDEABLE_ENV: &[&str] = &MONOLITH_OVERRIDEABLE_ENV_ARR;
+pub(crate) const MONOLITH_OVERRIDEABLE_ENV: &[&str] = &MONOLITH_OVERRIDEABLE_ENV_ARR;
 
-/// Every allowlisted `GOOGLE_*` key, which both `Proof` overlays CLEAR first so no ambient
-/// shell value reaches a proof fleet: any one of them present makes accounts parse google
-/// as configured. The split overlay then pins google against the loopback OIDC fixture
+/// The prefix of every google key accounts reads (`accountsapi::GOOGLE_ENV_KEYS`). Both
+/// `Proof` overlays drop every key under it ([`clear_provider_env`]) so no ambient shell
+/// value reaches a proof fleet: any one google key present makes accounts parse google as
+/// configured. The split overlay then pins google against the loopback OIDC fixture
 /// ([`PROOF_GOOGLE_CLIENT_ID`]), which splitproof's `[A6]`/`[P8]` and `[BG*]` checks
 /// assert. The monolith overlay pins nothing, so google stays known but unconfigured there:
 /// the only way to execute the `KnownButUnconfigured` 503 arm that separates "no such
 /// provider" (400) from "not configured here" (503), asserted as `[A6m]`/`[P8m]`. An
 /// ambient `GOOGLE_CLIENT_IDS` would otherwise silently delete that assertion rather than
 /// fail it.
-const PROOF_CLEARED_GOOGLE_ENV: &[&str] = &[
-    "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL", "GOOGLE_CLIENT_SECRET", "GOOGLE_OAUTH_CLIENT_ID",
-    "GOOGLE_REDIRECT_URI", "GOOGLE_AUTHORIZE_URL", "GOOGLE_TOKEN_URL",
-];
+pub(crate) const GOOGLE_ENV_PREFIX: &str = "GOOGLE_";
+
+/// The prefix of every epic key accounts reads (`accountsapi::EPIC_ENV_KEYS`). Both `Proof`
+/// overlays drop every key under it before pinning epic to the OIDC fixture, so an ambient
+/// epic key the pins do not overwrite (`EPIC_AUTHORIZE_URL`, and in the monolith the
+/// browser-flow keys too) never rides along beside them.
+pub(crate) const EPIC_ENV_PREFIX: &str = "EPIC_";
+
+/// Drops every accounts provider key from a `Proof` service env, by prefix rather than by
+/// list, so a provider key added to the allowlists is cleared here with no other edit.
+fn clear_provider_env(env: &mut BTreeMap<String, String>) {
+    env.retain(|key, _| {
+        !key.starts_with(GOOGLE_ENV_PREFIX) && !key.starts_with(EPIC_ENV_PREFIX)
+    });
+}
 
 /// The `MAIL_SMTP_*` group the `Proof` overlay CLEARS from `mail`'s OWN env (never
-/// `accounts.env` — a distinct list from [`PROOF_CLEARED_GOOGLE_ENV`], whose
-/// removal loop only touches `accounts.env`, so reusing that const here would silently
-/// clear nothing). Proof always pins `MAIL_PROVIDER=log` afterward, so this is not about
-/// exercising an unconfigured-provider arm: it is about never letting an operator's
-/// ambient SMTP credentials (developing against a real relay) survive into the
-/// verification fleet — a partial ambient `MAIL_SMTP_*` group would otherwise either dial
-/// a live relay under `smtp` or, once re-pinned to `log`, fail startup outright (`mail`'s
-/// config refuses any `MAIL_SMTP_*` value set while the provider is not `smtp`).
+/// `accounts.env`, which [`clear_provider_env`] clears by prefix). Proof always pins
+/// `MAIL_PROVIDER=log` afterward, so this is not about exercising an unconfigured-provider
+/// arm: it is about never letting an operator's ambient SMTP credentials (developing
+/// against a real relay) survive into the verification fleet — a partial ambient
+/// `MAIL_SMTP_*` group would otherwise either dial a live relay under `smtp` or, once
+/// re-pinned to `log`, fail startup outright (`mail`'s config refuses any `MAIL_SMTP_*`
+/// value set while the provider is not `smtp`).
 const PROOF_CLEARED_MAIL_SMTP_ENV: &[&str] = &[
     "MAIL_SMTP_HOST", "MAIL_SMTP_PORT", "MAIL_SMTP_USERNAME", "MAIL_SMTP_PASSWORD", "MAIL_SMTP_TLS",
 ];
@@ -972,9 +983,7 @@ pub fn game_backend_fleet_with_environment(
             gateway
                 .env
                 .insert("RATE_LIMIT_BURST".into(), PROOF_GATEWAY_RATE_LIMIT_BURST.to_string());
-            for key in PROOF_CLEARED_GOOGLE_ENV {
-                accounts.env.remove(*key);
-            }
+            clear_provider_env(&mut accounts.env);
             accounts
                 .env
                 .insert("GOOGLE_CLIENT_IDS".into(), PROOF_GOOGLE_CLIENT_ID.into());
@@ -1066,10 +1075,8 @@ pub fn game_backend_monolith(
     if flavor == FleetFlavor::Proof {
         // Proof-only overlay is intentionally last and cannot be weakened by ambient state.
         // Google is cleared and never pinned here: the monolith is where the known but
-        // unconfigured provider's 503 arm is proven.
-        for key in PROOF_CLEARED_GOOGLE_ENV {
-            env.remove(*key);
-        }
+        // unconfigured provider's 503 arm is proven. Epic is cleared, then pinned below.
+        clear_provider_env(&mut env);
         for key in PROOF_CLEARED_MAIL_SMTP_ENV {
             env.remove(*key);
         }

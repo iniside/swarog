@@ -6911,7 +6911,7 @@ fn envelope_status(v: &serde_json::Value) -> Option<&str> {
 /// split, `"m"` in the monolith. The one expectation it changes is google's answer in
 /// `[A6]` and `[P8]`: the Proof fleet configures google in the split only, so the split
 /// asserts a configured provider rejecting a garbage credential and the monolith the known
-/// but unconfigured one (`processctl`'s `PROOF_CLEARED_GOOGLE_ENV`).
+/// but unconfigured one (`processctl`'s `GOOGLE_ENV_PREFIX`, cleared from both proof fleets).
 async fn federated_assertions(
     ctx: &Ctx,
     pool: &PgPool,

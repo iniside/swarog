@@ -44,6 +44,10 @@ libc = "0.2"
 asyncevents = { workspace = true }
 invalidation = { workspace = true }
 scheduler = { workspace = true }
+# Anti-drift ONLY, same reasoning: the fleet allowlists name every accounts provider key
+# (`EPIC_*`/`GOOGLE_*`) as a plain string, and fleet_tests asserts they equal
+# `accountsapi::EPIC_ENV_KEYS`/`GOOGLE_ENV_KEYS`, the list accounts' provider parse reads.
+accountsapi = { workspace = true }
 
 [[test]]
 name = "processctl-downstream"

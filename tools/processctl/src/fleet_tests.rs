@@ -1,12 +1,16 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     check_pg_session_floor, game_backend_fleet, game_backend_fleet_with_environment,
     game_backend_monolith, EnvironmentSnapshot, FleetError, FleetFlavor, FleetInputs, FleetSpec,
     PgSessionCapacity, PoolBudget, ServiceSpec, HARNESS_RESERVE, PG_SESSION_BUDGET,
     PROOF_GATEWAY_RATE_LIMIT_BURST, PROOF_GATEWAY_RATE_LIMIT_RPS, PROOF_GOOGLE_CLIENT_ID,
-    PROOF_OIDC_JWKS_URL, REQUIRED_MAX_CONNECTIONS,
+    PROOF_OIDC_CLIENT_ID, PROOF_OIDC_ISSUER, PROOF_OIDC_JWKS_URL, REQUIRED_MAX_CONNECTIONS,
 };
+use crate::fleet::{
+    ACCOUNTS_OVERRIDEABLE_ENV, EPIC_ENV_PREFIX, GOOGLE_ENV_PREFIX, MONOLITH_OVERRIDEABLE_ENV,
+};
+use accountsapi::{EPIC_ENV_KEYS, GOOGLE_ENV_KEYS};
 #[cfg(windows)]
 use crate::build_environment;
 
@@ -247,13 +251,45 @@ fn proof_gateway_rate_limit_survives_an_ambient_override() {
     );
 }
 
-const GOOGLE_ENV: [&str; 7] = [
-    "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL", "GOOGLE_CLIENT_SECRET", "GOOGLE_OAUTH_CLIENT_ID",
-    "GOOGLE_REDIRECT_URI", "GOOGLE_AUTHORIZE_URL", "GOOGLE_TOKEN_URL",
-];
+/// The accounts provider keys of both allowlists are exactly the keys accounts' provider
+/// parse reads, in both topologies, and each sits under the prefix the `Proof` overlays
+/// clear: a key accounts starts reading without both allowlists, a stale allowlist key, or
+/// a key outside its provider's prefix fails here, by name.
+#[test]
+fn provider_allowlists_match_the_accounts_provider_keys() {
+    let is_provider =
+        |key: &&str| key.starts_with(EPIC_ENV_PREFIX) || key.starts_with(GOOGLE_ENV_PREFIX);
+    let read: BTreeSet<&str> = EPIC_ENV_KEYS.iter().chain(GOOGLE_ENV_KEYS).copied().collect();
+    for (name, allowlist) in [
+        ("ACCOUNTS_OVERRIDEABLE_ENV", ACCOUNTS_OVERRIDEABLE_ENV),
+        ("MONOLITH_OVERRIDEABLE_ENV", MONOLITH_OVERRIDEABLE_ENV),
+    ] {
+        let listed: BTreeSet<&str> = allowlist.iter().copied().filter(is_provider).collect();
+        let missing: Vec<&&str> = read.difference(&listed).collect();
+        let extra: Vec<&&str> = listed.difference(&read).collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "{name}: missing {missing:?}, not read by accounts {extra:?}"
+        );
+    }
+    for (prefix, keys) in [(EPIC_ENV_PREFIX, EPIC_ENV_KEYS), (GOOGLE_ENV_PREFIX, GOOGLE_ENV_KEYS)] {
+        for key in keys {
+            assert!(
+                key.starts_with(prefix),
+                "{key} is outside {prefix}, so no proof overlay clears it"
+            );
+        }
+    }
+}
+
+fn ambient(keys: &[&str]) -> EnvironmentSnapshot {
+    EnvironmentSnapshot::from_values(
+        keys.iter().map(|key| ((*key).into(), format!("ambient-{key}"))),
+    )
+}
 
 fn ambient_google() -> EnvironmentSnapshot {
-    EnvironmentSnapshot::from_values(GOOGLE_ENV.map(|key| (key.into(), format!("ambient-{key}"))))
+    ambient(GOOGLE_ENV_KEYS)
 }
 
 #[test]
@@ -262,7 +298,7 @@ fn development_fleet_passes_every_google_key_to_accounts_in_both_topologies() {
     let fleet = game_backend_fleet_with_environment(&inputs(), FleetFlavor::Development, &environment);
     let accounts = &fleet.service("accounts-svc").unwrap().env;
     let monolith = game_backend_monolith(&inputs(), FleetFlavor::Development, &environment);
-    for key in GOOGLE_ENV {
+    for &key in GOOGLE_ENV_KEYS {
         let expected = format!("ambient-{key}");
         assert_eq!(accounts.get(key), Some(&expected), "accounts-svc {key}");
         assert_eq!(monolith.env.get(key), Some(&expected), "monolith {key}");
@@ -274,7 +310,8 @@ fn development_fleet_passes_every_google_key_to_accounts_in_both_topologies() {
 #[test]
 fn proof_monolith_drops_every_ambient_google_key() {
     let monolith = game_backend_monolith(&inputs(), FleetFlavor::Proof, &ambient_google());
-    let google: Vec<&String> = monolith.env.keys().filter(|key| key.starts_with("GOOGLE_")).collect();
+    let google: Vec<&String> =
+        monolith.env.keys().filter(|key| key.starts_with(GOOGLE_ENV_PREFIX)).collect();
     assert!(google.is_empty(), "monolith kept {google:?}");
 }
 
@@ -287,7 +324,7 @@ fn proof_split_pins_google_to_the_oidc_fixture_over_every_ambient_key() {
     let accounts = &fleet.service("accounts-svc").unwrap().env;
     let google: BTreeMap<&str, &str> = accounts
         .iter()
-        .filter(|(key, _)| key.starts_with("GOOGLE_"))
+        .filter(|(key, _)| key.starts_with(GOOGLE_ENV_PREFIX))
         .map(|(key, value)| (key.as_str(), value.as_str()))
         .collect();
     let pinned = BTreeMap::from([
@@ -299,6 +336,45 @@ fn proof_split_pins_google_to_the_oidc_fixture_over_every_ambient_key() {
         ("GOOGLE_TOKEN_URL", "http://127.0.0.1:1/token"),
     ]);
     assert_eq!(google, pinned);
+}
+
+fn epic_env(env: &BTreeMap<String, String>) -> BTreeMap<&str, &str> {
+    env.iter()
+        .filter(|(key, _)| key.starts_with(EPIC_ENV_PREFIX))
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect()
+}
+
+/// The Proof monolith pins epic's three verifier keys to the OIDC fixture and nothing else:
+/// an ambient epic browser-flow key (`EPIC_CLIENT_SECRET`, `EPIC_AUTHORIZE_URL`, ...) would
+/// otherwise survive beside the pins.
+#[test]
+fn proof_monolith_pins_epic_to_the_oidc_fixture_over_every_ambient_key() {
+    let monolith = game_backend_monolith(&inputs(), FleetFlavor::Proof, &ambient(EPIC_ENV_KEYS));
+    let pinned = BTreeMap::from([
+        ("EPIC_CLIENT_ID", PROOF_OIDC_CLIENT_ID),
+        ("EPIC_JWKS_URL", PROOF_OIDC_JWKS_URL),
+        ("EPIC_ISSUER_PREFIX", PROOF_OIDC_ISSUER),
+    ]);
+    assert_eq!(epic_env(&monolith.env), pinned);
+}
+
+/// The Proof accounts-svc holds exactly the epic configuration the split proof drives, every
+/// ambient epic value replaced or dropped: an ambient `EPIC_AUTHORIZE_URL` would otherwise
+/// survive the six pins beside it.
+#[test]
+fn proof_split_pins_epic_to_the_oidc_fixture_over_every_ambient_key() {
+    let fleet =
+        game_backend_fleet_with_environment(&inputs(), FleetFlavor::Proof, &ambient(EPIC_ENV_KEYS));
+    let pinned = BTreeMap::from([
+        ("EPIC_CLIENT_ID", PROOF_OIDC_CLIENT_ID),
+        ("EPIC_JWKS_URL", PROOF_OIDC_JWKS_URL),
+        ("EPIC_ISSUER_PREFIX", PROOF_OIDC_ISSUER),
+        ("EPIC_CLIENT_SECRET", "test"),
+        ("EPIC_REDIRECT_URI", "http://127.0.0.1:8082/accounts/epic/callback"),
+        ("EPIC_TOKEN_URL", "http://127.0.0.1:1/token"),
+    ]);
+    assert_eq!(epic_env(&fleet.service("accounts-svc").unwrap().env), pinned);
 }
 
 #[test]

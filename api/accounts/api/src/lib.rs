@@ -48,6 +48,33 @@ pub const LOGIN_LIMIT_PER_SEC: f64 = 5.0;
 /// to back before accounts refuses it.
 pub const LOGIN_LIMIT_BURST: u32 = 20;
 
+/// Epic's whole environment surface: every variable accounts' provider parse reads for
+/// epic. Presence of ANY of these means the operator is configuring epic, including the
+/// browser-flow keys, so accounts rejects a malformed browser-flow endpoint even when
+/// nothing else about epic is set. A harness that forwards or clears provider
+/// configuration reads this list instead of restating it.
+pub const EPIC_ENV_KEYS: &[&str] = &[
+    "EPIC_CLIENT_ID",
+    "EPIC_JWKS_URL",
+    "EPIC_ISSUER_PREFIX",
+    "EPIC_CLIENT_SECRET",
+    "EPIC_REDIRECT_URI",
+    "EPIC_AUTHORIZE_URL",
+    "EPIC_TOKEN_URL",
+];
+
+/// Google's whole environment surface, read the way [`EPIC_ENV_KEYS`] is: presence of
+/// ANY of these means the operator is configuring google, including the browser-flow keys.
+pub const GOOGLE_ENV_KEYS: &[&str] = &[
+    "GOOGLE_CLIENT_IDS",
+    "GOOGLE_JWKS_URL",
+    "GOOGLE_CLIENT_SECRET",
+    "GOOGLE_OAUTH_CLIENT_ID",
+    "GOOGLE_REDIRECT_URI",
+    "GOOGLE_AUTHORIZE_URL",
+    "GOOGLE_TOKEN_URL",
+];
+
 /// The result of a successful register/login/refresh: the caller's product-scoped
 /// `player_id`, the short-lived opaque bearer token minted for it, and the refresh
 /// token that renews it. The serde field names are the public HTTP response shape

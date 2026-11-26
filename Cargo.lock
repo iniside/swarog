@@ -3314,6 +3314,7 @@ dependencies = [
 name = "processctl"
 version = "0.1.0"
 dependencies = [
+ "accountsapi",
  "asyncevents",
  "invalidation",
  "libc",

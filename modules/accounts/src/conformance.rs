@@ -80,7 +80,8 @@ fn fixture_vars() -> std::collections::BTreeMap<String, String> {
 }
 
 /// A provider environment variable's family: the segment before the first `_`
-/// (`EPIC_CLIENT_ID` -> `EPIC`), the grouping `EPIC_VARS`/`GOOGLE_VARS` already use.
+/// (`EPIC_CLIENT_ID` -> `EPIC`), the grouping
+/// `accountsapi::EPIC_ENV_KEYS`/`GOOGLE_ENV_KEYS` already use.
 fn env_family(key: &str) -> &str {
     key.split_once('_').map_or(key, |(family, _)| family)
 }

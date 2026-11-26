@@ -16,6 +16,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, LazyLock};
 
+use accountsapi::{EPIC_ENV_KEYS, GOOGLE_ENV_KEYS};
 use async_trait::async_trait;
 
 use crate::guest::guest_credentials;
@@ -330,21 +331,8 @@ pub(crate) fn oidc_credentials(
 /// collects. A new provider appends its own block here rather than widening the read
 /// back out to the whole environment.
 pub(crate) fn provider_env_keys() -> impl Iterator<Item = &'static str> {
-    EPIC_VARS.iter().chain(GOOGLE_VARS).copied()
+    EPIC_ENV_KEYS.iter().chain(GOOGLE_ENV_KEYS).copied()
 }
-
-/// Epic's whole environment surface. Presence of ANY of these means the operator is
-/// configuring epic — including the OAuth keys, so a malformed browser-flow endpoint
-/// is caught even when nothing else about epic is set.
-const EPIC_VARS: &[&str] = &[
-    "EPIC_CLIENT_ID",
-    "EPIC_JWKS_URL",
-    "EPIC_ISSUER_PREFIX",
-    "EPIC_CLIENT_SECRET",
-    "EPIC_REDIRECT_URI",
-    "EPIC_AUTHORIZE_URL",
-    "EPIC_TOKEN_URL",
-];
 
 /// The subset that configures the browser flow but cannot enable it — setting one
 /// without `EPIC_CLIENT_SECRET` is an operator asking for a flow that would never mount.
@@ -357,12 +345,12 @@ const EPIC_DEFAULT_AUTHORIZE_URL: &str = "https://www.epicgames.com/id/authorize
 const EPIC_DEFAULT_TOKEN_URL: &str = "https://api.epicgames.dev/epic/oauth/v1/token";
 
 fn epic_from_vars(vars: &BTreeMap<String, String>) -> anyhow::Result<Option<EpicConfig>> {
-    let Some(present) = EPIC_VARS.iter().find(|key| vars.contains_key(**key)) else {
+    let Some(present) = EPIC_ENV_KEYS.iter().find(|key| vars.contains_key(**key)) else {
         return Ok(None);
     };
     // A variable the operator SET is a variable the operator meant: an empty value is a
     // misconfiguration, never a silent fall-back to the default.
-    for key in EPIC_VARS {
+    for key in EPIC_ENV_KEYS {
         if vars.get(*key).is_some_and(String::is_empty) {
             anyhow::bail!("invalid {key}: set but empty — unset it to leave it unconfigured");
         }
@@ -430,18 +418,6 @@ pub(crate) static GOOGLE_SPEC: ProviderSpec = ProviderSpec {
     display_prefix: "google",
 };
 
-/// Google's whole environment surface. Presence of ANY of these means the operator is
-/// configuring google, including the OAuth keys.
-const GOOGLE_VARS: &[&str] = &[
-    "GOOGLE_CLIENT_IDS",
-    "GOOGLE_JWKS_URL",
-    "GOOGLE_CLIENT_SECRET",
-    "GOOGLE_OAUTH_CLIENT_ID",
-    "GOOGLE_REDIRECT_URI",
-    "GOOGLE_AUTHORIZE_URL",
-    "GOOGLE_TOKEN_URL",
-];
-
 /// The subset that configures the browser flow but cannot enable it without
 /// `GOOGLE_CLIENT_SECRET`.
 const GOOGLE_OAUTH_VARS: &[&str] = &[
@@ -461,10 +437,10 @@ const GOOGLE_DEFAULT_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_ISSUERS: &[&str] = &["https://accounts.google.com", "accounts.google.com"];
 
 fn google_from_vars(vars: &BTreeMap<String, String>) -> anyhow::Result<Option<GoogleConfig>> {
-    let Some(present) = GOOGLE_VARS.iter().find(|key| vars.contains_key(**key)) else {
+    let Some(present) = GOOGLE_ENV_KEYS.iter().find(|key| vars.contains_key(**key)) else {
         return Ok(None);
     };
-    for key in GOOGLE_VARS {
+    for key in GOOGLE_ENV_KEYS {
         if vars.get(*key).is_some_and(String::is_empty) {
             anyhow::bail!("invalid {key}: set but empty — unset it to leave it unconfigured");
         }
