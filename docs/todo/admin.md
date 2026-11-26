@@ -1,6 +1,6 @@
 # Admin
 
-Last updated: 2026-11-24
+Last updated: 2026-11-26
 
 ## In progress
 
@@ -449,6 +449,17 @@ _None._
   So a service built without its admin provider, or a peer missing from the source
   list, drops its module silently, and `admindiff crawl` passes. Closing it needs a
   per-source declaration of the modules it is expected to serve. Owner, 2026-11-19.
+
+### Known limits (one-token-mechanism step 2)
+
+- [ ] **Players without a refresh token lose "Last seen" after the daily prune**
+  Since c51265c0 a login through a client without the `refresh_token` grant writes a token
+  family but no refresh row. Last seen (`PLAYER_LIST_SELECT`) and the dashboard's active-24h
+  count (`active_players_24h_tx`) read `accounts.token_families` (db9bda92), but the daily
+  `prune_expired_token_rows` deletes such a family once its access token expires, so after that
+  run the player shows "Last seen —" and drops out of the 24h count. Fix options: keep stale
+  families 24h before pruning them, or stamp a `players.last_seen_at` column on every mint
+  (modules/accounts/src/store.rs).
 
 ### Deferred
 
