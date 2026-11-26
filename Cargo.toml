@@ -203,6 +203,7 @@ publish = false
 # readable panic backtraces (file:line); dependencies get none (never step-debugged).
 [profile.dev]
 debug = "line-tables-only"
+incremental = false
 
 [profile.dev.package."*"]
 debug = false
