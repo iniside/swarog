@@ -69,3 +69,12 @@ _None._
 
 - [ ] **The old `/accounts/epic` binding cookie can coexist for up to 10 minutes**
   Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
+
+### Known limits (one-token-mechanism step 3)
+
+- [ ] **refresh_player_idx may be dead**
+  Its last-seen reader moved to `token_families` in db9bda92; check for other readers of
+  `refresh_player_idx` (modules/accounts/src/lib.rs) and drop it if none.
+- [ ] **EPIC_START hard-codes dev-game**
+  `tools/splitproof/src/accounts_browser_checks.rs:68` writes `dev-game` literally while every
+  other site uses `accountsapi::DEV_GAME_CLIENT_ID`.
