@@ -1,7 +1,6 @@
 # Accounts browser sign-in fixes and cleanups
 
-Status: approved by the owner 2026-11-26 ("ok, mozesz zaczync z rekomendacjami"); runs after the
-oidc-signing-keys Step 1 review fixes, before its Step 2.
+Status: done
 Date: 2026-11-26
 Source: owner, on the Known limits list in docs/todo/accounts.md: "cos mi sie wydaje, ze czesc z nich to
 zwyczajnie bugi to naprawy" and "ok to zrob plan razem z cleanupem" (2026-11-26).

@@ -2,6 +2,14 @@
 
 Last updated: 2026-11-26
 
+- [x] **The browser callback's non-browser-intent 500 has no test** (2026-11-26, accounts-browser-fixes step 5)
+  `browser_router` answers 500 for a state row with a non-browser intent
+  (modules/accounts/src/oauth_flow.rs:332-333); no test reaches that arm.
+  Source: docs/plans/2026-11-26-1352-oauth-drift-fixes-plan.md D5, owner answer ("ok 1,2 zrobic reszta do todo", 2026-11-26).
+  Closed as obsolete: the arm is unreachable. The `oauth_states_epic_only` CHECK refuses any
+  non-`browser` intent for a provider other than Epic and `browser_router` serves only Google; and
+  `take_state` filters on `provider`, while nothing writes a Google login or link state.
+  Source: docs/plans/2026-11-26-1440-accounts-browser-fixes-plan.md item 7.
 - [x] **Proof redirect URIs repeat the gateway port by hand** (2026-11-26, accounts-browser-fixes step 4)
   The split proof's `http://127.0.0.1:8082/...` callback URIs are written out at
   tools/processctl/src/fleet.rs:999 and :1017, tools/processctl/src/fleet_tests.rs:335 and :374, and

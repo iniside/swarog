@@ -48,10 +48,6 @@ _None._
 
 ### Known limits (google-browser-login step 4)
 
-- [ ] **The browser callback's non-browser-intent 500 has no test**
-  `browser_router` answers 500 for a state row with a non-browser intent
-  (modules/accounts/src/oauth_flow.rs:332-333); no test reaches that arm.
-  Source: docs/plans/2026-11-26-1352-oauth-drift-fixes-plan.md D5, owner answer ("ok 1,2 zrobic reszta do todo", 2026-11-26).
 - [ ] **`[BG3]` has never been watched go red**
   No split run with a deliberately broken `provider = $3` predicate has shown
   tools/splitproof/src/accounts_browser_checks.rs `[BG3]` (:368) failing.
