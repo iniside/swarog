@@ -237,7 +237,7 @@ fn accounts() -> Entry {
                     },
                     // The second OIDC provider's own parse: three of its keys, one case
                     // each, so a key dropped from `provider_env_keys` turns its own case
-                    // red. Every GOOGLE_* key is guarded by the accounts unit tests
+                    // red; the other GOOGLE_* keys are guarded by the accounts unit tests
                     // `reject_set_but_empty_google_oauth_vars` and
                     // `malformed_google_endpoint_fails_on_its_own_rule_without_client_ids_or_secret`.
                     EnvCase {

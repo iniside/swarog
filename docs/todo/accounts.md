@@ -4,11 +4,14 @@ Last updated: 2026-11-26
 
 ## In progress
 
-- [ ] **Google server-side OIDC redirect flow on the hosted login page**
-  Plan: docs/plans/2026-11-26-1123-google-browser-login-plan.md.
-  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, owner decision 4 (2026-11-25).
+_None._
 
 ## Open
+
+- [ ] **Link more identities to one player**
+  A signed-in player can attach further identities (Google, Epic, others) from the hosted page
+  whenever they want. Today Google is sign-in only and Link is Epic's JSON flow.
+  Source: docs/plans/2026-11-26-1123-google-browser-login-plan.md, owner answer 2 (2026-11-26).
 
 - [ ] **Single failure-rendering policy for the Epic OAuth callback**
   ACCOUNTS-01. The Epic callback renders a Postgres outage as a 503 body on

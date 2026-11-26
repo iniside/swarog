@@ -1,6 +1,6 @@
 # Feature tracker — closing the gaps from the BaaS analysis
 
-**Last update: 2026-11-22-1722**
+**Last update: 2026-11-26**
 
 **Living document, updated in place** (no date prefix in the filename — it is the
 current state, not a dated snapshot; the date above moves instead). Source of the
@@ -145,15 +145,15 @@ now resolved — see the Identity & accounts table below for the landed shape.
 | Account self-delete + GDPR export | ⚠️ | accounts | `79cf52d`..`0cc58bf`, 2026-09-10 | Self-delete ships: `begin_delete`/`delete_account`, a fan-out purge over `player.deleted` into `characters`/`inventory`/`friends`/`groups`/`notifications`/`wallet`/`storage` (seven purge modules, eight consumers including `audit`; `party` is a ninth consumer, purging in the delivery tx with no tombstone), five-minute `player-purge` sweeps. **GDPR export does not exist** ([docs/todo/accounts.md](../todo/accounts.md)). Open purge gaps: [docs/todo/account-deletion.md](../todo/account-deletion.md), [docs/todo/groups.md](../todo/groups.md). Purge runs on a five-minute schedule, not immediately, and capped sweeps can need multiple fires to clear a backlog. |
 | User metadata / profile (display name, avatar, lang) | ⚠️ | accounts | `922cc63`, 2026-09-06 | Handles landed as part of P0#4 (friends): `accounts.players` gained a `discriminator` + a unique index on `(lower(display_name), discriminator)`, and `MeView` carries the caller's own `handle` (`Name#1234`). Discovery of another player is wire-only (`accountsapi::Directory`), never front-door. Remaining profile fields: [docs/todo/accounts.md](../todo/accounts.md). |
 | Account merge across identities | ❌ | accounts | — | (added 2026-10-23) Merging accounts post-wallet means merging balances and is its own feature; a foreign identity on link is a 409 today. Source: the seq #2a known-gaps note below. |
-| Google and Apple browser-redirect OAuth | ❌ | accounts | — | (added 2026-10-23) PKCE, nonce, provider column on `oauth_states`. Seq #2a shipped the ID-token path only. Source: [plan](../plans/2026-07-30-2230-accounts-federated-providers-plan.md). |
+| Google and Apple browser-redirect OAuth | ⚠️ | accounts | 2026-11-26 | (added 2026-10-23) Google is done: the hosted login page's `POST /accounts/oidc/google` and `GET /accounts/oidc/google/callback`, live when `GOOGLE_CLIENT_SECRET` is set (scope `openid`; `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_REDIRECT_URI`, `GOOGLE_AUTHORIZE_URL`, `GOOGLE_TOKEN_URL` alongside `GOOGLE_CLIENT_IDS`/`GOOGLE_JWKS_URL`). Apple is open. Source: [plan](../plans/2026-11-26-1123-google-browser-login-plan.md). |
 | MFA for player accounts | ❌ | accounts | — | (added 2026-10-23) Absent per [baas-feature-gap-matrix.md](../reference/baas-feature-gap-matrix.md). |
 | Ban / moderation / trust | ❌ | accounts + admin | — | P1#12. Ban state gates session verify; admin page via extension points. |
 
 **Known gaps carried out of seq #2a** (deliberate, not oversights): `accounts` still parses
 its provider environment inside the module rather than in `cmd/*`, so it is the one module
 that reads env outside a composition root; the
-proof fleet leaves Google deliberately unconfigured so a *known but unconfigured* provider
-(503) stays distinguishable from an unknown one (400); and `unlink` does not exist — a
+monolith proof fleet leaves Google deliberately unconfigured so a *known but unconfigured* provider
+(503) stays distinguishable from an unknown one (400), while the split proof configures it against the OIDC fixture; and `unlink` does not exist — a
 foreign identity is a 409 with no merge, because merging accounts post-wallet means merging
 balances and is its own feature. `player.promoted`'s `from_provider`:
 [docs/todo/accounts.md](../todo/accounts.md).
