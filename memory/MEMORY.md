@@ -70,4 +70,4 @@
 - [demoseed is the one seeder](demoseed-is-the-one-seeder.md) — public-API seeding only, no per-module seeders
 - [Step 13 resume point](step13-resume-point.md) — admin redesign state; Step 22 scheduler done, next 23 config (ask owner)
 - [Demoseed client simulator decisions](demoseed-client-simulator-decisions.md) — replaces Step 24b; parallel, every public op, report errors at end, monolith only
-- [Lore integration decisions](lore-integration-decisions.md) — Tier 2, OIDC IdP, stock loreserver, in-repo portal, review in Swarog tables, RBAC = authz module; October P1–P5 are research only
+- [Lore integration decisions](lore-integration-decisions.md) — Tier 2, OIDC IdP, stock loreserver, in-repo portal, review in Swarog tables, RBAC = authz module; one JWT token mechanism, clients made in the portal; October P1–P5 are research only
