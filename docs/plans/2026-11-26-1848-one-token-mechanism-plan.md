@@ -328,7 +328,10 @@ compile outside accounts until Step 3.
   [BR2]/[BR3] :470) take `?client_id=dev-game` (added in review of Step 2);
 - any mint call in tools/loadgen (grep);
 - demos/webui/src/index.html: done in Step 2 part 2 (9051e4b9), nothing left;
-- clients/csharp/Program.cs:137.
+- clients/csharp/Program.cs:137;
+- tools/conformance/src/policy.rs: four `CapCase`s with `cap: accountsapi::MAX_CLIENT_ID_BYTES`, next to
+  "accounts refresh token", each probing its `accounts::conformance::conformance_*_client_id_rejected`
+  (landed in 6e3c5b8f); the four `clientId` row texts name their CapCase (added in review of Step 2).
 Then regenerate:
 - clients/csharp/Generated and the csharp-client-gen goldens (the 52/28 pins hold; re-bless the manifest
   with `--emit-manifest`);
@@ -396,7 +399,12 @@ tests retargeted per D9; the delete doc at lib.rs:986-998 drops "60-minute"), mo
 (`SessionsVerifier` removed, cap tests at tests.rs:96, :148, :152, :210, :705), the topiccheck golden
 (tools/topiccheck/src/golden.rs:122-126), tools/opscatalog-gen/src/main.rs:69, the conformance rows
 (D7, and the `accounts.verifySession` row removed), and the re-blessed public-api, contract and
-input goldens.
+input goldens. Also (added in review of Step 2):
+- the admin Sessions panel's Client column (admin.rs:1186) reads `oidc_clients.display_name` through
+  `token_families.client_id`; it replaces `fake_client`, which is production view code, not only a test
+  helper;
+- the expired refresh-token prune locks its rows in ascending family id, the order every multi-family
+  delete uses since 6e3c5b8f, so it cannot deadlock with a family cascade.
 (b) Closes the second cut. After it there is one token path.
 (c) Diff every blessed file: only session lines go and cap lines change. Then the workspace suite and
 the same verifyctl stages as Step 3 in one rollout.
