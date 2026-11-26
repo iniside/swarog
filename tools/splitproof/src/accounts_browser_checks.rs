@@ -14,7 +14,16 @@
 //! answer "rate limit exceeded") is told apart from accounts' by the body, never counted as either
 //! client's answer.
 //!
-//! Break runs (each a full splitproof run, then reverted): filled in by the step that ran them.
+//! Break runs (each a full splitproof run, then reverted):
+//! - `"/accounts/oidc"` dropped from gateway-svc's passthrough prefixes (`cmd/gateway-svc/src/addrs.rs`):
+//!   BL1, BL2, BL4-BL7 and BR1 red as new (every hosted-form request 404 at the gateway), BR2 green;
+//!   BL3 red too, but only because no `swarog_session` was minted to present (`cookie_present=false`):
+//!   it has no once-wrong line of its own (2026-11-25, step 7).
+//! - the accounts `TRUSTED_PROXY_CIDRS` dropped from the proof fleet (`tools/processctl/src/fleet.rs`)
+//!   and `kill_player_families_tx`'s browser-session delete replaced by `0`
+//!   (`modules/accounts/src/store.rs`): BR1, BR2 and BL6 red as new (every burst one client, the
+//!   second client's requests 429; the cookie minted before the reset still 200 with its row kept),
+//!   BL1-BL5 and BL7 green (2026-11-26, step 7).
 
 use std::time::Duration;
 
