@@ -22,8 +22,9 @@ use axum::{Json, Router};
 use axum_extra::extract::CookieJar;
 use sqlx::PgPool;
 
-use crate::oauth_flow::{self, browser_binding, binding_set_cookie, ClientConfig, OAuthFlow, Outcome, ProviderSpec};
-pub(crate) use crate::oauth_flow::Intent;
+use crate::oauth_flow::{
+    self, browser_binding, binding_set_cookie, ClientConfig, HookIntent, Intent, OAuthFlow, Outcome, ProviderSpec,
+};
 use crate::oidc::OidcVerifier;
 use crate::providers::{EpicOAuthConfig, EPIC};
 use crate::{web, Service};
@@ -170,10 +171,8 @@ async fn complete(svc: &Service, outcome: Outcome) -> Response {
         Outcome::Failed => return Redirect::to("/?epic=error").into_response(),
     };
     let session_token = match intent {
-        Intent::Link { session_token } => session_token,
-        Intent::Login => return login(svc, &subject).await,
-        // The neutral callback signs a browser in itself and never hands it here.
-        Intent::Browser { .. } => return Redirect::to("/?epic=error").into_response(),
+        HookIntent::Link { session_token } => session_token,
+        HookIntent::Login => return login(svc, &subject).await,
     };
     // LINK flow: attach the Epic identity to the already-logged-in player.
     let p = match svc.store.player_by_session(&session_token).await {

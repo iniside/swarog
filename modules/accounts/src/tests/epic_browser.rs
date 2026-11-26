@@ -4,7 +4,8 @@
 
 use super::hosted_login::{client, cookie_value, has_attr, location, serve_default, set_cookie};
 use super::*;
-use crate::epic_oauth::{EpicOAuth, Intent};
+use crate::epic_oauth::EpicOAuth;
+use crate::oauth_flow::Intent;
 use crate::web;
 
 const KID: &str = "k1";

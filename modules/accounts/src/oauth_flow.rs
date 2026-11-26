@@ -61,10 +61,20 @@ pub(crate) enum Intent {
     Browser { return_to: String, replaces: Option<Vec<u8>> },
 }
 
+/// The intents the callback hands the provider's hook: every [`Intent`] but `Browser`,
+/// which the callback signs in itself.
+#[derive(Debug, PartialEq)]
+pub(crate) enum HookIntent {
+    /// [`Intent::Login`].
+    Login,
+    /// [`Intent::Link`].
+    Link { session_token: String },
+}
+
 /// What the callback hands the provider's hook for an intent other than `Browser`.
 pub(crate) enum Outcome {
     /// The code was exchanged and its id_token verified to `subject`.
-    Verified { intent: Intent, subject: String },
+    Verified { intent: HookIntent, subject: String },
     /// The exchange or the verify failed; the hook only renders the failure.
     Failed,
 }
@@ -345,8 +355,11 @@ where
             browser_sign_in(flow, svc, &subject, &return_to, replaces.as_deref()).await
         }
         (Intent::Browser { return_to, .. }, None) => flow.browser_failed(&return_to),
-        (intent, Some(subject)) => hook(Outcome::Verified { intent, subject }).await,
-        (_, None) => hook(Outcome::Failed).await,
+        (Intent::Login, Some(subject)) => hook(Outcome::Verified { intent: HookIntent::Login, subject }).await,
+        (Intent::Link { session_token }, Some(subject)) => {
+            hook(Outcome::Verified { intent: HookIntent::Link { session_token }, subject }).await
+        }
+        (Intent::Login | Intent::Link { .. }, None) => hook(Outcome::Failed).await,
     }
 }
 
