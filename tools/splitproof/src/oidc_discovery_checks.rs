@@ -13,11 +13,12 @@
 //!   the pinned issuer's `/jwks` (gateway-svc) still serves that one key, and the table still holds that
 //!   one active row: the new process kept the stored key instead of minting one at boot. The old process
 //!   is gone before the respawn (`Running`'s drop kills and waits), so its cache cannot serve the
-//!   answer. When [SK3] is red there is no kid to compare, so the pass records "[SK4] not run" red
-//!   instead of skipping it.
-//! - [SK0] / [SK0m] report only a fault no check records: a transport error, an unreadable body, or a
-//!   failed read of `accounts.signing_keys`. A discovery document without a `jwks_uri` still records
-//!   [SK2] and [SK3] red.
+//!   answer. When [SK3] is red or [SK0] cut the pass short there is no kid to compare, so the pass
+//!   records [SK4] red as "not run" (the cause in its detail) instead of skipping it.
+//! - [SK0] / [SK0m] report only a fault no check records: a transport error or an unreadable body on
+//!   the discovery GET, or a failed read of `accounts.signing_keys`. A discovery document without a
+//!   `jwks_uri`, and a `jwks_uri` GET that fails, still record [SK2] (the error in its detail) and
+//!   [SK3] red.
 //!
 //! The split pass runs after [REPLICAS] and before [LV2], so the respawned accounts-svc is in the
 //! liveness sweep and no earlier check meets a gateway connection to the killed process.
@@ -45,6 +46,8 @@ const PRIVATE_MEMBERS: [&str; 7] = ["d", "p", "q", "dp", "dq", "qi", "k"];
 /// How long [SK4] polls gateway-svc for the JWKS after the respawned accounts-svc is ready: a pooled
 /// passthrough connection to the killed process may fail the first request.
 const RESPAWN_BUDGET: Duration = Duration::from_secs(15);
+/// The one [SK4] name for a split pass that never reached the restart; the cause is in the detail.
+const SK4_NOT_RUN: &str = "[SK4] not run: no served kid to compare";
 
 /// [SK1]-[SK4] through gateway-svc, the fleet's ownership lent so accounts-svc can be respawned.
 pub(super) async fn split(ctx: &Ctx, pool: &PgPool, fleet: &mut Vec<Running>, p: &mut Proof) {
@@ -53,11 +56,12 @@ pub(super) async fn split(ctx: &Ctx, pool: &PgPool, fleet: &mut Vec<Running>, p:
     let kid = match served_key(ctx, pool, p, &g, processctl::PROOF_ACCOUNTS_ISSUER_SPLIT, "").await {
         Ok(Some(kid)) => kid,
         Ok(None) => {
-            p.check("[SK4] not run: [SK3] red", false, "accounts-svc not restarted: no served kid to compare");
+            p.check(SK4_NOT_RUN, false, "[SK3] red, accounts-svc not restarted");
             return;
         }
         Err(e) => {
             p.check("[SK0] OIDC discovery and JWKS pass completes", false, format!("{e:#}"));
+            p.check(SK4_NOT_RUN, false, "[SK0] red, accounts-svc not restarted");
             return;
         }
     };
@@ -93,16 +97,21 @@ async fn served_key(
         format!("code={code} issuer={served_issuer} jwks_uri={jwks_uri}"),
     );
 
-    // No served `jwks_uri`: nothing to fetch, so [SK2] and [SK3] record red on `code=0` and no keys.
-    let (code, set) = match jwks_uri.as_str() {
-        "" => (0, Value::Null),
-        uri => get_json(ctx, uri).await?,
+    // No served `jwks_uri`, or its GET failed: nothing read, so [SK2] (the error in its detail) and
+    // [SK3] record red on `code=0` and no keys.
+    let (code, set, error) = match jwks_uri.as_str() {
+        "" => (0, Value::Null, String::new()),
+        uri => match get_json(ctx, uri).await {
+            Ok((code, set)) => (code, set, String::new()),
+            Err(e) => (0, Value::Null, format!(" error={e:#}")),
+        },
     };
     let keys = set.get("keys").and_then(Value::as_array).cloned();
+    let count = keys.as_ref().map_or(-1, |k| k.len() as i64);
     p.check(
         &format!("[SK2{tag}] GET the served jwks_uri -> 200 + a keys array"),
         code == 200 && keys.is_some(),
-        format!("code={code} url={jwks_uri} keys={}", keys.as_ref().map_or(-1, |k| k.len() as i64)),
+        format!("code={code} url={jwks_uri} keys={count}{error}"),
     );
     let keys = keys.unwrap_or_default();
 
@@ -225,3 +234,7 @@ async fn get_json(ctx: &Ctx, url: &str) -> Result<(u16, Value)> {
     let body = response.text().await.with_context(|| format!("read GET {url}"))?;
     Ok((code, serde_json::from_str(&body).unwrap_or(Value::Null)))
 }
+
+#[cfg(test)]
+#[path = "oidc_discovery_checks_tests.rs"]
+mod tests;
