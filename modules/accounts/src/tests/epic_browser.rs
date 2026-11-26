@@ -222,7 +222,7 @@ async fn form_starts_reuse_the_browsers_binding_so_parallel_states_redeem() {
     let base = serve(svc, oauth.clone()).await;
     let csrf = crate::store::new_token();
 
-    let json = client().post(format!("{base}/accounts/epic/start")).send().await.unwrap();
+    let json = client().post(epic_start_url(&base)).send().await.unwrap();
     let json_cookie = set_cookie(&json, BINDING_COOKIE);
     let binding = cookie_value(&json_cookie);
     let body: serde_json::Value = json.json().await.unwrap();
@@ -250,7 +250,7 @@ async fn form_starts_reuse_the_browsers_binding_so_parallel_states_redeem() {
     assert!(has_attr(&json_cookie, "Path=/accounts"), "{json_cookie}");
     assert_eq!(first_binding, binding, "the form start reuses the JSON start's binding");
     assert_eq!(held, binding, "a second form start reuses it too");
-    assert_eq!(oauth.take_state(&json_state, Some(&held)).await.unwrap(), Some(Intent::Login));
+    assert_eq!(oauth.take_state(&json_state, Some(&held)).await.unwrap(), Some(login_intent()));
     for state in [first_state, second_state] {
         let intent = oauth.take_state(&state, Some(&held)).await.unwrap();
         assert!(matches!(intent, Some(Intent::Browser { .. })), "{intent:?}");
@@ -264,7 +264,7 @@ async fn login_intent_still_hands_a_player_session_to_the_demo_page() {
     let subject = format!("epic-login-{}", suffix());
     let oauth = mock_epic(&pool, &subject).await;
     let binding = store::new_token();
-    let state = oauth.new_state(Intent::Login, binding.clone()).await.unwrap();
+    let state = oauth.new_state(login_intent(), binding.clone()).await.unwrap();
     let base = serve(svc.clone(), oauth).await;
     let resp = client()
         .get(format!("{base}/accounts/epic/callback?code=abc&state={state}"))
@@ -367,7 +367,7 @@ async fn the_json_epic_start_is_rate_limited_with_the_login_bucket() {
     let (_ctx, svc) = wired(&pool).await;
     let oauth = mock_epic(&pool, &format!("epic-limited-{}", suffix())).await;
     let base = serve_limited(svc, oauth, one_token_bucket()).await;
-    let start = || client().post(format!("{base}/accounts/epic/start")).send();
+    let start = || client().post(epic_start_url(&base)).send();
 
     let first = start().await.unwrap();
     let second = start().await.unwrap();
@@ -399,7 +399,7 @@ async fn a_hosted_form_post_drains_the_json_epic_start_bucket() {
         .await
         .unwrap();
     let start = client()
-        .post(format!("{base}/accounts/epic/start"))
+        .post(epic_start_url(&base))
         .header("Authorization", "Bearer some-session")
         .send()
         .await
@@ -465,4 +465,107 @@ async fn a_sign_in_refused_at_the_mint_keeps_the_browsers_session() {
     assert!(to.contains("=error"), "{to}");
     assert!(!minted, "a refused sign-in sets no session cookie");
     assert_eq!(held_after, Some(other), "the session the browser held survives the refusal");
+}
+
+/// A JSON start for `client_id`: the state of its authorize URL and the binding it set.
+async fn json_start(base: &str, client_id: &str) -> (String, String) {
+    let resp = client().post(format!("{base}/accounts/epic/start?client_id={client_id}")).send().await.unwrap();
+    assert_eq!(resp.status(), 200, "the start for {client_id} is admitted");
+    let binding = cookie_value(&set_cookie(&resp, BINDING_COOKIE));
+    let body: serde_json::Value = resp.json().await.unwrap();
+    (state_of(body["authorize_url"].as_str().unwrap()), binding)
+}
+
+async fn json_callback(base: &str, state: &str, binding: &str) -> reqwest::Response {
+    client()
+        .get(format!("{base}/accounts/epic/callback?code=abc&state={state}"))
+        .header("Cookie", format!("{BINDING_COOKIE}={binding}"))
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_epic_start_without_a_known_client_is_refused() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let oauth = mock_epic(&pool, &format!("epic-no-client-{}", suffix())).await;
+    let base = serve(svc, oauth).await;
+    let binding = store::new_token();
+    let start = format!("{base}/accounts/epic/start");
+    let oversized = "c".repeat(accountsapi::MAX_CLIENT_ID_BYTES + 1);
+    for (what, url) in [
+        ("missing", start.clone()),
+        ("empty", format!("{start}?client_id=")),
+        ("unknown", format!("{start}?client_id=no-such-client-{}", suffix())),
+        ("oversized", format!("{start}?client_id={oversized}")),
+    ] {
+        let resp = client()
+            .post(url)
+            .header("Cookie", format!("{BINDING_COOKIE}={binding}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401, "{what}");
+        assert!(resp.headers().get("set-cookie").is_none(), "{what}: a refused start sets no binding");
+        assert_eq!(resp.text().await.unwrap(), "invalid client", "{what}");
+    }
+    let states: i64 = sqlx::query_scalar("SELECT count(*) FROM accounts.oauth_states WHERE browser_binding = $1")
+        .bind(&binding)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(states, 0, "a refused start writes no state");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_epic_login_mints_for_the_client_that_started_it() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let subject = format!("epic-client-{}", suffix());
+    let oauth = mock_epic(&pool, &subject).await;
+    let base = serve(svc, oauth).await;
+    let started_for = insert_client(&pool, &[accountsapi::grant_types::REFRESH_TOKEN]).await;
+
+    let (state, binding) = json_start(&base, &started_for).await;
+    let resp = json_callback(&base, &state, &binding).await;
+    let to = location(&resp);
+    let player = epic_player(&pool, &subject).await;
+    let mut families: Vec<String> = Vec::new();
+    if let Some(player) = &player {
+        families = sqlx::query_scalar("SELECT client_id FROM accounts.token_families WHERE player_id = $1::uuid")
+            .bind(player)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        cleanup_player(&pool, player).await;
+    }
+    delete_client(&pool, &started_for).await;
+
+    assert!(to.starts_with("/#token=") && to.contains("&refresh="), "{to}");
+    assert_eq!(families, vec![started_for], "the one family belongs to the client named at the start");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_epic_login_for_a_client_deleted_after_the_start_is_refused() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let subject = format!("epic-gone-client-{}", suffix());
+    let oauth = mock_epic(&pool, &subject).await;
+    let base = serve(svc, oauth).await;
+    let doomed = insert_client(&pool, &[accountsapi::grant_types::REFRESH_TOKEN]).await;
+
+    let (state, binding) = json_start(&base, &doomed).await;
+    delete_client(&pool, &doomed).await;
+    let resp = json_callback(&base, &state, &binding).await;
+    let status = resp.status();
+    let to = location(&resp);
+    let player = epic_player(&pool, &subject).await;
+    if let Some(player) = &player {
+        cleanup_player(&pool, player).await;
+    }
+
+    assert_eq!(status, 303);
+    assert_eq!(to, "/?epic=error");
+    assert_eq!(player, None, "the refused mint rolls back the provisioning");
 }

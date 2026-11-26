@@ -280,12 +280,13 @@ CREATE TABLE IF NOT EXISTS accounts.refresh_tokens (
 /// process memory, so a provider's callback can LB-route to ANY replica: new_state INSERTs
 /// and take_state is a DELETE ... RETURNING scoped to the redeeming provider
 /// (cross-replica exactly-once single-redemption, 10-min TTL as a created_at predicate).
-/// intent decides the callback: login mints a player session, link attaches the identity
+/// intent decides the callback: login mints a player session for client_id, link attaches the identity
 /// to session_token's player, browser mints a browser session, ends replaces_session (the
 /// digest of the browser's previous session cookie) and returns to return_to. Only Epic
 /// has login and link. No player_id and deliberately NO cascade: a LINK row still in
 /// flight when its player is deleted names only that player's session token, and it is
-/// swept by the same 10-minute TTL prune as any abandoned one.
+/// swept by the same 10-minute TTL prune as any abandoned one. client_id has no FK either:
+/// the mint refuses a client deleted while its login is in flight.
 static OAUTH_STATES_DDL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     format!(
         r#"
@@ -297,11 +298,13 @@ CREATE TABLE IF NOT EXISTS accounts.oauth_states (
 	return_to        text,
 	replaces_session bytea,
 	browser_binding  text        NOT NULL,
+	client_id        text,
 	created_at       timestamptz NOT NULL DEFAULT now(),
 	CONSTRAINT oauth_states_epic_only CHECK (provider = '{EPIC}' OR intent = 'browser'),
 	CHECK ((intent = 'link') = (session_token IS NOT NULL)),
 	CHECK ((intent = 'browser') = (return_to IS NOT NULL)),
-	CHECK (intent = 'browser' OR replaces_session IS NULL)
+	CHECK (intent = 'browser' OR replaces_session IS NULL),
+	CHECK ((intent = 'login') = (client_id IS NOT NULL))
 );"#,
         EPIC = providers::EPIC,
         GOOGLE = providers::GOOGLE,
@@ -312,7 +315,7 @@ CREATE TABLE IF NOT EXISTS accounts.oauth_states (
 /// `CREATE TABLE IF NOT EXISTS` keeps the old table, and every start would then fail its
 /// INSERT.
 async fn refuse_stale_oauth_states(pool: &sqlx::PgPool, schema: &str) -> anyhow::Result<()> {
-    for column in ["intent", "provider"] {
+    for column in ["intent", "provider", "client_id"] {
         let present: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM information_schema.columns \
              WHERE table_schema = $1 AND table_name = 'oauth_states' AND column_name = $2",

@@ -56,7 +56,7 @@ async fn init_mounts_both_callbacks_outside_the_bucket_and_the_page_headers() {
     };
 
     drain();
-    let epic_start = client().post(format!("{base}/accounts/epic/start")).send().await.unwrap();
+    let epic_start = client().post(epic_start_url(&base)).send().await.unwrap();
     let mut callbacks = Vec::new();
     for path in ["/accounts/oidc/google/callback", "/accounts/epic/callback"] {
         drain();

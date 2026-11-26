@@ -39,9 +39,9 @@ async fn take_state_refuses_and_keeps_another_providers_state() {
     assert_eq!(epic.take_state(&google_state, Some(&binding)).await.unwrap(), None);
     assert_eq!(google.take_state(&google_state, Some(&binding)).await.unwrap(), Some(browser()));
 
-    let epic_state = epic.new_state(Intent::Login, binding.clone()).await.unwrap();
+    let epic_state = epic.new_state(login_intent(), binding.clone()).await.unwrap();
     assert_eq!(google.take_state(&epic_state, Some(&binding)).await.unwrap(), None);
-    assert_eq!(epic.take_state(&epic_state, Some(&binding)).await.unwrap(), Some(Intent::Login));
+    assert_eq!(epic.take_state(&epic_state, Some(&binding)).await.unwrap(), Some(login_intent()));
 }
 
 /// D4: only Epic has `login` and `link` states, and the table refuses them for any other
@@ -54,7 +54,7 @@ async fn oauth_states_refuse_login_and_link_for_a_provider_other_than_epic() {
     let google = google_flow(pool.clone());
     let binding = store::new_token();
 
-    for intent in [Intent::Login, Intent::Link { session_token: "tok".into() }] {
+    for intent in [login_intent(), Intent::Link { session_token: "tok".into() }] {
         let label = format!("{intent:?}");
         let err = google.new_state(intent, binding.clone()).await.expect_err(&label);
         let db = err.downcast_ref::<sqlx::Error>().and_then(|e| e.as_database_error());

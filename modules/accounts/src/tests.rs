@@ -672,6 +672,16 @@ pub(crate) fn test_client() -> String {
     TEST_CLIENT_ID.to_string()
 }
 
+/// The Epic JSON start under `base` for [`TEST_CLIENT_ID`].
+pub(crate) fn epic_start_url(base: &str) -> String {
+    format!("{base}/accounts/epic/start?client_id={TEST_CLIENT_ID}")
+}
+
+/// An Epic login intent for [`TEST_CLIENT_ID`].
+pub(crate) fn login_intent() -> Intent {
+    Intent::Login { client_id: test_client() }
+}
+
 /// Inserts a client of its own holding exactly `grants`; [`delete_client`] removes it.
 pub(crate) async fn insert_client(pool: &PgPool, grants: &[&str]) -> String {
     let client_id = format!("t-{}", suffix());
@@ -1876,7 +1886,7 @@ async fn oauth_state_expired_row_is_not_redeemable() {
     );
 
     let binding = store::new_token();
-    let state = oauth.new_state(Intent::Login, binding.clone()).await.unwrap();
+    let state = oauth.new_state(login_intent(), binding.clone()).await.unwrap();
     expire_state(&pool, &state).await;
     assert_eq!(
         oauth.take_state(&state, Some(&binding)).await.unwrap(),
@@ -2005,7 +2015,7 @@ async fn oauth_start_reuses_hardened_binding_cookie_for_parallel_states() {
     let client = reqwest::Client::new();
 
     let first = client
-        .post(format!("{base}/accounts/epic/start"))
+        .post(epic_start_url(&base))
         .send()
         .await
         .unwrap();
@@ -2034,7 +2044,7 @@ async fn oauth_start_reuses_hardened_binding_cookie_for_parallel_states() {
     let state_one = oauth_state_from_start(&first.json().await.unwrap());
 
     let second = client
-        .post(format!("{base}/accounts/epic/start"))
+        .post(epic_start_url(&base))
         .header("Cookie", &cookie_pair)
         .send()
         .await
@@ -2051,11 +2061,11 @@ async fn oauth_start_reuses_hardened_binding_cookie_for_parallel_states() {
     assert_ne!(state_one, state_two);
     assert_eq!(
         oauth.take_state(&state_one, Some(&binding)).await.unwrap(),
-        Some(Intent::Login)
+        Some(login_intent())
     );
     assert_eq!(
         oauth.take_state(&state_two, Some(&binding)).await.unwrap(),
-        Some(Intent::Login)
+        Some(login_intent())
     );
 
     let secure_oauth = oauth_fixture_with(
@@ -2066,7 +2076,7 @@ async fn oauth_start_reuses_hardened_binding_cookie_for_parallel_states() {
     );
     let secure_base = serve_oauth_router(secure_oauth, lazy_service()).await;
     let secure = client
-        .post(format!("{secure_base}/accounts/epic/start"))
+        .post(epic_start_url(&secure_base))
         .send()
         .await
         .unwrap();
@@ -2119,7 +2129,7 @@ async fn epic_start_store_error_is_503_and_mints_no_state() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .post(format!("{base}/accounts/epic/start"))
+        .post(epic_start_url(&base))
         .header("Authorization", "Bearer some-live-session")
         .send()
         .await
@@ -2154,7 +2164,7 @@ async fn epic_start_valid_session_mints_link_state() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .post(format!("{base}/accounts/epic/start"))
+        .post(epic_start_url(&base))
         .header("Authorization", format!("Bearer {}", sess.token))
         .send()
         .await
@@ -2189,7 +2199,7 @@ async fn epic_start_no_bearer_mints_login_state() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .post(format!("{base}/accounts/epic/start"))
+        .post(epic_start_url(&base))
         .send()
         .await
         .unwrap();
@@ -2198,7 +2208,7 @@ async fn epic_start_no_bearer_mints_login_state() {
     let state = oauth_state_from_start(&resp.json().await.unwrap());
     assert_eq!(
         oauth.take_state(&state, Some(&binding)).await.unwrap(),
-        Some(Intent::Login),
+        Some(login_intent()),
         "no bearer must mint a LOGIN state"
     );
 }
@@ -2227,7 +2237,7 @@ async fn rejected_oauth_callback_never_reaches_token_endpoint_or_consumes_state(
 
     let oauth = oauth_fixture(pool.clone(), "http://localhost/accounts/epic/callback", &token_url);
     let binding = store::new_token();
-    let state = oauth.new_state(Intent::Login, binding.clone()).await.unwrap();
+    let state = oauth.new_state(login_intent(), binding.clone()).await.unwrap();
     let base = serve_oauth_router(oauth, lazy_service()).await;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())

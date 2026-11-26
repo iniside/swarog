@@ -81,18 +81,24 @@ pub(crate) fn router(oauth: Arc<EpicOAuth>, svc: Arc<Service>, limiter: Arc<web:
     Router::new()
         .route(
             "/accounts/epic/start",
-            post(move |ConnectInfo(peer): ConnectInfo<SocketAddr>, jar: CookieJar, headers: HeaderMap| {
-                let oauth = start_oauth.clone();
-                let svc = start_svc.clone();
-                let limiter = limiter.clone();
-                async move {
-                    if !limiter.allow(peer, &headers) {
-                        return (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, "1")], "too many requests")
-                            .into_response();
+            post(
+                move |ConnectInfo(peer): ConnectInfo<SocketAddr>,
+                      jar: CookieJar,
+                      headers: HeaderMap,
+                      Query(q): Query<HashMap<String, String>>| {
+                    let oauth = start_oauth.clone();
+                    let svc = start_svc.clone();
+                    let limiter = limiter.clone();
+                    async move {
+                        if !limiter.allow(peer, &headers) {
+                            return (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, "1")], "too many requests")
+                                .into_response();
+                        }
+                        let client_id = q.get("client_id").map(String::as_str).unwrap_or_default();
+                        handle_start(oauth, svc, jar, headers, client_id).await
                     }
-                    handle_start(oauth, svc, jar, headers).await
-                }
-            }),
+                },
+            ),
         )
         .route(
             SPEC.callback_path,
@@ -109,14 +115,19 @@ pub(crate) fn router(oauth: Arc<EpicOAuth>, svc: Arc<Service>, limiter: Arc<web:
 
 /// Builds the authorize URL. Called via fetch with the user's bearer token: if
 /// present and valid, this becomes a LINK flow bound to that player; otherwise a
-/// plain login flow. Returns JSON so the page can redirect (Go's `handleEpicStart`).
+/// plain login flow for `client_id`. Returns JSON so the page can redirect (Go's
+/// `handleEpicStart`). A missing, over-cap or unknown `client_id` is 401 before any state.
 async fn handle_start(
     oauth: Arc<EpicOAuth>,
     svc: Arc<Service>,
     jar: CookieJar,
     headers: HeaderMap,
+    client_id: &str,
 ) -> Response {
-    let mut intent = Intent::Login;
+    if !crate::client_id_within_cap(client_id) {
+        return invalid_client();
+    }
+    let mut intent = Intent::Login { client_id: client_id.to_string() };
     if let Some(tok) = bearer(&headers) {
         match svc.store.player_by_session(&tok).await {
             // Valid session ⇒ LINK flow bound to that player.
@@ -135,6 +146,14 @@ async fn handle_start(
                 return (StatusCode::SERVICE_UNAVAILABLE, "internal error, try again")
                     .into_response();
             }
+        }
+    }
+    match svc.store.client(client_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return invalid_client(),
+        Err(err) => {
+            tracing::error!(%err, "epic start: client lookup failed");
+            return (StatusCode::SERVICE_UNAVAILABLE, "internal error, try again").into_response();
         }
     }
     let browser_binding = browser_binding(&jar);
@@ -174,7 +193,7 @@ async fn complete(svc: &Service, outcome: Outcome) -> Response {
     };
     let session_token = match intent {
         HookIntent::Link { session_token } => session_token,
-        HookIntent::Login => return login(svc, &subject).await,
+        HookIntent::Login { client_id } => return login(svc, &subject, &client_id).await,
     };
     // LINK flow: attach the Epic identity to the already-logged-in player.
     let p = match svc.store.player_by_session(&session_token).await {
@@ -207,12 +226,13 @@ async fn complete(svc: &Service, outcome: Outcome) -> Response {
 }
 
 /// LOGIN flow: find or create a player for this Epic identity (durable
-/// player.registered on first sight), mint a session, hand BOTH tokens back via the
-/// URL fragment for the page to pick up — the access token alone would strand the
-/// browser at its 60-minute expiry with nothing to renew from.
-async fn login(svc: &Service, subject: &str) -> Response {
+/// player.registered on first sight), mint a session for the client that started the
+/// login, hand BOTH tokens back via the URL fragment for the page to pick up — the
+/// access token alone would strand the browser at its 60-minute expiry with nothing to
+/// renew from. A client deleted since the start fails the mint.
+async fn login(svc: &Service, subject: &str, client_id: &str) -> Response {
     let session = match svc
-        .external_login(SPEC.name, subject, &SPEC.display_name(subject), None, accountsapi::DEV_GAME_CLIENT_ID)
+        .external_login(SPEC.name, subject, &SPEC.display_name(subject), None, client_id)
         .await
     {
         Ok((session, _created)) => session,
@@ -226,6 +246,10 @@ async fn login(svc: &Service, subject: &str) -> Response {
         session.token, session.refresh_token
     ))
     .into_response()
+}
+
+fn invalid_client() -> Response {
+    (StatusCode::UNAUTHORIZED, "invalid client").into_response()
 }
 
 /// Extracts the token from an `Authorization: Bearer <token>` header, or `None`.

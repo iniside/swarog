@@ -56,8 +56,8 @@ impl ProviderSpec {
 /// What the callback does with a redeemed state (`accounts.oauth_states.intent`).
 #[derive(Debug, PartialEq)]
 pub(crate) enum Intent {
-    /// Find or create the player and hand a player session to the demo page.
-    Login,
+    /// Find or create the player and hand the demo page a player session for `client_id`.
+    Login { client_id: String },
     /// Attach the identity to the player behind this bearer session.
     Link { session_token: String },
     /// Find or create the player, mint a browser session ending the one whose digest is
@@ -70,7 +70,7 @@ pub(crate) enum Intent {
 #[derive(Debug, PartialEq)]
 pub(crate) enum HookIntent {
     /// [`Intent::Login`].
-    Login,
+    Login { client_id: String },
     /// [`Intent::Link`].
     Link { session_token: String },
 }
@@ -148,15 +148,15 @@ impl OAuthFlow {
     ) -> anyhow::Result<String> {
         self.prune_expired().await;
         let s = crate::store::new_token();
-        let (name, session_token, return_to, replaces) = match intent {
-            Intent::Login => ("login", None, None, None),
-            Intent::Link { session_token } => ("link", Some(session_token), None, None),
-            Intent::Browser { return_to, replaces } => ("browser", None, Some(return_to), replaces),
+        let (name, session_token, return_to, replaces, client_id) = match intent {
+            Intent::Login { client_id } => ("login", None, None, None, Some(client_id)),
+            Intent::Link { session_token } => ("link", Some(session_token), None, None, None),
+            Intent::Browser { return_to, replaces } => ("browser", None, Some(return_to), replaces, None),
         };
         sqlx::query(
             "INSERT INTO accounts.oauth_states \
-               (state, provider, intent, session_token, return_to, replaces_session, browser_binding) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+               (state, provider, intent, session_token, return_to, replaces_session, browser_binding, client_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(&s)
         .bind(self.spec.name)
@@ -165,6 +165,7 @@ impl OAuthFlow {
         .bind(return_to)
         .bind(replaces)
         .bind(&browser_binding)
+        .bind(client_id)
         .execute(&self.pool)
         .await?;
         Ok(s)
@@ -190,25 +191,25 @@ impl OAuthFlow {
         // it renders the response, exactly as `new_state` above leaves its persistence
         // failure to its caller. Logging at both ends would make one store outage
         // count twice in the ERROR rate.
-        type Row = (String, Option<String>, Option<String>, Option<Vec<u8>>);
+        type Row = (String, Option<String>, Option<String>, Option<Vec<u8>>, Option<String>);
         let row: Option<Row> = sqlx::query_as(&format!(
             "DELETE FROM accounts.oauth_states \
              WHERE state = $1 AND browser_binding = $2 AND provider = $3 \
                AND created_at > now() - interval '{STATE_TTL_SQL}' \
-             RETURNING intent, session_token, return_to, replaces_session"
+             RETURNING intent, session_token, return_to, replaces_session, client_id"
         ))
         .bind(s)
         .bind(binding)
         .bind(self.spec.name)
         .fetch_optional(&self.pool)
         .await?;
-        let Some((intent, session_token, return_to, replaces)) = row else {
+        let Some((intent, session_token, return_to, replaces, client_id)) = row else {
             return Ok(None);
         };
-        match (intent.as_str(), session_token, return_to) {
-            ("login", None, None) => Ok(Some(Intent::Login)),
-            ("link", Some(session_token), None) => Ok(Some(Intent::Link { session_token })),
-            ("browser", None, Some(return_to)) => Ok(Some(Intent::Browser { return_to, replaces })),
+        match (intent.as_str(), session_token, return_to, client_id) {
+            ("login", None, None, Some(client_id)) => Ok(Some(Intent::Login { client_id })),
+            ("link", Some(session_token), None, None) => Ok(Some(Intent::Link { session_token })),
+            ("browser", None, Some(return_to), None) => Ok(Some(Intent::Browser { return_to, replaces })),
             _ => Err(sqlx::Error::Protocol(format!("oauth state row with intent {intent:?} is malformed"))),
         }
     }
@@ -398,11 +399,13 @@ where
             browser_sign_in(flow, svc, &subject, &return_to, replaces.as_deref()).await
         }
         (Intent::Browser { return_to, .. }, None) => flow.browser_failed(&return_to),
-        (Intent::Login, Some(subject)) => hook(Outcome::Verified { intent: HookIntent::Login, subject }).await,
+        (Intent::Login { client_id }, Some(subject)) => {
+            hook(Outcome::Verified { intent: HookIntent::Login { client_id }, subject }).await
+        }
         (Intent::Link { session_token }, Some(subject)) => {
             hook(Outcome::Verified { intent: HookIntent::Link { session_token }, subject }).await
         }
-        (Intent::Login | Intent::Link { .. }, None) => hook(Outcome::Failed).await,
+        (Intent::Login { .. } | Intent::Link { .. }, None) => hook(Outcome::Failed).await,
     }
 }
 

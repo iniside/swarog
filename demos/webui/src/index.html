@@ -84,6 +84,8 @@
 <script>
 const TOKEN = "gb_token";
 const REFRESH = "gb_refresh";
+// accountsapi::DEV_GAME_CLIENT_ID, the client the dev launchers seed.
+const CLIENT_ID = "dev-game";
 const $ = (id) => document.getElementById(id);
 const token = () => localStorage.getItem(TOKEN);
 
@@ -129,6 +131,7 @@ async function api(path, opts = {}) {
 async function register() {
   const r = await api("/accounts/register", { method: "POST", body: JSON.stringify({
     email: $("email").value, password: $("password").value, displayName: $("email").value.split("@")[0],
+    clientId: CLIENT_ID,
   })});
   if (!r.ok) return toast("Register failed: " + (await r.text()).trim(), false);
   store(await r.json());
@@ -137,7 +140,7 @@ async function register() {
 
 async function login() {
   const r = await api("/accounts/login", { method: "POST", body: JSON.stringify({
-    email: $("email").value, password: $("password").value,
+    email: $("email").value, password: $("password").value, clientId: CLIENT_ID,
   })});
   if (!r.ok) return toast("Login failed: " + (await r.text()).trim(), false);
   store(await r.json());
@@ -147,7 +150,7 @@ async function login() {
 function logout() { forget(); refresh(); }
 
 async function linkEpic() {
-  const r = await api("/accounts/epic/start", { method: "POST" });
+  const r = await api("/accounts/epic/start?client_id=" + encodeURIComponent(CLIENT_ID), { method: "POST" });
   if (!r.ok) return toast("Could not start Epic flow: " + (await r.text()).trim(), false);
   const j = await r.json();
   window.location = j.authorize_url; // off to Epic; comes back to /accounts/epic/callback
