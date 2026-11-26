@@ -1609,17 +1609,7 @@ impl TxHandler for PruneHandler {
             }
             self.svc
                 .store
-                .prune_expired_sessions(conn)
-                .await
-                .map_err(BusError::transport)?;
-            self.svc
-                .store
-                .prune_expired_refresh_tokens(conn)
-                .await
-                .map_err(BusError::transport)?;
-            self.svc
-                .store
-                .prune_expired_families(conn)
+                .prune_expired_token_rows(conn)
                 .await
                 .map_err(BusError::transport)?;
             self.svc

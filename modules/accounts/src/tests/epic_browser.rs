@@ -549,8 +549,9 @@ async fn the_epic_start_refuses_an_oversized_client_before_the_lookup() {
     assert_eq!(states, 0, "a refused start writes no state");
 }
 
-/// A link start mints nothing, so it takes no client: a valid bearer without `client_id`
-/// is admitted and stores a link state carrying no client.
+/// A link start mints nothing, so it takes no client: a valid bearer is admitted without
+/// `client_id` and with an oversized one, and each start stores a link state carrying no
+/// client.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_link_start_needs_no_client_id() {
     let Some(pool) = test_pool().await else { return };
@@ -560,23 +561,40 @@ async fn a_link_start_needs_no_client_id() {
     let oauth = mock_epic(&pool, &format!("epic-link-{}", suffix())).await;
     let base = serve(Arc::clone(&svc), oauth).await;
 
-    let resp = client()
-        .post(format!("{base}/accounts/epic/start"))
-        .header("Authorization", format!("Bearer {}", session.token))
-        .send()
-        .await
-        .unwrap();
-    let status = resp.status();
-    let states: Vec<(String, Option<String>)> =
-        sqlx::query_as("SELECT intent, client_id FROM accounts.oauth_states WHERE session_token = $1")
-            .bind(&session.token)
-            .fetch_all(&pool)
+    let oversized = "c".repeat(accountsapi::MAX_CLIENT_ID_BYTES + 1);
+    let mut statuses = Vec::new();
+    let mut states = Vec::new();
+    for query in [String::new(), format!("?client_id={oversized}")] {
+        let resp = client()
+            .post(format!("{base}/accounts/epic/start{query}"))
+            .header("Authorization", format!("Bearer {}", session.token))
+            .send()
             .await
             .unwrap();
+        statuses.push(resp.status());
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT intent, client_id FROM accounts.oauth_states WHERE session_token = $1",
+        )
+        .bind(&session.token)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        states.push(rows);
+    }
     cleanup_player(&pool, &session.player_id).await;
 
-    assert_eq!(status, 200, "a link start is admitted without a client");
-    assert_eq!(states, [("link".to_string(), None)], "one link state, with no client");
+    assert_eq!(
+        statuses,
+        [200, 200],
+        "a link start is admitted without a client and with an oversized one",
+    );
+    let link = ("link".to_string(), None);
+    assert_eq!(
+        states[0],
+        std::slice::from_ref(&link),
+        "the first start stores one link state, with no client",
+    );
+    assert_eq!(states[1], [link.clone(), link], "the oversized start stores one more, with no client");
 }
 
 #[tokio::test(flavor = "multi_thread")]

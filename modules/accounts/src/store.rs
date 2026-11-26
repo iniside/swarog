@@ -1151,7 +1151,7 @@ impl Store {
         conn: &mut PgConnection,
         player_id: &str,
     ) -> Result<Vec<String>, sqlx::Error> {
-        sqlx::query_scalar(granting_families!("family_id::text", "ORDER BY family_id"))
+        sqlx::query_scalar(granting_families!("family_id::text", "ORDER BY family_rows.family_id"))
         .bind(player_id)
         .fetch_all(&mut *conn)
         .await
@@ -1200,20 +1200,6 @@ impl Store {
         Ok(row.map(|(id, display_name)| Player { id, display_name }))
     }
 
-    /// Deletes every expired session ON THE GIVEN CONNECTION (the delivery tx), so the
-    /// prune commits atomically with the durable subscription's checkpoint advance. The
-    /// returned count is the number of rows removed. Idempotent — a redelivered tick
-    /// simply deletes nothing the second time.
-    pub async fn prune_expired_sessions(
-        &self,
-        conn: &mut PgConnection,
-    ) -> Result<u64, sqlx::Error> {
-        let res = sqlx::query("DELETE FROM accounts.sessions WHERE expires_at <= now()")
-            .execute(&mut *conn)
-            .await?;
-        Ok(res.rows_affected())
-    }
-
     /// Deletes every EXPIRED browser session on the delivery tx; an expired one is
     /// already absent to every lookup.
     pub async fn prune_expired_browser_sessions(
@@ -1239,38 +1225,38 @@ impl Store {
         Ok(res.rows_affected())
     }
 
-    /// Deletes every EXPIRED refresh token on the delivery tx, the sibling retention of
-    /// [`Store::prune_expired_sessions`] for the table rotation grows. Only
-    /// `expires_at <= now()` — a CONSUMED row is the reuse detector and is retained for
-    /// its family's whole life; an expired one can no longer produce any verdict but
-    /// `Deny`, so removing it changes no answer.
-    pub async fn prune_expired_refresh_tokens(
-        &self,
-        conn: &mut PgConnection,
-    ) -> Result<u64, sqlx::Error> {
-        let res = sqlx::query("DELETE FROM accounts.refresh_tokens WHERE expires_at <= now()")
-            .execute(&mut *conn)
-            .await?;
-        Ok(res.rows_affected())
-    }
-
-    /// Deletes every token family that no longer grants access ([`granting_families`]) on
-    /// the delivery tx: its newest access token expired and it holds no unexpired refresh
-    /// token. Locks them in ascending id first, the order of
-    /// [`Store::kill_player_families_tx`].
-    pub async fn prune_expired_families(&self, conn: &mut PgConnection) -> Result<u64, sqlx::Error> {
-        let res = sqlx::query(
-            "WITH doomed AS ( \
-               SELECT f.id FROM accounts.token_families f \
-                WHERE f.access_expires_at <= now() \
-                  AND NOT EXISTS (SELECT 1 FROM accounts.refresh_tokens t \
-                                   WHERE t.family_id = f.id AND t.expires_at > now()) \
-                ORDER BY f.id FOR UPDATE OF f) \
-             DELETE FROM accounts.token_families WHERE id IN (SELECT id FROM doomed)",
+    /// Deletes every expired access session and refresh token and every token family that
+    /// no longer grants access ([`granting_families`]) on the delivery tx, so the prune
+    /// commits with the subscription's checkpoint. A CONSUMED refresh token is the reuse
+    /// detector and stays until it expires; an expired one can only answer `Deny`. Every
+    /// family these deletes reach is locked first, in one ascending-id pass (the order of
+    /// [`Store::kill_player_families_tx`]): a token deleted before its family is locked would
+    /// be held while a family delete's cascade waits on it, and that delete holds the family.
+    pub async fn prune_expired_token_rows(&self, conn: &mut PgConnection) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "SELECT 1 FROM accounts.token_families f \
+              WHERE EXISTS (SELECT 1 FROM accounts.sessions s \
+                             WHERE s.family_id = f.id AND s.expires_at <= now()) \
+                 OR EXISTS (SELECT 1 FROM accounts.refresh_tokens t \
+                             WHERE t.family_id = f.id AND t.expires_at <= now()) \
+                 OR (f.access_expires_at <= now() \
+                     AND NOT EXISTS (SELECT 1 FROM accounts.refresh_tokens t \
+                                      WHERE t.family_id = f.id AND t.expires_at > now())) \
+              ORDER BY f.id FOR UPDATE OF f",
         )
         .execute(&mut *conn)
         .await?;
-        Ok(res.rows_affected())
+        for delete in [
+            "DELETE FROM accounts.sessions WHERE expires_at <= now()",
+            "DELETE FROM accounts.refresh_tokens WHERE expires_at <= now()",
+            "DELETE FROM accounts.token_families f \
+              WHERE f.access_expires_at <= now() \
+                AND NOT EXISTS (SELECT 1 FROM accounts.refresh_tokens t \
+                                 WHERE t.family_id = f.id AND t.expires_at > now())",
+        ] {
+            sqlx::query(delete).execute(&mut *conn).await?;
+        }
+        Ok(())
     }
 
     /// The summaries for `ids` in ONE statement, for the batched
@@ -1470,7 +1456,7 @@ impl Store {
                  (EXTRACT(EPOCH FROM min(since)) * 1000000)::int8, \
                  floor(EXTRACT(EPOCH FROM (max(expires_at) - now())))::int8, \
                  count(*) OVER ()",
-                "ORDER BY min(since) DESC, family_id LIMIT $2"
+                "ORDER BY min(since) DESC, family_rows.family_id LIMIT $2"
             ),
         )
         .bind(player_id)
