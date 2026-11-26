@@ -61,7 +61,7 @@ async fn serve(svc: Arc<Service>, oauth: Arc<EpicOAuth>) -> String {
     serve_limited(svc, oauth, httpmw::IpLimiter::new("accounts_epic_browser_test", 5.0, 20)).await
 }
 
-/// `serve` with the given sign-in bucket, shared by both mounts as in `init`.
+/// `serve` with the given sign-in bucket, shared by the hosted form and the Epic start as in `init`.
 async fn serve_limited(svc: Arc<Service>, oauth: Arc<EpicOAuth>, limiter: Arc<httpmw::IpLimiter>) -> String {
     let limiter = web::LoginLimiter::new(limiter, Vec::new());
     let flows = web::Flows { epic: Some(oauth), google: None };

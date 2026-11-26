@@ -71,7 +71,7 @@ impl EpicOAuth {
     }
 }
 
-/// The two HTTP-native routes, as an axum sub-router the module `ctx.mount`s:
+/// The two HTTP-native routes, as an axum sub-router `web::hosted_browser_router` merges in:
 /// `POST /accounts/epic/start` and `GET /accounts/epic/callback`. The start draws from
 /// `limiter`, the hosted sign-in form's bucket.
 pub(crate) fn router(oauth: Arc<EpicOAuth>, svc: Arc<Service>, limiter: Arc<web::LoginLimiter>) -> Router {
