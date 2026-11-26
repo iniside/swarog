@@ -1,5 +1,5 @@
 use super::*;
-use accountsapi::{Auth as _, Sessions as _};
+use accountsapi::Auth as _;
 use base64::Engine as _;
 
 mod browser_session;
@@ -370,33 +370,43 @@ async fn login_federated_apple_is_unknown_not_unconfigured() {
 }
 
 #[tokio::test]
-async fn over_cap_session_tokens_short_circuit_handler_and_store_before_sql_by_bytes() {
+async fn over_cap_tokens_short_circuit_before_sql_by_bytes() {
     const DEAD_DSN: &str =
         "postgres://gamebackend:gamebackend@127.0.0.1:1/no-session-cap-test";
     let svc = lazy_service_at(DEAD_DSN, Arc::new(ArgonVerifier));
     let store = Store {
         pool: PgPool::connect_lazy(DEAD_DSN).unwrap(),
     };
-    let ascii = "a".repeat(accountsapi::MAX_SESSION_TOKEN_BYTES + 1);
-    let multibyte = "é".repeat(accountsapi::MAX_SESSION_TOKEN_BYTES / 2 + 1);
-    assert!(multibyte.len() > accountsapi::MAX_SESSION_TOKEN_BYTES);
+    let over = |cap: usize| ["a".repeat(cap + 1), "é".repeat(cap / 2 + 1)];
 
-    for token in [ascii, multibyte] {
+    for token in over(accountsapi::MAX_ACCESS_TOKEN_BYTES) {
+        assert!(token.len() > accountsapi::MAX_ACCESS_TOKEN_BYTES);
         let result = tokio::time::timeout(
             Duration::from_millis(100),
-            svc.verify_session(token.clone()),
+            svc.tokens.verify_access(&token),
         )
         .await
-        .expect("over-cap handler touched the dead lazy pool")
+        .expect("an over-cap access token touched the dead lazy pool")
         .unwrap();
         assert!(result.is_none());
+    }
+
+    for token in over(accountsapi::MAX_OPAQUE_TOKEN_BYTES) {
+        assert!(token.len() > accountsapi::MAX_OPAQUE_TOKEN_BYTES);
+        let refreshed = tokio::time::timeout(
+            Duration::from_millis(100),
+            svc.refresh(token.clone()),
+        )
+        .await
+        .expect("an over-cap refresh token touched the dead lazy pool");
+        assert_eq!(refreshed.unwrap_err().status, opsapi::Status::Unauthorized);
 
         let result = tokio::time::timeout(
             Duration::from_millis(100),
-            store.player_by_session(&token),
+            store.browser_session(&token),
         )
         .await
-        .expect("over-cap lookup touched the dead lazy pool")
+        .expect("an over-cap browser cookie touched the dead lazy pool")
         .unwrap();
         assert!(result.is_none());
     }
@@ -425,8 +435,8 @@ fn new_accounts_caps_count_utf8_bytes_at_boundary() {
     );
     assert_cap("provider name", MAX_PROVIDER_NAME_BYTES, provider_name_within_cap);
     assert_cap(
-        "session token",
-        accountsapi::MAX_SESSION_TOKEN_BYTES,
+        "opaque token",
+        accountsapi::MAX_OPAQUE_TOKEN_BYTES,
         opaque_token_within_cap,
     );
 }
@@ -896,7 +906,10 @@ async fn register_login_session_roundtrip_with_durable_event() {
         .await
         .unwrap();
     assert!(!sess.player_id.is_empty());
-    assert_eq!(sess.token.len(), 43);
+    assert_eq!(
+        svc.tokens.verify_access(&sess.token).await.unwrap().map(|c| c.sub),
+        Some(sess.player_id.clone())
+    );
 
     // Durable rule: exactly one player.registered log event, provider dev.
     assert_eq!(registered_events(&pool, &sess.player_id).await, 1);
@@ -919,12 +932,12 @@ async fn register_login_session_roundtrip_with_durable_event() {
         .unwrap_err();
     assert_eq!(e.status, opsapi::Status::Unauthorized);
 
-    // The minted session verifies to the player; garbage does not.
+    // The minted access token verifies to the player; garbage does not.
     assert_eq!(
-        svc.verify_session(s2.token.clone()).await.unwrap(),
+        svc.tokens.verify_access(&s2.token).await.unwrap().map(|c| c.sub),
         Some(sess.player_id.clone())
     );
-    assert_eq!(svc.verify_session("garbage-token".into()).await.unwrap(), None);
+    assert_eq!(svc.tokens.verify_access("garbage-token").await.unwrap(), None);
 
     // me returns the flattened view with the dev identity.
     let me = svc.me(Identity::player(&sess.player_id)).await.unwrap();
@@ -939,28 +952,18 @@ async fn register_login_session_roundtrip_with_durable_event() {
 }
 
 #[tokio::test]
-async fn session_token_collision_rolls_back_registration_and_event() {
+async fn a_refused_mint_rolls_back_registration_and_event() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
-    let owner = svc
-        .register(
-            format!("owner-{}@test.local", suffix()),
-            "pw".into(),
-            "Collision owner".into(),
-            test_client(),
-        )
-        .await
-        .unwrap();
-    let attempted_email = format!("collision-{}@test.local", suffix());
-    let attempted_display = format!("Collision rollback {}", suffix());
+    let attempted_email = format!("refused-mint-{}@test.local", suffix());
+    let attempted_display = format!("Refused mint rollback {}", suffix());
 
     let result = svc
-        .register_hashed_with_token(
+        .register_hashed(
             &attempted_email,
             &attempted_display,
             "unused-test-hash",
-            TEST_CLIENT_ID,
-            owner.token.clone(),
+            "no-such-client",
         )
         .await;
     let identity_rows: i64 = sqlx::query_scalar(
@@ -985,10 +988,9 @@ async fn session_token_collision_rolls_back_registration_and_event() {
     .await
     .unwrap();
 
-    cleanup_player(&pool, &owner.player_id).await;
     let _ = asyncevents::testing::cleanup_events(&pool, "display_name", &attempted_display).await;
 
-    assert!(result.is_err(), "duplicate session token must fail registration");
+    assert!(result.is_err(), "a mint refused for an unknown client must fail registration");
     assert_eq!(identity_rows, 0, "identity insert must roll back");
     assert_eq!(player_rows, 0, "player insert must roll back");
     assert_eq!(event_rows, 0, "player.registered append must roll back");
@@ -1019,11 +1021,11 @@ async fn unknown_email_takes_decoy_verify_path() {
     );
 }
 
-/// Session TTL: a session whose `expires_at` has passed no longer resolves (Go's
-/// `expires_at > now()` guard — forced by rewinding the row rather than waiting 30
-/// days).
+/// A revocation row naming an access token's family refuses it at once: `verify_access`
+/// reads `token_revocations` from the database on every call. An access token's expiry is
+/// its own `exp` claim, which no row can move; `tests/tokens.rs` covers it.
 #[tokio::test]
-async fn expired_session_does_not_verify() {
+async fn a_family_revocation_refuses_its_access_token() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
 
@@ -1031,19 +1033,26 @@ async fn expired_session_does_not_verify() {
         .register(format!("ttl-{}@test.local", suffix()), "pw".into(), String::new(), test_client())
         .await
         .unwrap();
-    assert_eq!(
-        svc.verify_session(sess.token.clone()).await.unwrap(),
-        Some(sess.player_id.clone())
-    );
+    let claims = svc.tokens.verify_access(&sess.token).await.unwrap().expect("a fresh access token verifies");
 
-    sqlx::query("UPDATE accounts.sessions SET expires_at = now() - interval '1 minute' WHERE token = $1")
-        .bind(&sess.token)
+    sqlx::query(
+        "INSERT INTO accounts.token_revocations (family_id, revoked_at, expires_at) \
+         VALUES ($1::uuid, now(), now() + interval '1 hour')",
+    )
+    .bind(&claims.sid)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let after = svc.tokens.verify_access(&sess.token).await.unwrap();
+    sqlx::query("DELETE FROM accounts.token_revocations WHERE family_id = $1::uuid")
+        .bind(&claims.sid)
         .execute(&pool)
         .await
         .unwrap();
-    assert_eq!(svc.verify_session(sess.token.clone()).await.unwrap(), None);
-
     cleanup_player(&pool, &sess.player_id).await;
+
+    assert_eq!(claims.sub, sess.player_id);
+    assert_eq!(after, None, "a revoked family's access token must not verify");
 }
 
 /// external_login: first sight provisions player+event+session atomically; second
@@ -1098,8 +1107,8 @@ async fn concurrent_first_logins_create_one_player_event_and_two_sessions() {
     let both_waiting = wait_for_identity_lock_waiters(&pool, key, 2).await;
     gate.rollback().await.unwrap();
     let (first, second) = (first.await.unwrap().unwrap(), second.await.unwrap().unwrap());
-    let sessions: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM accounts.sessions WHERE player_id = $1::uuid",
+    let families: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM accounts.token_families WHERE player_id = $1::uuid",
     )
     .bind(&first.0.player_id)
     .fetch_one(&pool)
@@ -1113,7 +1122,7 @@ async fn concurrent_first_logins_create_one_player_event_and_two_sessions() {
     assert_eq!(first.0.player_id, second.0.player_id);
     assert_ne!(first.0.token, second.0.token);
     assert_ne!(first.1, second.1, "exactly one concurrent login must create");
-    assert_eq!(sessions, 2);
+    assert_eq!(families, 2);
     assert_eq!(events, 1);
 }
 

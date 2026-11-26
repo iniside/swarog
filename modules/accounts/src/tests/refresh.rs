@@ -41,14 +41,6 @@ async fn refresh_row_count(pool: &PgPool, token: &str) -> i64 {
         .unwrap()
 }
 
-async fn session_row_count(pool: &PgPool, token: &str) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM accounts.sessions WHERE token = $1")
-        .bind(token)
-        .fetch_one(pool)
-        .await
-        .unwrap()
-}
-
 async fn family_refresh_count(pool: &PgPool, family_id: &str) -> i64 {
     sqlx::query_scalar("SELECT count(*) FROM accounts.refresh_tokens WHERE family_id = $1::uuid")
         .bind(family_id)
@@ -57,8 +49,26 @@ async fn family_refresh_count(pool: &PgPool, family_id: &str) -> i64 {
         .unwrap()
 }
 
-async fn family_session_count(pool: &PgPool, family_id: &str) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM accounts.sessions WHERE family_id = $1::uuid")
+async fn family_row_count(pool: &PgPool, family_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM accounts.token_families WHERE id = $1::uuid")
+        .bind(family_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// When family `family_id`'s newest access token expires, as text.
+async fn family_access_expiry(pool: &PgPool, family_id: &str) -> String {
+    sqlx::query_scalar("SELECT access_expires_at::text FROM accounts.token_families WHERE id = $1::uuid")
+        .bind(family_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// How many `token_revocations` rows name family `family_id`.
+async fn family_revocation_count(pool: &PgPool, family_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM accounts.token_revocations WHERE family_id = $1::uuid")
         .bind(family_id)
         .fetch_one(pool)
         .await
@@ -117,7 +127,7 @@ async fn rotation_kills_the_old_token_and_the_successor_works() {
     assert_eq!(old.replaced_by.as_deref(), Some(next.refresh_token.as_str()));
 
     assert_eq!(
-        svc.verify_session(next.token.clone()).await.unwrap(),
+        svc.tokens.verify_access(&next.token).await.unwrap().map(|c| c.sub),
         Some(pid.clone()),
         "the new access token must verify"
     );
@@ -128,7 +138,7 @@ async fn rotation_kills_the_old_token_and_the_successor_works() {
 /// The most important test in the step: `store::RefreshVerdict::Revoke` scopes the
 /// kill to the FAMILY, never the player. Two families minted for one player, a
 /// consumed token in family A replayed outside the grace window — family A is wiped
-/// on BOTH tables, family B (the player's other login) verifies on both untouched.
+/// and its access tokens refused, family B (the player's other login) stays untouched.
 /// A naive `WHERE player_id = $1` kill would pass every assertion except the
 /// family-B ones — see the perturbation note in the task report.
 #[tokio::test]
@@ -155,20 +165,24 @@ async fn replay_outside_grace_kills_only_its_own_family() {
     let err = svc.refresh(sess_a.refresh_token.clone()).await.unwrap_err();
     assert_eq!(err.status, opsapi::Status::Unauthorized);
 
-    // Family A: every refresh row (parent + the successor it minted) and every
-    // access session descended from it are gone.
+    // Family A: its row, every refresh row (parent + the successor it minted) are gone,
+    // and the access token its rotation minted no longer verifies.
     assert_eq!(family_refresh_count(&pool, &family_a).await, 0, "family A refresh rows must be gone");
-    assert_eq!(family_session_count(&pool, &family_a).await, 0, "family A access sessions must be gone");
+    assert_eq!(family_row_count(&pool, &family_a).await, 0, "family A must be gone");
     assert_eq!(refresh_row_count(&pool, &rotated_a.refresh_token).await, 0);
-    assert_eq!(session_row_count(&pool, &rotated_a.token).await, 0);
-
-    // Family B: the player's OTHER login, untouched — verifies on BOTH tables.
-    assert_eq!(family_refresh_count(&pool, &family_b).await, 1, "sibling family's refresh row must survive");
-    assert_eq!(family_session_count(&pool, &family_b).await, 1, "sibling family's access session must survive");
     assert_eq!(
-        svc.verify_session(sess_b.token.clone()).await.unwrap(),
+        svc.tokens.verify_access(&rotated_a.token).await.unwrap(),
+        None,
+        "family A's access token must be refused"
+    );
+
+    // Family B: the player's OTHER login, untouched.
+    assert_eq!(family_refresh_count(&pool, &family_b).await, 1, "sibling family's refresh row must survive");
+    assert_eq!(family_row_count(&pool, &family_b).await, 1, "sibling family must survive");
+    assert_eq!(
+        svc.tokens.verify_access(&sess_b.token).await.unwrap().map(|c| c.sub),
         Some(pid.clone()),
-        "sibling family's access session must still verify"
+        "sibling family's access token must still verify"
     );
     assert!(
         refresh_row(&pool, &sess_b.refresh_token).await.is_some(),
@@ -197,14 +211,19 @@ async fn replay_inside_grace_returns_the_recorded_successor_and_kills_nothing() 
         replay.refresh_token, rotated.refresh_token,
         "grace replay must hand back the recorded successor, not mint a new one"
     );
-    assert_ne!(replay.token, rotated.token, "grace replay still mints a fresh access session");
+    assert_ne!(replay.token, rotated.token, "grace replay still mints a fresh access token");
     assert_eq!(replay.player_id, pid);
 
     let family = refresh_row(&pool, &sess.refresh_token).await.unwrap().family_id;
     // parent (consumed) + the one successor rotation minted — no second refresh row.
     assert_eq!(family_refresh_count(&pool, &family).await, 2, "grace replay must not mint a second refresh row");
-    // register + rotate + grace-replay: three access sessions, nothing revoked.
-    assert_eq!(family_session_count(&pool, &family).await, 3, "grace replay must not revoke anything");
+    // register + rotate + grace-replay: nothing revoked, the replay's token verifies.
+    assert_eq!(family_row_count(&pool, &family).await, 1, "grace replay must not end the family");
+    assert_eq!(family_revocation_count(&pool, &family).await, 0, "grace replay must not revoke anything");
+    assert_eq!(
+        svc.tokens.verify_access(&replay.token).await.unwrap().map(|c| c.sub),
+        Some(pid.clone())
+    );
 
     let successor_row = refresh_row(&pool, &rotated.refresh_token).await.unwrap();
     assert!(!successor_row.used, "the grace replay must not itself consume the successor");
@@ -227,15 +246,16 @@ async fn replay_inside_grace_is_refused_once_the_client_drops_refresh_token() {
     let family = refresh_row(&pool, &sess.refresh_token).await.unwrap().family_id;
 
     set_client_grants(&pool, &client, &[accountsapi::grant_types::PASSWORD]).await;
+    let expiry_before = family_access_expiry(&pool, &family).await;
     let replay = svc.refresh(sess.refresh_token.clone()).await;
-    let sessions = family_session_count(&pool, &family).await;
+    let expiry_after = family_access_expiry(&pool, &family).await;
     cleanup_player(&pool, &sess.player_id).await;
     delete_client(&pool, &client).await;
 
     let e = replay.unwrap_err();
     assert_eq!(e.status, opsapi::Status::Unauthorized, "{e:?}");
     assert_eq!(e.msg, "invalid client");
-    assert_eq!(sessions, 2, "the refused replay mints no access session");
+    assert_eq!(expiry_after, expiry_before, "the refused replay mints no access token");
 }
 
 /// An expired refresh token is `RefreshVerdict::Deny` via the `row.expired` branch.
@@ -369,7 +389,7 @@ async fn concurrent_refreshes_produce_exactly_one_rotation() {
          serialize them, so the assertions below would not be about a contended row"
     );
     assert_eq!(r_a.refresh_token, r_b.refresh_token, "both callers must converge on one successor");
-    assert_ne!(r_a.token, r_b.token, "two distinct access sessions must be minted");
+    assert_ne!(r_a.token, r_b.token, "two distinct access tokens must be minted");
 
     let rotated_rows: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM accounts.refresh_tokens \

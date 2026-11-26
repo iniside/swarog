@@ -1,9 +1,9 @@
 //! `accounts-svc` — the accounts fortress process (Step 6). It hosts accounts and
 //! stands up one shared QUIC edge server (`EDGE_ADDR`, `:9003` in the run scripts);
-//! `accounts` contributes its Sessions + Auth faces to `edge::EDGE_SLOT`
+//! `accounts` contributes its TokenState + Auth faces to `edge::EDGE_SLOT`
 //! (topology-blind), and `app::run` installs them on this server so every front process's
-//! gateway verifies bearer tokens (`accounts.verifySession`) and fronts the auth ops over
-//! the mutually-authenticated edge.
+//! gateway pulls the keys and revocations it verifies bearer JWTs against
+//! (`accounts.token_state`) and fronts the auth ops over the mutually-authenticated edge.
 //!
 //! It hosts NO gateway (FrontDoor) module: the single public front door lives only in
 //! gateway-svc + the monolith. The typed auth ops (register, login, federated login,
@@ -25,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
 
     // One shared QUIC edge server for this process. `accounts` contributes its
-    // Sessions/Auth faces to `edge::EDGE_SLOT` during `init`; `app::run` applies the
+    // TokenState/Auth faces to `edge::EDGE_SLOT` during `init`; `app::run` applies the
     // contributions onto this server after Build, then `listen`s it.
     let edge_server = Arc::new(Mutex::new(edge::Server::new()));
 

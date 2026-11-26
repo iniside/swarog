@@ -38,10 +38,9 @@ pub struct KeyRecord {
 /// Resolves an API key string to its [`KeyRecord`] — the capability the gateway's
 /// per-request key check consults. It is WIRE-ONLY: no leading `Identity` (a key is a
 /// client-class credential, not a player) and no `#[http]` (not a gateway route; it
-/// rides the internal mTLS edge like `accounts.sessions`). Returns `Ok(None)` for a
+/// rides the internal mTLS edge like `accounts.token_state`). Returns `Ok(None)` for a
 /// genuine unknown OR revoked key so a transport/store failure (an `Err`) surfaces
-/// distinctly from an invalid key — the same `(record, ok, err)` shape as
-/// `accountsapi::Sessions::verify_session`.
+/// distinctly from an invalid key.
 #[rpc(prefix = "apikeys")]
 #[async_trait]
 pub trait Keys: Send + Sync {

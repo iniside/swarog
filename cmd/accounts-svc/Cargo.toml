@@ -6,10 +6,10 @@ license.workspace = true
 publish = false
 
 # The accounts fortress process (Step 6): hosts accounts and stands up one
-# shared QUIC edge server. `accounts` contributes its wire-only `accounts.verifySession`
+# shared QUIC edge server. `accounts` contributes its wire-only `accounts.token_state`
 # face + the auth op faces to `edge::EDGE_SLOT` (topology-blind); `app::run` installs them
-# here so every front gateway's session verifier (an `accountsrpc` Stub client) resolves
-# bearer tokens over the mutually-authenticated edge. It hosts NO gateway (FrontDoor) — the
+# here so every front gateway's verifier (an `accountsrpc` Stub client) pulls the keys and
+# revocations it verifies bearer JWTs against over the mutually-authenticated edge. It hosts NO gateway (FrontDoor) — the
 # single public front door lives only in gateway-svc + the monolith; the accounts module
 # still mounts its Epic OAuth browser routes on this process's own HTTP port.
 [[bin]]

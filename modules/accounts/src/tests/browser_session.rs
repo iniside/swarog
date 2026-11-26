@@ -19,7 +19,7 @@ async fn a_browser_token_resolves_its_player_but_never_authenticates_an_op() {
     let pid = svc.register(email, "pw".into(), "Browser".into(), test_client()).await.unwrap().player_id;
     let minted = svc.store.create_browser_session(&pid).await.unwrap().unwrap();
     let read = svc.store.browser_session(&minted.token).await.unwrap();
-    let as_bearer = svc.store.player_by_session(&minted.token).await.unwrap();
+    let as_bearer = svc.tokens.verify_access(&minted.token).await.unwrap();
     let stored_raw: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM accounts.browser_sessions WHERE token_digest = convert_to($1, 'UTF8')",
     )
@@ -35,7 +35,7 @@ async fn a_browser_token_resolves_its_player_but_never_authenticates_an_op() {
     assert_eq!(read.player_id, pid);
     assert_eq!(read.csrf_token, minted.csrf_token);
     assert_ne!(minted.csrf_token, minted.token);
-    assert!(as_bearer.is_none(), "a browser token is not a bearer session");
+    assert_eq!(as_bearer, None, "a browser token is not an access token");
     assert_eq!(stored_raw, 0, "only the digest is stored, never the token");
     assert!(ended, "logout deletes the session");
     assert!(after_logout.is_none());
@@ -45,7 +45,7 @@ async fn a_browser_token_resolves_its_player_but_never_authenticates_an_op() {
 async fn an_unknown_or_over_cap_token_is_absent() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
-    let over_cap = "a".repeat(accountsapi::MAX_SESSION_TOKEN_BYTES + 1);
+    let over_cap = "a".repeat(accountsapi::MAX_OPAQUE_TOKEN_BYTES + 1);
     assert!(svc.store.browser_session(&store::new_token()).await.unwrap().is_none());
     assert!(svc.store.browser_session(&over_cap).await.unwrap().is_none());
     assert!(!svc.store.delete_browser_session(&over_cap).await.unwrap());

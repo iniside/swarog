@@ -58,7 +58,7 @@ impl ProviderSpec {
 pub(crate) enum Intent {
     /// Find or create the player and hand the demo page a player session for `client_id`.
     Login { client_id: String },
-    /// Attach the identity to the player behind this bearer session.
+    /// Attach the identity to the player behind this access token.
     Link { session_token: String },
     /// Find or create the player, mint a browser session ending the one whose digest is
     /// `replaces` in the same commit, and go to `return_to`.

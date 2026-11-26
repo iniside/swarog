@@ -13,7 +13,7 @@
 //! time by observing the real `require` call vs the declared manifest.
 //!
 //! Optional `try_require` calls are recorded but NOT enforced (an optional dependency
-//! is deliberately allowed to be undeclared — e.g. `gateway`'s `accounts.sessions`).
+//! is deliberately allowed to be undeclared — e.g. `gateway`'s `accounts.token_state`).
 //!
 //! ## How
 //! It installs the opt-in `core/registry` require-observer, builds the MONOLITH module

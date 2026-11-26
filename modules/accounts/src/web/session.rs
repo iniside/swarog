@@ -1,7 +1,7 @@
 //! Browser sessions of the hosted login pages. The cookie carries an opaque token;
 //! `accounts.browser_sessions` keys on its SHA-256 digest and binds the CSRF token the
-//! page's forms echo. The bearer sessions `Store::player_by_session` reads are a
-//! separate table, so a browser cookie never authenticates an operation.
+//! page's forms echo. A browser cookie is not an access token, so it never
+//! authenticates an operation.
 
 use sha2::{Digest, Sha256};
 

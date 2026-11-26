@@ -134,7 +134,7 @@ async fn sign_in_landing_and_logout() {
     let to = location(&resp);
     let session_cookie = set_cookie(&resp, web::SESSION_COOKIE);
     let token = cookie_value(&session_cookie);
-    let as_bearer = svc.verify_session(token.clone()).await.unwrap();
+    let as_bearer = svc.tokens.verify_access(&token).await.unwrap();
     let session = format!("{}={token}", web::SESSION_COOKIE);
 
     let landing = client()
@@ -184,7 +184,7 @@ async fn sign_in_landing_and_logout() {
     for attr in ["HttpOnly", "SameSite=Lax", "Path=/accounts/oidc", "Max-Age=43200", "Secure"] {
         assert!(has_attr(&session_cookie, attr), "{attr}: {session_cookie}");
     }
-    assert!(as_bearer.is_none(), "a browser session token is not a player bearer");
+    assert_eq!(as_bearer, None, "a browser session token is not an access token");
 
     assert_eq!(landing_status, 200);
     assert!(landing_body.contains(&summary.handle), "{landing_body}");

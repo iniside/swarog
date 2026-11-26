@@ -1,5 +1,5 @@
 //! The durable session-prune reaction: accounts reacts to
-//! `scheduler.fired{name:"accounts-sessions-prune"}` and deletes expired sessions on the
+//! `scheduler.fired{name:"accounts-sessions-prune"}` and deletes expired token rows on the
 //! delivery tx. The [`PruneHandler`] is driven directly against a real sqlx tx (the same
 //! shape the asyncevents plane's consume runs the handler in), so these exercise the
 //! DELETE + name-filter without the transport internals. A child of `tests` so it reuses
@@ -17,13 +17,13 @@ async fn family_of(pool: &PgPool, refresh_token: &str) -> String {
         .unwrap()
 }
 
-/// Inserts a session row for `player_id` in family `family_id` with an explicit
+/// Inserts a refresh token for `player_id` in family `family_id` with an explicit
 /// `expires_at` relative to now (positive = future/live, negative = past/expired),
 /// returning its token.
-async fn insert_session(pool: &PgPool, player_id: &str, family_id: &str, offset_days: i32) -> String {
+async fn insert_refresh(pool: &PgPool, player_id: &str, family_id: &str, offset_days: i32) -> String {
     let token = store::new_token();
     sqlx::query(
-        "INSERT INTO accounts.sessions (token, player_id, family_id, expires_at) \
+        "INSERT INTO accounts.refresh_tokens (token, player_id, family_id, expires_at) \
          VALUES ($1, $2::uuid, $3::uuid, now() + make_interval(days => $4))",
     )
     .bind(&token)
@@ -32,14 +32,14 @@ async fn insert_session(pool: &PgPool, player_id: &str, family_id: &str, offset_
     .bind(offset_days)
     .execute(pool)
     .await
-    .expect("insert session");
+    .expect("insert refresh token");
     token
 }
 
-/// Whether a session with `token` still exists.
-async fn session_exists(pool: &PgPool, token: &str) -> bool {
+/// Whether a refresh token `token` still exists.
+async fn refresh_exists(pool: &PgPool, token: &str) -> bool {
     let (n,): (i64,) =
-        sqlx::query_as("SELECT count(*)::int8 FROM accounts.sessions WHERE token = $1")
+        sqlx::query_as("SELECT count(*)::int8 FROM accounts.refresh_tokens WHERE token = $1")
             .bind(token)
             .fetch_one(pool)
             .await
@@ -60,41 +60,41 @@ async fn deliver_prune(pool: &PgPool, handler: &PruneHandler, name: &str) {
     tx.commit().await.unwrap();
 }
 
-/// The prune reaction deletes ONLY expired sessions, and ONLY for the
-/// `accounts-sessions-prune` schedule name; a live session survives, and a foreign
+/// The prune reaction deletes ONLY expired refresh tokens, and ONLY for the
+/// `accounts-sessions-prune` schedule name; a live one survives, and a foreign
 /// schedule name is a committed no-op.
 #[tokio::test(flavor = "multi_thread")]
-async fn prune_deletes_only_expired_sessions_for_prune_name() {
+async fn prune_deletes_only_expired_refresh_tokens_for_prune_name() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
 
-    // A real player (register mints one) supplies the sessions FK target.
+    // A real player (register mints one) supplies the refresh tokens' FK targets.
     let email = format!("prune-{}@test.local", suffix());
     let sess = svc.register(email, "pw".into(), "Prune".into(), test_client()).await.unwrap();
     let pid = sess.player_id.clone();
     let family = family_of(&pool, &sess.refresh_token).await;
 
-    let expired = insert_session(&pool, &pid, &family, -1).await; // expires_at 1 day in the past
-    let live = insert_session(&pool, &pid, &family, 30).await; // still valid
+    let expired = insert_refresh(&pool, &pid, &family, -1).await; // expires_at 1 day in the past
+    let live = insert_refresh(&pool, &pid, &family, 30).await; // still valid
 
     let handler = PruneHandler { svc: svc.clone() };
 
     // A non-prune schedule name must NOT prune (proves the name filter) — still commits.
     deliver_prune(&pool, &handler, "some-other-job").await;
     assert!(
-        session_exists(&pool, &expired).await,
-        "foreign schedule name pruned an expired session"
+        refresh_exists(&pool, &expired).await,
+        "foreign schedule name pruned an expired refresh token"
     );
 
-    // accounts-sessions-prune: the expired session goes, the live one stays.
+    // accounts-sessions-prune: the expired refresh token goes, the live one stays.
     deliver_prune(&pool, &handler, PRUNE_SCHEDULE_NAME).await;
     assert!(
-        !session_exists(&pool, &expired).await,
-        "expired session survived prune"
+        !refresh_exists(&pool, &expired).await,
+        "expired refresh token survived prune"
     );
     assert!(
-        session_exists(&pool, &live).await,
-        "live session was pruned"
+        refresh_exists(&pool, &live).await,
+        "live refresh token was pruned"
     );
 
     cleanup_player(&pool, &pid).await;
@@ -102,7 +102,7 @@ async fn prune_deletes_only_expired_sessions_for_prune_name() {
 
 /// The delete-ticket leg of the same prune reaction: an EXPIRED delete ticket is removed
 /// by `accounts-sessions-prune`; a LIVE one is not. Pre-fix the prune handler only touched
-/// sessions/refresh tokens, so an expired ticket row would accumulate forever.
+/// token rows, so an expired ticket row would accumulate forever.
 #[tokio::test(flavor = "multi_thread")]
 async fn prune_deletes_expired_delete_ticket_keeps_live_one() {
     let Some(pool) = test_pool().await else { return };
@@ -159,7 +159,7 @@ async fn prune_deletes_expired_delete_ticket_keeps_live_one() {
 }
 
 /// A foreign schedule name is a committed no-op AT THE HANDLER BOUNDARY (returns Ok, the
-/// tick is marked processed, nothing deleted) even with an expired session present — the
+/// tick is marked processed, nothing deleted) even with an expired refresh token present — the
 /// filter is the whole point of subscribing raw to `scheduler.fired`.
 #[tokio::test(flavor = "multi_thread")]
 async fn foreign_schedule_name_is_a_committed_noop() {
@@ -170,14 +170,14 @@ async fn foreign_schedule_name_is_a_committed_noop() {
     let sess = svc.register(email, "pw".into(), "Noop".into(), test_client()).await.unwrap();
     let pid = sess.player_id.clone();
     let family = family_of(&pool, &sess.refresh_token).await;
-    let expired = insert_session(&pool, &pid, &family, -1).await;
+    let expired = insert_refresh(&pool, &pid, &family, -1).await;
 
     let handler = PruneHandler { svc: svc.clone() };
     // Succeeds (no panic/err) AND leaves the expired row intact.
     deliver_prune(&pool, &handler, "audit-prune").await;
     assert!(
-        session_exists(&pool, &expired).await,
-        "a foreign schedule name must not prune sessions"
+        refresh_exists(&pool, &expired).await,
+        "a foreign schedule name must not prune refresh tokens"
     );
 
     cleanup_player(&pool, &pid).await;

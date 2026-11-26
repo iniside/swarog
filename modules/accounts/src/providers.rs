@@ -42,7 +42,7 @@ pub(crate) use accountsevents::providers::{EPIC, GOOGLE, GUEST, PASSWORD};
 pub(crate) const KNOWN_PROVIDERS: &[&str] = &[EPIC, GOOGLE, GUEST];
 
 /// Why a credential failed verification — the taxonomy the caller maps to a status
-/// (mirrors the `verify_session` 503-not-401 precedent: an IdP outage must not
+/// (mirrors the `TokenState` / `verify_access` 503-not-401 precedent: an IdP outage must not
 /// masquerade as bad credentials).
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum VerifyError {

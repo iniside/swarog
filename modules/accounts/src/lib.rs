@@ -420,11 +420,11 @@ fn delete_store_error(e: sqlx::Error) -> Error {
 const TICKET_NOT_FOUND: &str = "delete ticket not found";
 
 // ============================================================================
-// Service — backs Sessions + Auth (the registry capabilities + the generated edge
+// Service — backs TokenState + Auth (the registry capabilities + the generated edge
 // faces + the gateway's in-process invokers).
 // ============================================================================
 
-/// What other modules get from `require::<dyn Sessions>` / `require::<dyn Auth>`.
+/// What other modules get from `require::<dyn TokenState>` / `require::<dyn Auth>`.
 /// Holds the store, the bus (for the atomic `player.registered` emit) and — once
 /// `init` has parsed the provider configuration — the credential verifiers.
 pub struct Service {
@@ -750,7 +750,7 @@ impl Service {
 
     /// The operator's Reset password: a fresh random password on every `password` identity
     /// of the player and, in the same tx, the end of all its logins
-    /// ([`Store::kill_player_families_tx`]: refresh tokens, access sessions, browser
+    /// ([`Store::kill_player_families_tx`]: token families, refresh tokens, browser
     /// sessions), so a signed-in holder of the old password is signed out with it.
     pub(crate) async fn reset_password(&self, player_id: &str) -> Result<PasswordReset, Error> {
         let password = password::new_password();
@@ -1054,8 +1054,8 @@ impl Service {
         })
     }
 
-    /// Writes the successor refresh row and the access session of a successful
-    /// rotation, on the tx that consumed the presented token.
+    /// Writes the successor refresh row and moves the family's access expiry for a
+    /// successful rotation, on the tx that consumed the presented token.
     async fn complete_rotation_tx(
         &self,
         conn: &mut PgConnection,
@@ -1344,8 +1344,8 @@ impl accountsapi::Auth for Service {
     /// one are DIFFERENT answers — `Invalid` (400) is caller-supplied garbage,
     /// `Unavailable` (503) is a deployment fact about this process. A rejected
     /// credential is `Unauthorized` (401); an IdP infrastructure failure is 503, the
-    /// `verify_session` 503-not-401 precedent: an outage must not read as bad
-    /// credentials.
+    /// `TokenState` / `verify_access` 503-not-401 precedent: an outage must not read as
+    /// bad credentials.
     async fn login_federated(
         &self,
         provider: String,
@@ -1393,8 +1393,8 @@ impl accountsapi::Auth for Service {
     }
 
     /// Rotates a refresh token (AuthNone): consumes the presented one, mints its
-    /// successor and a fresh access session, and answers with both. The rotation, the
-    /// successor row and the access row share ONE transaction — a crash mid-way leaves
+    /// successor and a fresh access token, and answers with both. The rotation, the
+    /// successor row and the family's access expiry share ONE transaction — a crash mid-way leaves
     /// the presented token unconsumed rather than consumed with no successor.
     ///
     /// Unknown, expired and replayed tokens are the SAME `Unauthorized` — the answer
@@ -1635,7 +1635,7 @@ impl TxHandler for PruneHandler {
 
 /// The accounts module. Holds the constructed service (shared between `register`,
 /// the operations and the OAuth routes). Edge exposure is
-/// topology-blind: `init` contributes the generated Sessions + Auth faces to
+/// topology-blind: `init` contributes the generated TokenState + Auth faces to
 /// `edge::EDGE_SLOT` unconditionally, and `app::run` installs them iff this process
 /// serves an internal QUIC edge — the module never knows. The Auth face's gated
 /// `register` self-rejects at the service level when `ACCOUNTS_OPEN_REGISTRATION` is

@@ -98,7 +98,7 @@ pub const MAX_MOVEMENT_AMOUNT: i64 = 1_000_000_000_000;
 
 /// The wallet module's SERVER-side capability: reading any player's balances and moving
 /// money. WIRE-ONLY — no leading `Identity` and no `#[http]`; it rides the internal mTLS
-/// edge like `accounts.sessions`.
+/// edge like `accounts.token_state`.
 ///
 /// `credit`/`debit` are `#[retry_safe]` ONLY because a required `idempotency_key` makes a
 /// replay return the ORIGINAL movement's `balance_after`. If the key becomes optional, or

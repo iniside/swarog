@@ -195,7 +195,7 @@ async fn concurrent_unknown_kids_cost_one_jwks_fetch() {
 
 /// A 500-answering JWKS endpoint is an INFRA failure (no verdict on the caller's
 /// token), and `login_federated` maps it to `Unavailable` (503) — never the 401 that
-/// would read as bad credentials (the `verify_session` 503-not-401 precedent).
+/// would read as bad credentials (the `TokenState` / `verify_access` 503-not-401 precedent).
 /// During the post-failure cooldown, with NO successful fetch ever, the outcome
 /// stays `Infra` — and the down IdP is not hammered.
 #[tokio::test(flavor = "multi_thread")]

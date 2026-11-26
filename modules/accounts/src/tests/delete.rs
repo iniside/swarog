@@ -76,9 +76,9 @@ async fn player_row_count(pool: &PgPool, player_id: &str) -> i64 {
     n
 }
 
-async fn session_row_count(pool: &PgPool, player_id: &str) -> i64 {
+async fn family_row_count(pool: &PgPool, player_id: &str) -> i64 {
     let (n,): (i64,) =
-        sqlx::query_as("SELECT count(*) FROM accounts.sessions WHERE player_id = $1::uuid")
+        sqlx::query_as("SELECT count(*) FROM accounts.token_families WHERE player_id = $1::uuid")
             .bind(player_id)
             .fetch_one(pool)
             .await
@@ -331,7 +331,7 @@ async fn delete_account_replay_returns_identical_receipt_and_wipes_sessions() {
         .await
         .unwrap();
 
-    assert_eq!(session_row_count(&pool, &pid).await, 0, "sessions must be gone after the first delete");
+    assert_eq!(family_row_count(&pool, &pid).await, 0, "token families must be gone after the first delete");
     assert_eq!(identity_row_count(&pool, &pid).await, 0, "identities must be gone after the first delete");
 
     // The internal-edge replay: same identity/ticket, reaching the handler again after the
@@ -368,7 +368,7 @@ async fn delete_account_commits_one_event_with_sessions_emptied() {
             .await
             .unwrap();
     assert_eq!(deleted_events, 1, "exactly one player.deleted must be appended");
-    assert_eq!(session_row_count(&pool, &pid).await, 0, "sessions must be empty at the same commit");
+    assert_eq!(family_row_count(&pool, &pid).await, 0, "token families must be empty at the same commit");
 
     let _ = asyncevents::testing::cleanup_events(&pool, "player_id", &pid).await;
 }

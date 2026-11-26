@@ -9,8 +9,8 @@
 //! runtime `__describe` (routing-as-data), so the stubs contribute only their PEER_SLOT
 //! address set — except accounts/apikeys, which also provide their sync capability client.
 //! The `accounts` stub is MANDATORY (Step 6):
-//! its factory provides the `accounts.sessions` edge client the gateway's verifier
-//! resolves at init — real bearer verification against accounts-svc, no `dev-`
+//! its factory provides the `accounts.token_state` edge client the gateway's verifier
+//! resolves at init — real JWT verification against accounts-svc's keys, no `dev-`
 //! tokens (absent the capability the gateway fails startup unless
 //! `GATEWAY_DEV_VERIFIER=1` is explicitly set). The `apikeys` stub is likewise MANDATORY
 //! (Step 3, api key policy): its factory provides the `apikeys.keys` edge client the
@@ -97,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
     // (Step 4): this composition root injects each provider's swap closures explicitly, so
     // `remote` names no provider. Under D2 the pure-HTTP providers pass NO factories (their
     // routes arrive via each peer's runtime `__describe`, not a compile-time import); only
-    // `accountsrpc`/`apikeysrpc::provide_factories()` are reached — for the Sessions/Keys
+    // `accountsrpc`/`apikeysrpc::provide_factories()` are reached — for the TokenState/Keys
     // sync CAPABILITY clients (never routes), sanctioned for `cmd/*` (rule 5), never the
     // provider IMPL crates.
     //

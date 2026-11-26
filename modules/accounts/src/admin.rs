@@ -927,7 +927,7 @@ impl AccountsAdmin {
     }
 
     /// Revokes one login of the bound player: the family in `req.item`, its refresh
-    /// tokens and access sessions, under the player row lock taken first
+    /// tokens and access tokens, under the player row lock taken first
     /// (`Store::lock_player_row_tx`). A refresh takes that row before its token too, so
     /// one rotating inside the family either committed before and goes with it, or waits
     /// and then finds its token gone. A family holding nothing, or not this player's, is

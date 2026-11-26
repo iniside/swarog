@@ -1,7 +1,7 @@
 //! The open-registration gate on the accounts Auth face: with
 //! `ACCOUNTS_OPEN_REGISTRATION` off the service-level guard withholds `register` on every
 //! exposure path (the HTTP op is contributed unconditionally), while password login and
-//! `verify_session` stay open.
+//! `verify_access` stay open.
 
 use super::*;
 
@@ -102,7 +102,7 @@ async fn ops_contributed_unconditionally_while_guard_rejects() {
 /// A registration-closed service over the same pool logs in an account an open one
 /// registered and resolves its bearer.
 #[tokio::test]
-async fn login_and_verify_session_work_without_open_registration() {
+async fn login_and_verify_access_work_without_open_registration() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("gate-{}@test.local", suffix());
@@ -120,9 +120,9 @@ async fn login_and_verify_session_work_without_open_registration() {
     });
 
     let login = closed.login(email, "pw".into(), test_client()).await;
-    let verified = closed.verify_session(sess.token.clone()).await;
+    let verified = closed.tokens.verify_access(&sess.token).await;
     cleanup_player(&pool, &sess.player_id).await;
 
     assert_eq!(login.unwrap().player_id, sess.player_id, "login needs no flag");
-    assert_eq!(verified.unwrap(), Some(sess.player_id.clone()));
+    assert_eq!(verified.unwrap().map(|c| c.sub), Some(sess.player_id.clone()));
 }

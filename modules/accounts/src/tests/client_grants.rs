@@ -183,10 +183,10 @@ async fn deleting_a_client_ends_the_access_tokens_it_was_issued() {
     let client = insert_client(&pool, &[PASSWORD, REFRESH_TOKEN]).await;
     let email = format!("delcl-{}@test.local", suffix().to_lowercase());
     let reg = svc.register(email, "pw".into(), "DelCl".into(), client.clone()).await.unwrap();
-    let before = svc.store.player_by_session(&reg.token).await.unwrap().map(|p| p.id);
+    let before = svc.tokens.verify_access(&reg.token).await.unwrap().map(|c| c.sub);
 
     let deleted = svc.store.delete_client(&client).await.unwrap();
-    let after = svc.store.player_by_session(&reg.token).await.unwrap();
+    let after = svc.tokens.verify_access(&reg.token).await.unwrap();
     let refreshed = svc.refresh(reg.refresh_token.clone()).await;
     cleanup_player(&pool, &reg.player_id).await;
 
@@ -212,10 +212,9 @@ async fn an_external_login_needs_only_an_existing_client() {
     session.expect("a client listing neither password nor guest still serves an external login");
 }
 
-/// Migrate refuses a `refresh_tokens` or `sessions` without an ON DELETE CASCADE foreign
-/// key to its schema's `token_families`, naming the table and the drop remedy; a key to
-/// another table or one that does not cascade does not count, and a fully cascading set,
-/// like the one migrate creates, passes.
+/// Migrate refuses a `refresh_tokens` without an ON DELETE CASCADE foreign key to its
+/// schema's `token_families`, naming the table and the drop remedy; a key that does not
+/// cascade does not count, and a cascading one, like the one migrate creates, passes.
 #[tokio::test(flavor = "multi_thread")]
 async fn boot_refusal_fires_on_tokens_without_a_family_key() {
     let Some(pool) = test_pool().await else { return };
@@ -231,37 +230,29 @@ async fn boot_refusal_fires_on_tokens_without_a_family_key() {
     exec(format!("CREATE SCHEMA {schema}")).await;
     exec(format!("CREATE TABLE {schema}.players (id int PRIMARY KEY)")).await;
     exec(format!("CREATE TABLE {schema}.token_families (id int PRIMARY KEY)")).await;
-    for table in ["refresh_tokens", "sessions"] {
-        exec(format!(
-            "CREATE TABLE {schema}.{table} \
-             (token text PRIMARY KEY, player_id int REFERENCES {schema}.players(id), family_id int)"
-        ))
-        .await;
-    }
-    let link = |table: &str, on_delete: &str| {
+    exec(format!(
+        "CREATE TABLE {schema}.refresh_tokens \
+         (token text PRIMARY KEY, player_id int REFERENCES {schema}.players(id), family_id int)"
+    ))
+    .await;
+    let link = |on_delete: &str| {
         format!(
-            "ALTER TABLE {schema}.{table} ADD CONSTRAINT family_key \
+            "ALTER TABLE {schema}.refresh_tokens ADD CONSTRAINT family_key \
              FOREIGN KEY (family_id) REFERENCES {schema}.token_families(id) {on_delete}"
         )
     };
     let no_refresh_key = crate::refuse_unfamilied_tokens(&pool, &schema).await;
-    exec(link("refresh_tokens", "")).await;
+    exec(link("")).await;
     let refresh_key_kept = crate::refuse_unfamilied_tokens(&pool, &schema).await;
     exec(format!("ALTER TABLE {schema}.refresh_tokens DROP CONSTRAINT family_key")).await;
-    exec(link("refresh_tokens", "ON DELETE CASCADE")).await;
-    let no_session_key = crate::refuse_unfamilied_tokens(&pool, &schema).await;
-    exec(link("sessions", "ON DELETE CASCADE")).await;
+    exec(link("ON DELETE CASCADE")).await;
     let linked = crate::refuse_unfamilied_tokens(&pool, &schema).await;
     exec(format!("DROP SCHEMA {schema} CASCADE")).await;
 
-    for (table, refused) in [
-        ("refresh_tokens", no_refresh_key),
-        ("refresh_tokens", refresh_key_kept),
-        ("sessions", no_session_key),
-    ] {
-        let err = refused.expect_err(table).to_string();
+    for (case, refused) in [("no key", no_refresh_key), ("a key kept on delete", refresh_key_kept)] {
+        let err = refused.expect_err(case).to_string();
         let names = format!(
-            "{schema}.{table} has no ON DELETE CASCADE foreign key to {schema}.token_families"
+            "{schema}.refresh_tokens has no ON DELETE CASCADE foreign key to {schema}.token_families"
         );
         assert!(err.contains(&names), "{err}");
         assert!(err.contains(&format!("DROP SCHEMA {schema} CASCADE;")), "{err}");

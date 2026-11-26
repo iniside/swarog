@@ -129,9 +129,9 @@ async fn epic_player(pool: &PgPool, subject: &str) -> Option<String> {
         .unwrap()
 }
 
-/// Player bearer sessions and refresh tokens the player holds.
+/// The token families and refresh tokens the player holds.
 async fn player_tokens(pool: &PgPool, player_id: &str) -> (i64, i64) {
-    let sessions = sqlx::query_scalar("SELECT count(*) FROM accounts.sessions WHERE player_id = $1::uuid")
+    let families = sqlx::query_scalar("SELECT count(*) FROM accounts.token_families WHERE player_id = $1::uuid")
         .bind(player_id)
         .fetch_one(pool)
         .await
@@ -141,7 +141,7 @@ async fn player_tokens(pool: &PgPool, player_id: &str) -> (i64, i64) {
         .fetch_one(pool)
         .await
         .unwrap();
-    (sessions, refresh)
+    (families, refresh)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -175,7 +175,7 @@ async fn browser_intent_sets_swarog_session_and_issues_no_player_session() {
     let player = epic_player(&pool, &subject).await.expect("the callback created the epic player");
     let live = svc.store.browser_session(&token).await.unwrap().map(|s| s.player_id);
     let held_after = svc.store.browser_session(&held).await.unwrap().is_some();
-    let as_bearer = svc.verify_session(token.clone()).await.unwrap();
+    let as_bearer = svc.tokens.verify_access(&token).await.unwrap();
     let tokens_after_first = player_tokens(&pool, &player).await;
 
     // A second Epic sign-in from the now signed-in browser resolves the same player and
@@ -203,8 +203,8 @@ async fn browser_intent_sets_swarog_session_and_issues_no_player_session() {
     assert!(has_attr(&csrf_cleared, "Max-Age=0"), "{csrf_cleared}");
     assert_eq!(live.as_deref(), Some(player.as_str()));
     assert!(!held_after, "the session the browser held at start ends at sign-in");
-    assert!(as_bearer.is_none(), "a browser session token is not a player bearer");
-    assert_eq!(tokens_after_first, (0, 0), "no player session or refresh token for a browser sign-in");
+    assert_eq!(as_bearer, None, "a browser session token is not an access token");
+    assert_eq!(tokens_after_first, (0, 0), "no token family or refresh token for a browser sign-in");
     assert_eq!(again_to, web::LANDING);
     assert_eq!(second_player.as_deref(), Some(player.as_str()), "the second sign-in resolves the same player");
     assert!(!first_after, "the second sign-in ends the first browser session");
@@ -286,7 +286,7 @@ async fn login_intent_still_hands_a_player_session_to_the_demo_page() {
     assert_eq!(status, 303);
     assert!(to.starts_with("/#token=") && to.contains("&refresh="), "{to}");
     assert!(!sets_session, "a login intent mints no browser session");
-    assert_eq!(tokens, (1, 1), "a login intent issues one player session and refresh token");
+    assert_eq!(tokens, (1, 1), "a login intent starts one token family with one refresh token");
 }
 
 #[tokio::test(flavor = "multi_thread")]

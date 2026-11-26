@@ -84,7 +84,7 @@ pub fn modules(
         // constructor — legal with zero factories, unlike `Stub::new`, whose zero-factory bail
         // stays a loud guard for an accidental forgotten `remote_factories()`.) accounts/apikeys
         // keep `Stub::new` with `provide_factories` — they DO provide a sync capability CLIENT
-        // (Sessions/Keys, NO routes, so they can't collide with the describe pass that supplies
+        // (TokenState/Keys, NO routes, so they can't collide with the describe pass that supplies
         // accounts's `#[http]` routes).
         Box::new(remote::Stub::describe_peer(
             "characters",

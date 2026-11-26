@@ -29,7 +29,7 @@ fn gateway_svc_module_set_boots_and_every_http_provider_lands_in_peer_slot() {
             .unwrap_or_else(|e| panic!("register of module {:?} failed: {e:#}", m.name()));
     }
     // Phase 2 — init all (PEER_SLOT contribution + the gateway's verifier resolution, which
-    // resolves the Sessions/Keys capabilities the accounts/apikeys stubs provided in phase 1).
+    // resolves the TokenState/Keys capabilities the accounts/apikeys stubs provided in phase 1).
     for m in &mods {
         m.init(&ctx)
             .unwrap_or_else(|e| panic!("init of module {:?} failed: {e:#}", m.name()));
