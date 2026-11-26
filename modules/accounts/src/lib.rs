@@ -1665,8 +1665,8 @@ impl Module for Accounts {
 
             // Web OAuth (authorize-code), present iff the confidential client secret
             // enabled it. These two routes are HTTP-NATIVE (a browser redirect flow
-            // with an external contract) — they are NOT operations; they mount on the
-            // shared router (Go's ctx.Mux ≙ ctx.mount).
+            // with an external contract) — they are NOT operations; they join the
+            // hosted-browser router mounted below.
             if let Some(oauth) = &epic.oauth {
                 let redirect = oauth.redirect_uri.clone();
                 let flow = epic_oauth::EpicOAuth::new(
@@ -1676,9 +1676,7 @@ impl Module for Accounts {
                     svc.store.pool.clone(),
                     cookie_secure,
                 )?;
-                let flow = Arc::new(flow);
-                ctx.mount(epic_oauth::router(flow.clone(), svc.clone(), login_limiter.clone()));
-                epic_flow = Some(flow);
+                epic_flow = Some(Arc::new(flow));
                 tracing::info!(redirect = %redirect, "epic OAuth enabled");
             }
         }
@@ -1690,11 +1688,10 @@ impl Module for Accounts {
                 "google provider enabled"
             );
             // Browser sign-in only, present iff GOOGLE_CLIENT_SECRET enabled it. Its start
-            // is the hosted form's; its callback mounts here, not rate-limited, as Epic's.
+            // is the hosted form's; its callback joins the hosted-browser router, not
+            // rate-limited, as Epic's.
             if let Some(flow) = google.browser_flow(&svc.store.pool, cookie_secure)? {
-                let flow = Arc::new(flow);
-                ctx.mount(oauth_flow::browser_router(flow.clone(), svc.clone()));
-                google_flow = Some(flow);
+                google_flow = Some(Arc::new(flow));
             }
             if let Some(oauth) = &google.oauth {
                 tracing::info!(
@@ -1705,8 +1702,7 @@ impl Module for Accounts {
             }
         }
         let flows = web::Flows { epic: epic_flow, google: google_flow };
-        let hosted = web::Web::new(svc.clone(), cookie_secure, login_limiter, flows)?;
-        ctx.mount(web::router(Arc::new(hosted)));
+        ctx.mount(web::hosted_browser_router(svc.clone(), cookie_secure, login_limiter, flows)?);
         svc.providers
             .set(Arc::new(config.providers(&svc.store.pool)))
             .map_err(|_| anyhow::anyhow!("accounts.init ran twice"))?;

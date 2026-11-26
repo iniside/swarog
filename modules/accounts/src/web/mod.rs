@@ -18,7 +18,7 @@ use axum_extra::extract::CookieJar;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
-use crate::epic_oauth::EpicOAuth;
+use crate::epic_oauth::{self, EpicOAuth};
 use crate::oauth_flow::{self, Intent, OAuthFlow};
 use crate::{normalize_email, Service};
 
@@ -230,8 +230,27 @@ struct LogoutForm {
     csrf: String,
 }
 
-/// The hosted pages as a sub-router the module `ctx.mount`s; the security headers wrap
-/// these routes only.
+/// The hosted browser surface `init` mounts: the hosted pages, Epic's start and callback when
+/// its flow is given, Google's browser callback when its flow is given. Nothing wraps the
+/// merge, so neither callback carries the pages' headers or draws from `limiter`.
+pub(crate) fn hosted_browser_router(
+    svc: Arc<Service>,
+    cookie_secure: bool,
+    limiter: Arc<LoginLimiter>,
+    flows: Flows,
+) -> anyhow::Result<Router> {
+    let mut app = Router::new();
+    if let Some(epic) = &flows.epic {
+        app = app.merge(epic_oauth::router(epic.clone(), svc.clone(), limiter.clone()));
+    }
+    if let Some(google) = &flows.google {
+        app = app.merge(oauth_flow::browser_router(google.clone(), svc.clone()));
+    }
+    let hosted = Web::new(svc, cookie_secure, limiter, flows)?;
+    Ok(app.merge(router(Arc::new(hosted))))
+}
+
+/// The hosted pages; the security headers wrap these routes only.
 pub(crate) fn router(web: Arc<Web>) -> Router {
     Router::new()
         .route(PREFIX, get(|| async { see_other(LANDING) }))

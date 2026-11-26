@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 use super::hosted_login::{client, cookie_value, has_attr, location, serve_default, set_cookie};
 use super::*;
 use crate::epic_oauth::EpicOAuth;
-use crate::oauth_flow::{self, Intent, OAuthFlow};
+use crate::oauth_flow::{Intent, OAuthFlow};
 use crate::providers::ProviderConfig;
 use crate::web;
 
@@ -92,12 +92,8 @@ async fn serve(
     limiter: Arc<httpmw::IpLimiter>,
 ) -> String {
     let limiter = web::LoginLimiter::new(limiter, Vec::new());
-    let flows = web::Flows { epic: epic.clone(), google: Some(google.clone()) };
-    let hosted = web::Web::new(svc.clone(), false, limiter.clone(), flows).unwrap();
-    let mut app = web::router(Arc::new(hosted)).merge(oauth_flow::browser_router(google, svc.clone()));
-    if let Some(epic) = epic {
-        app = app.merge(epic_oauth::router(epic, svc, limiter));
-    }
+    let flows = web::Flows { epic, google: Some(google) };
+    let app = web::hosted_browser_router(svc, false, limiter, flows).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -354,4 +350,37 @@ async fn the_google_start_shares_the_sign_in_bucket() {
     assert_eq!(retry_after.as_deref(), Some("1"));
     assert_eq!(admitted.status(), 403, "admitted, then refused for the missing login-CSRF");
     assert_eq!(form_after.status(), 429, "the form shares the bucket the google start emptied");
+}
+
+/// With the sign-in bucket emptied by the hosted form, the Google and the Epic callbacks
+/// still reach their handlers, without the hosted pages' headers.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_callbacks_answer_with_the_sign_in_bucket_empty() {
+    let svc = lazy_service();
+    let google = google_flow(&svc.store.pool, "http://127.0.0.1:9/jwks", "http://127.0.0.1:9/token");
+    let epic = oauth_fixture(
+        svc.store.pool.clone(),
+        "http://localhost/accounts/epic/callback",
+        "http://127.0.0.1:9/token",
+    );
+    let base = serve(svc, google, Some(epic), one_token_bucket()).await;
+    let login = || {
+        client()
+            .post(format!("{base}/accounts/oidc/login"))
+            .form(&[("email", "a@x.io"), ("password", "pw"), ("csrf", "")])
+            .send()
+    };
+
+    let admitted = login().await.unwrap();
+    let refused = login().await.unwrap();
+    let on_google = client().get(format!("{base}{CALLBACK}")).send().await.unwrap();
+    let on_epic = client().get(format!("{base}/accounts/epic/callback")).send().await.unwrap();
+
+    assert_eq!(admitted.status(), 403, "admitted, then refused for the missing login-CSRF");
+    assert_eq!(refused.status(), 429, "the bucket is empty");
+    assert!(refused.headers().contains_key("content-security-policy"), "the hosted form carries the headers");
+    for (name, resp) in [("google", &on_google), ("epic", &on_epic)] {
+        assert_eq!(resp.status(), 400, "the {name} callback reaches its handler: missing code or state");
+        assert!(!resp.headers().contains_key("content-security-policy"), "the {name} callback has no page headers");
+    }
 }
