@@ -42,6 +42,7 @@ mod groups_admin_checks;
 mod idp;
 mod inventory_admin_checks;
 mod notifications_admin_checks;
+mod oidc_discovery_checks;
 mod party_checks;
 mod pushws;
 mod scheduler_admin_checks;
@@ -540,6 +541,8 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
     wallet_ledger_checks::assertions(ctx, pool, p, &m, &jar, "m").await?;
     // Boxed: `run`'s future sits on the main thread's stack under `block_on`.
     Box::pin(accounts_admin_checks::assertions(ctx, pool, p, &m, &jar, "m")).await?;
+    // [SK1m]-[SK3m] the OIDC discovery document and JWKS on the monolith's own router.
+    oidc_discovery_checks::monolith(ctx, pool, p, &m).await;
     deletion_assertions(ctx, pool, p, &m, None, "m").await?;
     party_checks::deletion_assertion(ctx, pool, p, &m, "m").await?;
 
@@ -849,6 +852,11 @@ async fn proof_phase(
     // deterministic lock/contention proof lives in worker_tests.rs:317; this is the e2e belt.
     // The second instance is scenario-local (never in the fleet); #1 is restored before [LV2].
     replicas_exactly_once(ctx, pool, &mut fleet, p).await?;
+
+    // [SK1]-[SK4] the OIDC discovery document and JWKS through gateway-svc, then accounts-svc
+    // killed and respawned keeps its signing key. Last before [LV2], so no earlier check meets a
+    // gateway connection to the killed accounts-svc and [LV2] sweeps the respawned one.
+    oidc_discovery_checks::split(ctx, pool, &mut fleet, p).await;
 
     // [LV2] fleet-wide liveness sweep immediately before the split fleet is torn down —
     // a service that died AFTER [LV1]'s post-boot check (e.g. mid-assertions) must not
