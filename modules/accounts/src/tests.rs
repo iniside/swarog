@@ -16,6 +16,7 @@ mod password_email;
 mod prune;
 mod refresh;
 mod registration_gate;
+mod signing_keys;
 use crate::oauth_flow::Intent;
 use crate::oidc::{IssuerMatch, OidcVerifier};
 use crate::password::verify_password;
@@ -630,6 +631,12 @@ use testdb::test_pool;
 /// Migrate's closing check fails while any committed player lacks a claim; hold for write while committing one.
 static GHOST_PLAYER: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
 
+/// The KEK every test that migrates schema `accounts` seals with, so a test run and a dev
+/// fleet on the same database open each other's keys.
+pub(crate) fn dev_kek() -> crate::signing_keys::SigningKek {
+    crate::signing_keys::SigningKek::parse(testdb::DEV_ACCOUNTS_SIGNING_KEK).unwrap()
+}
+
 async fn ensure_schema(pool: &PgPool) {
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
     asyncevents::Plane::new(pool.clone(), dsn)
@@ -638,7 +645,7 @@ async fn ensure_schema(pool: &PgPool) {
         .await
         .unwrap();
     let ctx = Context::with_db(pool.clone());
-    let a = Accounts::new();
+    let a = Accounts::with_signing_kek(dev_kek());
     a.register(&ctx).unwrap();
     let _no_ghost = GHOST_PLAYER.read().await;
     a.migrate(&ctx).await.unwrap();

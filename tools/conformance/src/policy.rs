@@ -255,6 +255,18 @@ fn accounts() -> Entry {
                         bad_value: "hunter2",
                         expect: "invalid GOOGLE_AUTHORIZE_URL",
                     },
+                    // `register` parses both OIDC signing keys; an unset KEK fails only at
+                    // `migrate`, which this boot never reaches.
+                    EnvCase {
+                        var: "ACCOUNTS_SIGNING_KEK",
+                        bad_value: "hunter2",
+                        expect: "invalid ACCOUNTS_SIGNING_KEK",
+                    },
+                    EnvCase {
+                        var: "ACCOUNTS_OIDC_ISSUER",
+                        bad_value: "hunter2",
+                        expect: "invalid ACCOUNTS_OIDC_ISSUER",
+                    },
                 ])),
             ),
             (

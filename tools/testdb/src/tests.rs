@@ -165,17 +165,3 @@ fn an_unreleased_bound_still_elapses() {
     assert!(started.elapsed() >= CONNECT_BOUND);
     bound.release().join().unwrap();
 }
-
-/// accounts decodes the KEK strictly: 43 alphabet chars, one `=`, and zero trailing bits.
-#[test]
-fn the_dev_signing_kek_is_standard_base64_of_32_bytes() {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let kek = DEV_ACCOUNTS_SIGNING_KEK.as_bytes();
-    assert_eq!(kek.len(), 44);
-    assert_eq!(kek[43], b'=');
-    let sextets: Vec<usize> = kek[..43]
-        .iter()
-        .map(|b| ALPHABET.iter().position(|a| a == b).expect("standard base64 alphabet"))
-        .collect();
-    assert_eq!(sextets[42] % 4, 0, "the last char carries two non-zero trailing bits");
-}

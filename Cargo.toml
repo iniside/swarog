@@ -244,6 +244,9 @@ jsonwebtoken = "9"
 rand = "0.8"
 base64 = "0.22"
 url = "2"
+# The OIDC signing keys: ES256 generation and AES-256-GCM sealing. ring is already in the
+# tree through rustls; aws-lc-rs must stay out.
+ring = "0.17"
 
 # SHA-256 for the apikeys module: API-key secrets are high-entropy, so they are
 # stored as a deterministic SHA-256 digest (indexable O(1) lookup + show-once +

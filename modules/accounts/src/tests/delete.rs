@@ -447,7 +447,7 @@ async fn migrate_fails_loudly_on_a_player_with_no_handles_claim() {
     .await
     .unwrap();
 
-    let res = Accounts::new().migrate(&ctx).await;
+    let res = Accounts::with_signing_kek(dev_kek()).migrate(&ctx).await;
     sqlx::query("DELETE FROM accounts.players WHERE id = $1::uuid")
         .bind(&ghost_id)
         .execute(&pool)

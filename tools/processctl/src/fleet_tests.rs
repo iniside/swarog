@@ -12,7 +12,7 @@ use crate::fleet::{
     ACCOUNTS_OVERRIDEABLE_ENV, DEV_ACCOUNTS_ISSUER_SPLIT, DEV_ACCOUNTS_SIGNING_KEK,
     EPIC_ENV_PREFIX, GOOGLE_ENV_PREFIX, MONOLITH_OVERRIDEABLE_ENV,
 };
-use accountsapi::{EPIC_ENV_KEYS, GOOGLE_ENV_KEYS};
+use accountsapi::{DEFAULT_OIDC_ISSUER, EPIC_ENV_KEYS, GOOGLE_ENV_KEYS};
 #[cfg(windows)]
 use crate::build_environment;
 
@@ -121,7 +121,7 @@ fn accounts_signing_env_in_both_topologies() {
     let split = Some(PROOF_ACCOUNTS_ISSUER_SPLIT);
     let mono = Some(PROOF_ACCOUNTS_ISSUER_MONOLITH);
     let cases = [
-        (&bare, FleetFlavor::Development, (dev, dev_split), (dev, None)),
+        (&bare, FleetFlavor::Development, (dev, dev_split), (dev, Some(DEFAULT_OIDC_ISSUER))),
         (&ambient, FleetFlavor::Development, (Some(KEK), Some(ISSUER)), (Some(KEK), Some(ISSUER))),
         (&bare, FleetFlavor::Proof, (dev, split), (dev, mono)),
         (&ambient, FleetFlavor::Proof, (dev, split), (dev, mono)),
@@ -135,7 +135,12 @@ fn accounts_signing_env_in_both_topologies() {
         let accounts = fleet.service("accounts-svc").unwrap();
         assert_eq!(signing_env(&accounts.env), want_split, "split {flavor:?}");
         let monolith = game_backend_monolith(&inputs(), flavor, environment);
-        assert_eq!(signing_env(&monolith.env), want_monolith, "monolith {flavor:?}");
+        let (kek, issuer) = signing_env(&monolith.env);
+        let effective = (kek, Some(issuer.unwrap_or(DEFAULT_OIDC_ISSUER)));
+        assert_eq!(effective, want_monolith, "monolith {flavor:?}");
+        let front = format!(":{}/accounts/oidc", monolith.http_port);
+        let issuer = want_monolith.1.unwrap();
+        assert!(issuer == ISSUER || issuer.ends_with(&front), "{issuer} is not the monolith");
     }
 }
 

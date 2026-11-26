@@ -31,6 +31,8 @@ rcgen = { workspace = true }
 
 [dev-dependencies]
 edge = { workspace = true }
+# accounts' default OIDC issuer, which the dev KEK pin checks against each launcher's front door.
+accountsapi = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Console", "Win32_System_Threading"] }

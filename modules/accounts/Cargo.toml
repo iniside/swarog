@@ -56,6 +56,8 @@ url = { workspace = true }
 # The guest/device provider stores a SHA-256 digest of a full-entropy machine-minted
 # secret — deterministic and cheap, deliberately not argon2id (see modules/accounts/src/guest.rs).
 sha2 = { workspace = true }
+# The OIDC signing keys: ES256 key pairs sealed with AES-256-GCM under ACCOUNTS_SIGNING_KEK.
+ring = { workspace = true }
 
 [dev-dependencies]
 testdb = { workspace = true }

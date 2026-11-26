@@ -48,6 +48,10 @@ pub const LOGIN_LIMIT_PER_SEC: f64 = 5.0;
 /// to back before accounts refuses it.
 pub const LOGIN_LIMIT_BURST: u32 = 20;
 
+/// The OIDC issuer accounts publishes when `ACCOUNTS_OIDC_ISSUER` is unset: the monolith's
+/// own front door. A launcher whose accounts sits behind another port sets the variable.
+pub const DEFAULT_OIDC_ISSUER: &str = "http://localhost:8080/accounts/oidc";
+
 /// Epic's whole environment surface: every variable accounts' provider parse reads for
 /// epic. Presence of ANY of these means the operator is configuring epic, including the
 /// browser-flow keys, so accounts rejects a malformed browser-flow endpoint even when

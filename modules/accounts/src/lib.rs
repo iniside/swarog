@@ -40,6 +40,7 @@ mod oidc;
 mod ops;
 mod password;
 mod providers;
+mod signing_keys;
 mod store;
 mod web;
 
@@ -1481,6 +1482,7 @@ pub struct Accounts {
     svc: OnceLock<Arc<Service>>,
     web_limiter: OnceLock<Arc<httpmw::IpLimiter>>,
     web_limiter_reaper: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    signing_kek: OnceLock<signing_keys::SigningKek>,
 }
 
 impl Default for Accounts {
@@ -1495,7 +1497,15 @@ impl Accounts {
             svc: OnceLock::new(),
             web_limiter: OnceLock::new(),
             web_limiter_reaper: std::sync::Mutex::new(None),
+            signing_kek: OnceLock::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_signing_kek(kek: signing_keys::SigningKek) -> Accounts {
+        let accounts = Accounts::new();
+        accounts.signing_kek.get_or_init(|| kek);
+        accounts
     }
 
     fn svc(&self) -> Arc<Service> {
@@ -1649,6 +1659,10 @@ impl Module for Accounts {
     /// resolves it), `accounts.auth` and `accounts.directory` — so a dependent's
     /// `require` resolves regardless of registration order.
     fn register(&self, ctx: &Context) -> anyhow::Result<()> {
+        signing_keys::oidc_issuer(std::env::var_os(signing_keys::ISSUER_ENV))?;
+        if let Some(kek) = signing_keys::kek_from(std::env::var_os(signing_keys::KEK_ENV))? {
+            self.signing_kek.get_or_init(|| kek);
+        }
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("accounts requires a DB pool"))?
@@ -1681,14 +1695,21 @@ impl Module for Accounts {
         Ok(())
     }
 
-    /// Creates this module's own schema. Idempotent.
+    /// Creates this module's own schema and guarantees an active signing key that opens
+    /// under the KEK. Idempotent.
     async fn migrate(&self, ctx: &Context) -> anyhow::Result<()> {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("accounts requires a DB pool"))?;
+        let kek = match self.signing_kek.get() {
+            Some(kek) => kek.clone(),
+            None => signing_keys::required_kek(std::env::var_os(signing_keys::KEK_ENV))?,
+        };
+        signing_keys::refuse_stale_signing_keys(pool, "accounts").await?;
         Ddl::new(pool)
             .sql(SCHEMA_DDL)
             .sql(OAUTH_STATES_DDL.as_str())
+            .sql(signing_keys::SIGNING_KEYS_DDL)
             // A second, DB-level constraint on `players` itself (see the claim-coverage
             // check below): `accounts.handles` decides freeness at mint time, this index
             // backs `player_by_handle`'s lookup and still refuses a duplicate pair.
@@ -1737,6 +1758,10 @@ impl Module for Accounts {
                 "accounts.oauth_states_created_idx",
                 "CREATE INDEX oauth_states_created_idx ON accounts.oauth_states(created_at)",
             )
+            .index(
+                "accounts.signing_keys_one_active_idx",
+                signing_keys::SIGNING_KEYS_ONE_ACTIVE_DDL,
+            )
             .run()
             .await?;
 
@@ -1761,7 +1786,8 @@ impl Module for Accounts {
                  backfill would mint reservations for handles nothing ever claimed."
             );
         }
-        refuse_stale_oauth_states(pool, "accounts").await
+        refuse_stale_oauth_states(pool, "accounts").await?;
+        signing_keys::ensure_active_key(pool, "accounts", &kek).await
     }
 
     /// Only wires up — no I/O (#8). Reads the env gates, parses and validates the

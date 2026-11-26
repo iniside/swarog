@@ -11,9 +11,6 @@ use processctl::{
 };
 use weles::manifest::{Port, ServiceDef};
 
-/// The issuer accounts takes when `ACCOUNTS_OIDC_ISSUER` is unset: the monolith's own port.
-const ACCOUNTS_DEFAULT_ISSUER: &str = "http://localhost:8080/accounts/oidc";
-
 fn repo(path: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(path)
 }
@@ -99,7 +96,7 @@ fn weles_fleets_seal_with_the_testdb_kek_and_name_their_front_door() {
                 service.name
             );
             assert_eq!(
-                env.get("ACCOUNTS_OIDC_ISSUER").map_or(ACCOUNTS_DEFAULT_ISSUER, String::as_str),
+                env.get("ACCOUNTS_OIDC_ISSUER").map_or(accountsapi::DEFAULT_OIDC_ISSUER, String::as_str),
                 issuer,
                 "{fleet:?} {}",
                 service.name
