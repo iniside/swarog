@@ -15,11 +15,11 @@ async fn mixed_case_register_then_lower_case_login_and_the_reverse() {
     let (_ctx, svc) = wired(&pool).await;
     let tag = suffix().to_ascii_lowercase();
 
-    let upper = svc.register(format!("A-{tag}@X.io"), "pw".into(), "Up".into()).await.unwrap();
-    let upper_login = svc.login(format!("a-{tag}@x.io"), "pw".into()).await;
+    let upper = svc.register(format!("A-{tag}@X.io"), "pw".into(), "Up".into(), test_client()).await.unwrap();
+    let upper_login = svc.login(format!("a-{tag}@x.io"), "pw".into(), test_client()).await;
 
-    let lower = svc.register(format!("b-{tag}@x.io"), "pw".into(), "Low".into()).await.unwrap();
-    let lower_login = svc.login(format!(" B-{tag}@X.IO "), "pw".into()).await;
+    let lower = svc.register(format!("b-{tag}@x.io"), "pw".into(), "Low".into(), test_client()).await.unwrap();
+    let lower_login = svc.login(format!(" B-{tag}@X.IO "), "pw".into(), test_client()).await;
     cleanup_player(&pool, &upper.player_id).await;
     cleanup_player(&pool, &lower.player_id).await;
 
@@ -32,8 +32,8 @@ async fn a_second_register_in_another_case_is_a_conflict() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let tag = suffix().to_ascii_lowercase();
-    let first = svc.register(format!("dup-{tag}@x.io"), "pw".into(), "Dup".into()).await.unwrap();
-    let second = svc.register(format!("DUP-{tag}@X.io"), "pw".into(), "Dup".into()).await;
+    let first = svc.register(format!("dup-{tag}@x.io"), "pw".into(), "Dup".into(), test_client()).await.unwrap();
+    let second = svc.register(format!("DUP-{tag}@X.io"), "pw".into(), "Dup".into(), test_client()).await;
     cleanup_player(&pool, &first.player_id).await;
 
     let e = second.map(|_| ()).unwrap_err();

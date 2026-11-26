@@ -248,6 +248,13 @@ pub trait Sessions: Send + Sync {
 /// `auth = "player"` — they take their caller identity as the leading `Identity` param
 /// (injected by the gateway after bearer verification), NEVER a body field. The
 /// `body_names` remap keeps Go's public body key `displayName` byte-identical.
+///
+/// Every op that mints a session carries the `clientId` of the program the tokens are
+/// for. An id longer than [`MAX_CLIENT_ID_BYTES`], an unknown client, or a client that
+/// does not list the op's grant ([`grant_types`]) is one `Unauthorized` (401): register
+/// and login need `password`, `create_guest` and a `"guest"` federated login need
+/// `guest`, `refresh` needs the family's client to list `refresh_token`, and any other
+/// federated provider needs only an existing client.
 #[rpc(prefix = "accounts")]
 #[async_trait]
 pub trait Auth: Send + Sync {
@@ -256,15 +263,21 @@ pub trait Auth: Send + Sync {
     /// (404) unless the deployment opened registration; missing email/password →
     /// `Invalid` (400); an email already registered, compared trimmed and
     /// ASCII-case-insensitively → `Conflict` (409). 201.
-    #[http(verb = "POST", path = "/accounts/register", auth = "none", success = 201, body_names(display_name = "displayName"))]
-    async fn register(&self, email: String, password: String, display_name: String) -> Result<Session, Error>;
+    #[http(verb = "POST", path = "/accounts/register", auth = "none", success = 201, body_names(display_name = "displayName", client_id = "clientId"))]
+    async fn register(
+        &self,
+        email: String,
+        password: String,
+        display_name: String,
+        client_id: String,
+    ) -> Result<Session, Error>;
 
     /// Password login; the email is compared trimmed and ASCII-case-insensitively. Bad
     /// credentials — an unknown email or a wrong password, deliberately
     /// indistinguishable so the endpoint does not leak which emails exist — are
     /// `Unauthorized` (401). 200.
-    #[http(verb = "POST", path = "/accounts/login", auth = "none", success = 200)]
-    async fn login(&self, email: String, password: String) -> Result<Session, Error>;
+    #[http(verb = "POST", path = "/accounts/login", auth = "none", success = 200, body_names(client_id = "clientId"))]
+    async fn login(&self, email: String, password: String, client_id: String) -> Result<Session, Error>;
 
     /// Federated (external identity provider) login: verifies `credential` with the
     /// named `provider` and logs the player in, provisioning on first sight (implicit
@@ -274,17 +287,17 @@ pub trait Auth: Send + Sync {
     /// provider this build can verify but this deployment did not configure, or an
     /// identity-provider outage → `Unavailable` (503); a rejected credential →
     /// `Unauthorized` (401). 200.
-    #[http(verb = "POST", path = "/accounts/login/federated", auth = "none", success = 200)]
-    async fn login_federated(&self, provider: String, credential: String) -> Result<Session, Error>;
+    #[http(verb = "POST", path = "/accounts/login/federated", auth = "none", success = 200, body_names(client_id = "clientId"))]
+    async fn login_federated(&self, provider: String, credential: String, client_id: String) -> Result<Session, Error>;
 
     /// Mints a brand-new guest player: provisions the player + its `guest` identity,
     /// emits `player.registered` durably in the same transaction, mints a session and
     /// reveals the device ticket EXACTLY ONCE (only its SHA-256 digest is stored, so
-    /// no later read can return it). Takes no input — a guest has nothing to present
-    /// yet; the returning device replays the ticket through
+    /// no later read can return it). Takes only the client — a guest has nothing to
+    /// present yet; the returning device replays the ticket through
     /// [`Auth::login_federated`] under the `"guest"` provider. 201.
-    #[http(verb = "POST", path = "/accounts/guest", auth = "none", success = 201)]
-    async fn create_guest(&self) -> Result<GuestSession, Error>;
+    #[http(verb = "POST", path = "/accounts/guest", auth = "none", success = 201, body_names(client_id = "clientId"))]
+    async fn create_guest(&self, client_id: String) -> Result<GuestSession, Error>;
 
     /// Rotates a refresh token: consumes the presented one and answers with its
     /// successor plus a freshly minted access token. Unknown, expired, and replayed

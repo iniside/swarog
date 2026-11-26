@@ -244,7 +244,7 @@ fn fake_pick(salt: &str, id: &str, options: &[&'static str]) -> &'static str {
     options[(fake_hash(salt, id) % options.len() as u64) as usize]
 }
 
-// FAKE: a refresh family stores neither its client nor its address; both hash the family
+// FAKE: a Sessions panel row carries neither a client nor an address; both hash the family
 // id, never the token.
 fn fake_client(family_id: &str) -> &'static str {
     fake_pick(

@@ -3,6 +3,7 @@ use accountsapi::{Auth as _, Sessions as _};
 use base64::Engine as _;
 
 mod browser_session;
+mod client_grants;
 mod delete;
 mod directory;
 mod epic_browser;
@@ -283,12 +284,12 @@ impl PasswordVerifier for GatedVerifier {
 async fn register_requires_email_and_password() {
     let svc = lazy_service();
     let e = svc
-        .register(String::new(), "pw".into(), String::new())
+        .register(String::new(), "pw".into(), String::new(), test_client())
         .await
         .unwrap_err();
     assert_eq!(e.status, opsapi::Status::Invalid);
     let e = svc
-        .register("a@x.io".into(), String::new(), String::new())
+        .register("a@x.io".into(), String::new(), String::new(), test_client())
         .await
         .unwrap_err();
     assert_eq!(e.status, opsapi::Status::Invalid);
@@ -298,7 +299,7 @@ async fn register_requires_email_and_password() {
 async fn login_federated_requires_credential_and_configured_provider() {
     let svc = lazy_service();
     let e = svc
-        .login_federated("epic".into(), "some.jwt.here".into())
+        .login_federated("epic".into(), "some.jwt.here".into(), test_client())
         .await
         .unwrap_err();
     assert_eq!(
@@ -319,7 +320,7 @@ async fn login_federated_requires_credential_and_configured_provider() {
     let over_cap = format!("{}a", "é".repeat(MAX_PROVIDER_NAME_BYTES / 2));
     assert_eq!(over_cap.len(), MAX_PROVIDER_NAME_BYTES + 1);
     let e = svc
-        .login_federated(over_cap, "some.jwt.here".into())
+        .login_federated(over_cap, "some.jwt.here".into(), test_client())
         .await
         .unwrap_err();
     assert_eq!(
@@ -341,7 +342,7 @@ async fn login_federated_requires_credential_and_configured_provider() {
 async fn login_federated_unknown_provider_name_is_invalid() {
     let svc = lazy_service();
     let e = svc
-        .login_federated("not-a-real-provider".into(), "some.jwt.here".into())
+        .login_federated("not-a-real-provider".into(), "some.jwt.here".into(), test_client())
         .await
         .unwrap_err();
     assert_eq!(e.status, opsapi::Status::Invalid);
@@ -355,7 +356,7 @@ async fn login_federated_unknown_provider_name_is_invalid() {
 async fn login_federated_apple_is_unknown_not_unconfigured() {
     let svc = lazy_service();
     let e = svc
-        .login_federated("apple".into(), "some.jwt.here".into())
+        .login_federated("apple".into(), "some.jwt.here".into(), test_client())
         .await
         .unwrap_err();
     assert_eq!(
@@ -441,12 +442,12 @@ async fn me_requires_identity() {
 async fn register_rejects_over_cap_inputs() {
     let svc = lazy_service();
     let e = svc
-        .register(format!("{}@x.io", "a".repeat(321)), "pw".into(), String::new())
+        .register(format!("{}@x.io", "a".repeat(321)), "pw".into(), String::new(), test_client())
         .await
         .unwrap_err();
     assert_eq!(e.status, opsapi::Status::Invalid);
     let e = svc
-        .register("a@x.io".into(), "p".repeat(1025), String::new())
+        .register("a@x.io".into(), "p".repeat(1025), String::new(), test_client())
         .await
         .unwrap_err();
     assert_eq!(e.status, opsapi::Status::Invalid);
@@ -460,7 +461,7 @@ async fn register_rejects_effective_display_cap_before_argon_or_db() {
     let over_cap_display = format!("{}a", "é".repeat(accountsapi::MAX_DISPLAY_NAME_BYTES / 2));
     assert_eq!(over_cap_display.len(), accountsapi::MAX_DISPLAY_NAME_BYTES + 1);
     let e = svc
-        .register("a@x.io".into(), "pw".into(), over_cap_display)
+        .register("a@x.io".into(), "pw".into(), over_cap_display, test_client())
         .await
         .unwrap_err();
     assert_eq!(
@@ -473,7 +474,7 @@ async fn register_rejects_effective_display_cap_before_argon_or_db() {
     assert!(fallback_display.len() <= MAX_EMAIL_BYTES);
     assert!(fallback_display.len() > accountsapi::MAX_DISPLAY_NAME_BYTES);
     let e = svc
-        .register(fallback_display, "pw".into(), String::new())
+        .register(fallback_display, "pw".into(), String::new(), test_client())
         .await
         .unwrap_err();
     assert_eq!(
@@ -492,7 +493,7 @@ async fn invalid_login_input_takes_decoy_verify_path() {
     let verifier = Arc::new(RecordingVerifier::default());
     let svc = lazy_service_with_verifier(verifier.clone());
     let e = svc
-        .login(format!("{}@x.io", "a".repeat(321)), "real-secret".into())
+        .login(format!("{}@x.io", "a".repeat(321)), "real-secret".into(), test_client())
         .await
         .unwrap_err();
     assert_eq!(e.status, opsapi::Status::Unauthorized);
@@ -525,7 +526,7 @@ async fn argon_permit_survives_login_cancellation_until_hash_completes() {
     let task_svc = svc.clone();
     let login = tokio::spawn(async move {
         task_svc
-            .login(format!("{}@x.io", "a".repeat(321)), "pw".into())
+            .login(format!("{}@x.io", "a".repeat(321)), "pw".into(), test_client())
             .await
     });
     // Wait until the login is provably inside the blocking verify.
@@ -576,7 +577,7 @@ async fn third_login_queues_and_thirty_third_is_shed() {
         let task_svc = svc.clone();
         logins.push(tokio::spawn(async move {
             task_svc
-                .login(format!("{}@x.io", "a".repeat(321)), "pw".into())
+                .login(format!("{}@x.io", "a".repeat(321)), "pw".into(), test_client())
                 .await
         }));
     }
@@ -599,7 +600,7 @@ async fn third_login_queues_and_thirty_third_is_shed() {
 
     // The 33rd concurrent login is shed immediately — Unavailable, no queueing.
     let e = svc
-        .login(format!("{}@x.io", "a".repeat(321)), "pw".into())
+        .login(format!("{}@x.io", "a".repeat(321)), "pw".into(), test_client())
         .await
         .unwrap_err();
     assert_eq!(
@@ -649,6 +650,58 @@ async fn ensure_schema(pool: &PgPool) {
     a.register(&ctx).unwrap();
     let _no_ghost = GHOST_PLAYER.read().await;
     a.migrate(&ctx).await.unwrap();
+    sqlx::query(
+        "INSERT INTO accounts.oidc_clients (client_id, display_name, grant_types, audience) \
+         VALUES ($1, 'accounts tests', $2, $3) ON CONFLICT (client_id) DO NOTHING",
+    )
+    .bind(TEST_CLIENT_ID)
+    .bind(&accountsapi::grant_types::ALL[..])
+    .bind(accountsapi::SWAROG_AUDIENCE)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// The client every test mints for, seeded with every grant by [`ensure_schema`]. Not
+/// [`accountsapi::DEV_GAME_CLIENT_ID`]: the dev seed tests delete that row committed, and
+/// its families would go with it.
+pub(crate) const TEST_CLIENT_ID: &str = "accounts-tests";
+
+/// [`TEST_CLIENT_ID`] as the `client_id` argument of a login op.
+pub(crate) fn test_client() -> String {
+    TEST_CLIENT_ID.to_string()
+}
+
+/// Inserts a client of its own holding exactly `grants`; [`delete_client`] removes it.
+pub(crate) async fn insert_client(pool: &PgPool, grants: &[&str]) -> String {
+    let client_id = format!("t-{}", suffix());
+    sqlx::query(
+        "INSERT INTO accounts.oidc_clients (client_id, display_name, grant_types, audience) \
+         VALUES ($1, 'accounts test client', $2, $3)",
+    )
+    .bind(&client_id)
+    .bind(grants)
+    .bind(accountsapi::SWAROG_AUDIENCE)
+    .execute(pool)
+    .await
+    .unwrap();
+    client_id
+}
+
+pub(crate) async fn set_client_grants(pool: &PgPool, client_id: &str, grants: &[&str]) {
+    sqlx::query("UPDATE accounts.oidc_clients SET grant_types = $2 WHERE client_id = $1")
+        .bind(client_id)
+        .bind(grants)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+pub(crate) async fn delete_client(pool: &PgPool, client_id: &str) {
+    let _ = sqlx::query("DELETE FROM accounts.oidc_clients WHERE client_id = $1")
+        .bind(client_id)
+        .execute(pool)
+        .await;
 }
 
 /// Builds a real durable plane over the live pool: the
@@ -786,7 +839,7 @@ async fn register_login_session_roundtrip_with_durable_event() {
     let email = format!("u-{}@test.local", suffix());
 
     let sess = svc
-        .register(email.clone(), "secret".into(), "Tester".into())
+        .register(email.clone(), "secret".into(), "Tester".into(), test_client())
         .await
         .unwrap();
     assert!(!sess.player_id.is_empty());
@@ -797,18 +850,18 @@ async fn register_login_session_roundtrip_with_durable_event() {
 
     // Duplicate email → Conflict, and no second event.
     let e = svc
-        .register(email.clone(), "other".into(), "Tester".into())
+        .register(email.clone(), "other".into(), "Tester".into(), test_client())
         .await
         .unwrap_err();
     assert_eq!(e.status, opsapi::Status::Conflict);
 
     // Login with the right/wrong password; unknown email is the same 401.
-    let s2 = svc.login(email.clone(), "secret".into()).await.unwrap();
+    let s2 = svc.login(email.clone(), "secret".into(), test_client()).await.unwrap();
     assert_eq!(s2.player_id, sess.player_id);
-    let e = svc.login(email.clone(), "nope".into()).await.unwrap_err();
+    let e = svc.login(email.clone(), "nope".into(), test_client()).await.unwrap_err();
     assert_eq!(e.status, opsapi::Status::Unauthorized);
     let e = svc
-        .login(format!("ghost-{}@test.local", suffix()), "x".into())
+        .login(format!("ghost-{}@test.local", suffix()), "x".into(), test_client())
         .await
         .unwrap_err();
     assert_eq!(e.status, opsapi::Status::Unauthorized);
@@ -841,6 +894,7 @@ async fn session_token_collision_rolls_back_registration_and_event() {
             format!("owner-{}@test.local", suffix()),
             "pw".into(),
             "Collision owner".into(),
+            test_client(),
         )
         .await
         .unwrap();
@@ -852,6 +906,7 @@ async fn session_token_collision_rolls_back_registration_and_event() {
             &attempted_email,
             &attempted_display,
             "unused-test-hash",
+            TEST_CLIENT_ID,
             owner.token.clone(),
         )
         .await;
@@ -897,7 +952,7 @@ async fn unknown_email_takes_decoy_verify_path() {
     let (_ctx, svc) = wired_with_verifier(&pool, verifier.clone()).await;
 
     let e = svc
-        .login(format!("ghost-{}@test.local", suffix()), "real-secret".into())
+        .login(format!("ghost-{}@test.local", suffix()), "real-secret".into(), test_client())
         .await
         .unwrap_err();
     assert_eq!(e.status, opsapi::Status::Unauthorized);
@@ -920,7 +975,7 @@ async fn expired_session_does_not_verify() {
     let (_ctx, svc) = wired(&pool).await;
 
     let sess = svc
-        .register(format!("ttl-{}@test.local", suffix()), "pw".into(), String::new())
+        .register(format!("ttl-{}@test.local", suffix()), "pw".into(), String::new(), test_client())
         .await
         .unwrap();
     assert_eq!(
@@ -947,14 +1002,14 @@ async fn external_login_is_idempotent_and_issues_each_session() {
     let sub = format!("puid-{}", suffix());
 
     let (first, created) = svc
-        .external_login("epic", &sub, "epic:new", None)
+        .external_login("epic", &sub, "epic:new", None, TEST_CLIENT_ID)
         .await
         .unwrap();
     assert!(created, "first login must provision");
     assert_eq!(registered_events(&pool, &first.player_id).await, 1);
 
     let (again, created2) = svc
-        .external_login("epic", &sub, "epic:new", None)
+        .external_login("epic", &sub, "epic:new", None, TEST_CLIENT_ID)
         .await
         .unwrap();
     assert!(!created2, "second login must not provision");
@@ -980,12 +1035,12 @@ async fn concurrent_first_logins_create_one_player_event_and_two_sessions() {
     let first = {
         let svc = svc.clone();
         let sub = sub.clone();
-        tokio::spawn(async move { svc.external_login("epic", &sub, "Race first", None).await })
+        tokio::spawn(async move { svc.external_login("epic", &sub, "Race first", None, TEST_CLIENT_ID).await })
     };
     let second = {
         let svc = svc.clone();
         let sub = sub.clone();
-        tokio::spawn(async move { svc.external_login("epic", &sub, "Race first", None).await })
+        tokio::spawn(async move { svc.external_login("epic", &sub, "Race first", None, TEST_CLIENT_ID).await })
     };
     let both_waiting = wait_for_identity_lock_waiters(&pool, key, 2).await;
     gate.rollback().await.unwrap();
@@ -1018,6 +1073,7 @@ async fn link_racing_first_login_has_only_two_coherent_outcomes() {
             format!("link-race-{}@test.local", suffix()),
             "pw".into(),
             "Link racer".into(),
+            test_client(),
         )
         .await
         .unwrap();
@@ -1038,7 +1094,7 @@ async fn link_racing_first_login_has_only_two_coherent_outcomes() {
     let login = {
         let svc = svc.clone();
         let sub = sub.clone();
-        tokio::spawn(async move { svc.external_login("epic", &sub, "External racer", None).await })
+        tokio::spawn(async move { svc.external_login("epic", &sub, "External racer", None, TEST_CLIENT_ID).await })
     };
     let both_waiting = wait_for_identity_lock_waiters(&pool, key, 2).await;
     gate.rollback().await.unwrap();
@@ -1082,7 +1138,7 @@ async fn link_identity_attaches_and_rejects_duplicates() {
     let (_ctx, svc) = wired(&pool).await;
 
     let sess = svc
-        .register(format!("link-{}@test.local", suffix()), "pw".into(), "Linker".into())
+        .register(format!("link-{}@test.local", suffix()), "pw".into(), "Linker".into(), test_client())
         .await
         .unwrap();
     let sub = format!("epicacct-{}", suffix());
@@ -1096,7 +1152,7 @@ async fn link_identity_attaches_and_rejects_duplicates() {
         .await
         .unwrap();
     let other = svc
-        .register(format!("other-{}@test.local", suffix()), "pw".into(), "Other".into())
+        .register(format!("other-{}@test.local", suffix()), "pw".into(), "Other".into(), test_client())
         .await
         .unwrap();
     let err = svc.link_identity(&other.player_id, "epic", &sub).await.unwrap_err();
@@ -1122,7 +1178,7 @@ async fn link_identity_attaches_and_rejects_duplicates() {
 async fn concurrent_links_of_different_providers_emit_exactly_one_promotion() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
-    let guest = svc.create_guest().await.unwrap();
+    let guest = svc.create_guest(test_client()).await.unwrap();
     let key = store::player_lock_key(&guest.player_id);
     let mut gate = pool.begin().await.unwrap();
     svc.store.lock_player_tx(&mut gate, &guest.player_id).await.unwrap();
@@ -1184,7 +1240,7 @@ async fn concurrent_links_of_different_providers_emit_exactly_one_promotion() {
 async fn link_identity_rolls_back_row_and_event_when_append_fails() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
-    let guest = svc.create_guest().await.unwrap();
+    let guest = svc.create_guest(test_client()).await.unwrap();
     let failing_svc = wired_with_failing_bus(&pool).await;
     let sub = format!("epic-fail-{}", suffix());
 
@@ -1221,12 +1277,12 @@ async fn link_identity_conflict_on_foreign_identity_writes_and_emits_nothing() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let owner = svc
-        .register(format!("owner-{}@test.local", suffix()), "pw".into(), "Owner".into())
+        .register(format!("owner-{}@test.local", suffix()), "pw".into(), "Owner".into(), test_client())
         .await
         .unwrap();
     let sub = format!("epic-taken-{}", suffix());
     svc.link_identity(&owner.player_id, "epic", &sub).await.unwrap();
-    let challenger = svc.create_guest().await.unwrap();
+    let challenger = svc.create_guest(test_client()).await.unwrap();
 
     let err = svc
         .link_identity(&challenger.player_id, "epic", &sub)
@@ -1258,7 +1314,7 @@ async fn link_identity_conflict_on_foreign_identity_writes_and_emits_nothing() {
 async fn relinking_same_identity_is_idempotent_with_no_second_promotion() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
-    let guest = svc.create_guest().await.unwrap();
+    let guest = svc.create_guest(test_client()).await.unwrap();
     let sub = format!("epic-relink-{}", suffix());
 
     let first = svc.link_identity(&guest.player_id, "epic", &sub).await.unwrap();
@@ -1280,7 +1336,7 @@ async fn relinking_same_identity_is_idempotent_with_no_second_promotion() {
 async fn guest_linking_real_provider_emits_promotion_with_correct_providers() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
-    let guest = svc.create_guest().await.unwrap();
+    let guest = svc.create_guest(test_client()).await.unwrap();
     let sub = format!("epic-promote-{}", suffix());
 
     svc.link_identity(&guest.player_id, "epic", &sub).await.unwrap();
@@ -1311,7 +1367,7 @@ async fn guest_linking_real_provider_emits_promotion_with_correct_providers() {
 async fn guest_linking_second_guest_identity_emits_no_promotion() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
-    let guest = svc.create_guest().await.unwrap();
+    let guest = svc.create_guest(test_client()).await.unwrap();
     let sub = format!("guest-relink-{}", suffix());
 
     let outcome = svc.link_identity(&guest.player_id, GUEST, &sub).await.unwrap();
@@ -1330,7 +1386,7 @@ async fn non_guest_player_linking_second_provider_emits_nothing() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let owner = svc
-        .register(format!("second-{}@test.local", suffix()), "pw".into(), "Second".into())
+        .register(format!("second-{}@test.local", suffix()), "pw".into(), "Second".into(), test_client())
         .await
         .unwrap();
     let sub = format!("google-second-{}", suffix());
@@ -1402,7 +1458,7 @@ async fn epic_oauth_link_flow_end_to_end() {
 
     // A logged-in dev player to link onto.
     let sess = svc
-        .register(format!("oauth-{}@test.local", suffix()), "pw".into(), "Linker".into())
+        .register(format!("oauth-{}@test.local", suffix()), "pw".into(), "Linker".into(), test_client())
         .await
         .unwrap();
     let binding = store::new_token();
@@ -1521,14 +1577,14 @@ async fn epic_link_cross_player_collision_is_error() {
 
     // Player A already owns the Epic identity.
     let a = svc
-        .register(format!("a-{}@test.local", suffix()), "pw".into(), "A".into())
+        .register(format!("a-{}@test.local", suffix()), "pw".into(), "A".into(), test_client())
         .await
         .unwrap();
     svc.link_identity(&a.player_id, "epic", &epic_acct).await.unwrap();
 
     // Player B, logged in, tries to link the SAME Epic account.
     let b = svc
-        .register(format!("b-{}@test.local", suffix()), "pw".into(), "B".into())
+        .register(format!("b-{}@test.local", suffix()), "pw".into(), "B".into(), test_client())
         .await
         .unwrap();
 
@@ -1570,7 +1626,7 @@ async fn epic_link_same_player_is_idempotent() {
     let epic_acct = format!("epicacct-{}", suffix());
 
     let a = svc
-        .register(format!("a-{}@test.local", suffix()), "pw".into(), "A".into())
+        .register(format!("a-{}@test.local", suffix()), "pw".into(), "A".into(), test_client())
         .await
         .unwrap();
     svc.link_identity(&a.player_id, "epic", &epic_acct).await.unwrap();
@@ -2085,7 +2141,7 @@ async fn epic_start_valid_session_mints_link_state() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let sess = svc
-        .register(format!("oauth-start-{}@test.local", suffix()), "pw".into(), "Linker".into())
+        .register(format!("oauth-start-{}@test.local", suffix()), "pw".into(), "Linker".into(), test_client())
         .await
         .unwrap();
 

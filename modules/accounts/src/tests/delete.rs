@@ -152,7 +152,7 @@ async fn begin_delete_upserts_same_ticket_until_expired() {
     let (_ctx, svc) = wired(&pool).await;
 
     let email = format!("begindel-{}@test.local", suffix());
-    let sess = svc.register(email, "pw".into(), "BeginDel".into()).await.unwrap();
+    let sess = svc.register(email, "pw".into(), "BeginDel".into(), test_client()).await.unwrap();
     let pid = sess.player_id.clone();
     let _cleanup = on_drop({
         let pool = pool.clone();
@@ -190,11 +190,11 @@ async fn delete_account_wrong_player_ticket_is_not_found_and_not_consumed() {
     let (_ctx, svc) = wired(&pool).await;
 
     let a = svc
-        .register(format!("victimA-{}@test.local", suffix()), "pw".into(), "A".into())
+        .register(format!("victimA-{}@test.local", suffix()), "pw".into(), "A".into(), test_client())
         .await
         .unwrap();
     let b = svc
-        .register(format!("attackerB-{}@test.local", suffix()), "pw".into(), "B".into())
+        .register(format!("attackerB-{}@test.local", suffix()), "pw".into(), "B".into(), test_client())
         .await
         .unwrap();
     let a_pid = a.player_id.clone();
@@ -234,7 +234,7 @@ async fn delete_account_expired_ticket_is_not_found_player_survives() {
     let (_ctx, svc) = wired(&pool).await;
 
     let sess = svc
-        .register(format!("expdel-{}@test.local", suffix()), "pw".into(), "ExpDel".into())
+        .register(format!("expdel-{}@test.local", suffix()), "pw".into(), "ExpDel".into(), test_client())
         .await
         .unwrap();
     let pid = sess.player_id.clone();
@@ -272,7 +272,7 @@ async fn delete_account_reserves_handle_permanently_blocking_remint() {
     let (_ctx, svc) = wired(&pool).await;
 
     let sess = svc
-        .register(format!("handledel-{}@test.local", suffix()), "pw".into(), "HandleDel".into())
+        .register(format!("handledel-{}@test.local", suffix()), "pw".into(), "HandleDel".into(), test_client())
         .await
         .unwrap();
     let pid = sess.player_id.clone();
@@ -319,7 +319,7 @@ async fn delete_account_replay_returns_identical_receipt_and_wipes_sessions() {
     let (_ctx, svc) = wired(&pool).await;
 
     let sess = svc
-        .register(format!("replay-{}@test.local", suffix()), "pw".into(), "Replay".into())
+        .register(format!("replay-{}@test.local", suffix()), "pw".into(), "Replay".into(), test_client())
         .await
         .unwrap();
     let pid = sess.player_id.clone();
@@ -354,7 +354,7 @@ async fn delete_account_commits_one_event_with_sessions_emptied() {
     let (_ctx, svc) = wired(&pool).await;
 
     let sess = svc
-        .register(format!("onetx-{}@test.local", suffix()), "pw".into(), "OneTx".into())
+        .register(format!("onetx-{}@test.local", suffix()), "pw".into(), "OneTx".into(), test_client())
         .await
         .unwrap();
     let pid = sess.player_id.clone();
@@ -384,7 +384,7 @@ async fn delete_player_atomic_failure_after_receipt_insert_leaves_no_trace() {
     let (_ctx, svc) = wired(&pool).await;
 
     let sess = svc
-        .register(format!("txfail-{}@test.local", suffix()), "pw".into(), "TxFail".into())
+        .register(format!("txfail-{}@test.local", suffix()), "pw".into(), "TxFail".into(), test_client())
         .await
         .unwrap();
     let pid = sess.player_id.clone();

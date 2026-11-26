@@ -438,6 +438,10 @@ pub fn conformance_session_token_rejected(len: usize) -> bool {
 pub async fn conformance_login_federated_unconfigured_provider(
 ) -> Result<accountsapi::Session, opsapi::Error> {
     service_without_providers()
-        .login_federated(EPIC.to_string(), "conformance.probe.jwt".into())
+        .login_federated(
+            EPIC.to_string(),
+            "conformance.probe.jwt".into(),
+            accountsapi::DEV_GAME_CLIENT_ID.into(),
+        )
         .await
 }

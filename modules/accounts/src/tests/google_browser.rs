@@ -165,7 +165,7 @@ async fn google_sign_in_sets_the_session_and_ends_the_replaced_one() {
     let subject = format!("google-browser-{}", suffix());
     let base = serve(svc.clone(), fake_google(&pool, &subject).await, None, roomy_bucket()).await;
     let other = svc
-        .register(format!("google-browser-{}@test.local", suffix().to_ascii_lowercase()), "pw".into(), "Other".into())
+        .register(format!("google-browser-{}@test.local", suffix().to_ascii_lowercase()), "pw".into(), "Other".into(), test_client())
         .await
         .unwrap()
         .player_id;

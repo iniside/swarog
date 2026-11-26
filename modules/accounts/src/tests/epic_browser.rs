@@ -151,7 +151,7 @@ async fn browser_intent_sets_swarog_session_and_issues_no_player_session() {
     let subject = format!("epic-browser-{}", suffix());
     let base = serve(svc.clone(), mock_epic(&pool, &subject).await).await;
     let other = svc
-        .register(format!("epic-browser-{}@test.local", suffix().to_ascii_lowercase()), "pw".into(), "Other".into())
+        .register(format!("epic-browser-{}@test.local", suffix().to_ascii_lowercase()), "pw".into(), "Other".into(), test_client())
         .await
         .unwrap()
         .player_id;
@@ -421,7 +421,7 @@ async fn a_sign_in_refused_at_the_mint_keeps_the_browsers_session() {
     let base = serve(svc.clone(), mock_epic(&pool, &subject).await).await;
     let (player, _) = svc.external_browser_login(crate::providers::EPIC, &subject, "Refused").await.unwrap();
     let other = svc
-        .register(format!("epic-refused-{}@test.local", suffix().to_ascii_lowercase()), "pw".into(), "Other".into())
+        .register(format!("epic-refused-{}@test.local", suffix().to_ascii_lowercase()), "pw".into(), "Other".into(), test_client())
         .await
         .unwrap()
         .player_id;

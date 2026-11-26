@@ -17,6 +17,7 @@ use crate::oidc::{short_id, IssuerMatch, OidcVerifier};
 use crate::password::ArgonVerifier;
 use crate::providers::{oidc_credentials, Providers, VerifyError, MAX_OIDC_CREDENTIAL_BYTES};
 use crate::store::Store;
+use crate::tests::test_client;
 use crate::Service;
 
 const CLIENT_ID: &str = "client-epic-tests";
@@ -223,7 +224,7 @@ async fn jwks_500_is_infra_and_maps_to_unavailable() {
     let hits_before = hits.load(Ordering::SeqCst);
     let svc = epic_service(verifier(&url));
     let e = svc
-        .login_federated("epic".into(), token_with_kid(&enc, "k"))
+        .login_federated("epic".into(), token_with_kid(&enc, "k"), test_client())
         .await
         .unwrap_err();
     assert_eq!(
@@ -254,7 +255,7 @@ async fn credential_over_cap_is_rejected_before_any_jwks_fetch() {
     let svc = epic_service(verifier(&url));
 
     let over_cap = "a".repeat(MAX_OIDC_CREDENTIAL_BYTES + 1);
-    let e = svc.login_federated("epic".into(), over_cap).await.unwrap_err();
+    let e = svc.login_federated("epic".into(), over_cap, test_client()).await.unwrap_err();
     assert_eq!(e.status, opsapi::Status::Invalid);
     assert_eq!(e.msg, "credential too long");
     assert_eq!(
@@ -274,7 +275,7 @@ async fn empty_credential_on_configured_provider_is_invalid() {
     let (url, hits) = serve_counting_jwks(200, jwks).await;
     let svc = epic_service(verifier(&url));
 
-    let e = svc.login_federated("epic".into(), String::new()).await.unwrap_err();
+    let e = svc.login_federated("epic".into(), String::new(), test_client()).await.unwrap_err();
     assert_eq!(e.status, opsapi::Status::Invalid);
     assert_eq!(e.msg, "credential is required");
     assert_eq!(
@@ -373,7 +374,7 @@ async fn rejected_token_maps_to_unauthorized() {
     let svc = epic_service(verifier(&url));
 
     let e = svc
-        .login_federated("epic".into(), token_with_kid(&enc, "ghost"))
+        .login_federated("epic".into(), token_with_kid(&enc, "ghost"), test_client())
         .await
         .unwrap_err();
     assert_eq!(e.status, opsapi::Status::Unauthorized);

@@ -78,7 +78,7 @@ async fn post_login(base: &str, csrf: &str, email: &str, password: &str, return_
 
 async fn registered(svc: &Service, tag: &str) -> (String, String) {
     let email = format!("hosted-{tag}-{}@test.local", suffix().to_ascii_lowercase());
-    let pid = svc.register(email.clone(), "pw".into(), "Hosted".into()).await.unwrap().player_id;
+    let pid = svc.register(email.clone(), "pw".into(), "Hosted".into(), test_client()).await.unwrap().player_id;
     (email, pid)
 }
 

@@ -19,7 +19,7 @@ use super::{
 };
 use crate::store::FamilyRow;
 use crate::web::session::BrowserSessionRow;
-use crate::tests::{cleanup_player, suffix, wired};
+use crate::tests::{cleanup_player, suffix, test_client, wired, TEST_CLIENT_ID};
 
 /// A canonical uuid no registration mints: registrations are v4, this is v0.
 const NO_PLAYER: &str = "00000000-0000-0000-0000-000000000000";
@@ -86,7 +86,7 @@ async fn player_label_answers_each_handle_and_leaves_out_a_missing_player() {
     let mut ids = Vec::new();
     for name in ["LabelA", "LabelB"] {
         let email = format!("{name}-{}@test.local", suffix());
-        ids.push(svc.register(email, "pw".into(), name.into()).await.unwrap().player_id);
+        ids.push(svc.register(email, "pw".into(), name.into(), test_client()).await.unwrap().player_id);
     }
     let refs = vec![ids[0].clone(), NO_PLAYER.to_string(), "not-a-uuid".to_string(), ids[1].clone()];
     let answer = AccountsAdmin::new(Arc::clone(&svc)).panel(label_query(refs)).await;
@@ -124,7 +124,7 @@ async fn player_search_hit_links_to_the_player_entity() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("Seeker-{}@test.local", suffix());
-    let id = svc.register(email, "pw".into(), "Seeker".into()).await.unwrap().player_id;
+    let id = svc.register(email, "pw".into(), "Seeker".into(), test_client()).await.unwrap().player_id;
     let query = SearchQuery { module: "accounts".to_string(), kind: "player".to_string(), q: id.clone(), limit: 10 };
     let hits = AccountsAdmin::new(Arc::clone(&svc)).search(query).await;
     cleanup_player(&pool, &id).await;
@@ -188,7 +188,7 @@ async fn players_table_finds_by_id_handle_email_and_substring_and_filters_by_pro
     let (_ctx, svc) = wired(&pool).await;
     let name = format!("Find{}", suffix());
     let email = format!("{}@test.local", name.to_lowercase());
-    let id = svc.register(email.clone(), "pw".into(), name.clone()).await.unwrap().player_id;
+    let id = svc.register(email.clone(), "pw".into(), name.clone(), test_client()).await.unwrap().player_id;
     let admin = AccountsAdmin::new(Arc::clone(&svc));
     let row = admin.svc.store.player_row(&id).await.unwrap().unwrap();
     let handle = format!("{}#{}", name.to_lowercase(), row.discriminator);
@@ -248,7 +248,7 @@ async fn nav_counter_draws_the_player_count_with_separators() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("count-{}@test.local", suffix());
-    let id = svc.register(email, "pw".into(), "Counted".into()).await.unwrap().player_id;
+    let id = svc.register(email, "pw".into(), "Counted".into(), test_client()).await.unwrap().player_id;
     let body = AccountsAdmin::new(Arc::clone(&svc)).panel(query("nav.players")).await;
     cleanup_player(&pool, &id).await;
 
@@ -261,30 +261,37 @@ async fn nav_counter_draws_the_player_count_with_separators() {
     assert_eq!(cell.value, thousands(n), "the counter groups its digits");
 }
 
+const EXPIRE_REFRESH: &str = "UPDATE accounts.refresh_tokens SET expires_at = now() - interval '1 second' \
+                               WHERE family_id = $1::uuid";
+const EXPIRE_ACCESS: &str = "UPDATE accounts.token_families \
+                                SET access_expires_at = now() - interval '1 second' WHERE id = $1::uuid";
+const EXPIRE_PLAYER_REFRESH: &str = "UPDATE accounts.refresh_tokens \
+                                        SET expires_at = now() - interval '1 second' WHERE player_id = $1::uuid";
+const EXPIRE_PLAYER_ACCESS: &str = "UPDATE accounts.token_families \
+                                       SET access_expires_at = now() - interval '1 second' \
+                                     WHERE player_id = $1::uuid";
+
 #[tokio::test]
 async fn sessions_panel_lists_the_families_revoke_all_counts_newest_first() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("sess-{}@test.local", suffix());
-    let registered = svc.register(email.clone(), "pw".into(), "Sess".into()).await.unwrap();
+    let registered = svc.register(email.clone(), "pw".into(), "Sess".into(), test_client()).await.unwrap();
     let id = registered.player_id.clone();
     // A rotated family stays one live family.
     let rotated = svc.refresh(registered.refresh_token.clone()).await.unwrap();
-    let second = svc.login(email.clone(), "pw".into()).await.unwrap();
-    let expired = svc.login(email.clone(), "pw".into()).await.unwrap();
-    let access_only = svc.login(email, "pw".into()).await.unwrap();
+    let second = svc.login(email.clone(), "pw".into(), test_client()).await.unwrap();
+    let expired = svc.login(email.clone(), "pw".into(), test_client()).await.unwrap();
+    let access_only = svc.login(email, "pw".into(), test_client()).await.unwrap();
     let (a, b, c, d) = (
         family_of(&pool, &rotated.refresh_token).await,
         family_of(&pool, &second.refresh_token).await,
         family_of(&pool, &expired.refresh_token).await,
         family_of(&pool, &access_only.refresh_token).await,
     );
-    // c is past both expiries; d's refresh token expired but its access session lives on.
-    for (rows, family) in [("refresh_tokens", &c), ("sessions", &c), ("refresh_tokens", &d)] {
-        sqlx::query(&format!(
-            "UPDATE accounts.{rows} SET expires_at = now() - interval '1 second' \
-              WHERE family_id = $1::uuid",
-        ))
+    // c is past both expiries; d's refresh token expired but its access lives on.
+    for (sql, family) in [(EXPIRE_REFRESH, &c), (EXPIRE_ACCESS, &c), (EXPIRE_REFRESH, &d)] {
+        sqlx::query(sql)
             .bind(family)
             .execute(&pool)
             .await
@@ -327,7 +334,7 @@ async fn identities_panel_masks_the_subject_and_counts_the_links() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("ident-{}@test.local", suffix().to_lowercase());
-    let id = svc.register(email.clone(), "pw".into(), "Ident".into()).await.unwrap().player_id;
+    let id = svc.register(email.clone(), "pw".into(), "Ident".into(), test_client()).await.unwrap().player_id;
     let linked = svc.link_identity(&id, "epic", &format!("ident-{}", suffix())).await.map(|_| ());
     let body = AccountsAdmin::new(Arc::clone(&svc)).panel(player_query("identities", &id)).await;
     cleanup_player(&pool, &id).await;
@@ -409,7 +416,7 @@ async fn player_panels_draw_the_handle_and_refuse_a_missing_or_absent_player() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("Head-{}@test.local", suffix());
-    let id = svc.register(email, "pw".into(), "Head".into()).await.unwrap().player_id;
+    let id = svc.register(email, "pw".into(), "Head".into(), test_client()).await.unwrap().player_id;
     let admin = AccountsAdmin::new(Arc::clone(&svc));
     let header = admin.panel(player_query("header", &id)).await;
     let fact = admin.panel(player_query("fact.id", &id)).await;
@@ -436,7 +443,7 @@ async fn player_search_answers_nothing_for_another_kind_or_a_blank_query() {
     let (_ctx, svc) = wired(&pool).await;
     let name = format!("Srch{}", suffix().replace(['-', '_'], "x"));
     let email = format!("{name}@test.local");
-    let id = svc.register(email, "pw".into(), name.clone()).await.unwrap().player_id;
+    let id = svc.register(email, "pw".into(), name.clone(), test_client()).await.unwrap().player_id;
     let admin = AccountsAdmin::new(Arc::clone(&svc));
     let search = |kind: &str, q: String| SearchQuery {
         module: "accounts".to_string(),
@@ -459,7 +466,7 @@ async fn active_tile_and_profile_draw_nothing_the_store_cannot_back() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("prof-{}@test.local", suffix());
-    let id = svc.register(email, "pw".into(), "Prof".into()).await.unwrap().player_id;
+    let id = svc.register(email, "pw".into(), "Prof".into(), test_client()).await.unwrap().player_id;
     let admin = AccountsAdmin::new(Arc::clone(&svc));
     let tile = admin.panel(query("tile.active")).await;
     let profile = admin.panel(player_query("profile", &id)).await;
@@ -588,11 +595,11 @@ async fn revoke_session_ends_one_family_and_a_repeat_or_a_foreign_family_is_noop
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("rev1-{}@test.local", suffix());
-    let first = svc.register(email.clone(), "pw".into(), "RevOne".into()).await.unwrap();
-    let second = svc.login(email, "pw".into()).await.unwrap();
+    let first = svc.register(email.clone(), "pw".into(), "RevOne".into(), test_client()).await.unwrap();
+    let second = svc.login(email, "pw".into(), test_client()).await.unwrap();
     let id = first.player_id.clone();
     let other_email = format!("rev1o-{}@test.local", suffix());
-    let other = svc.register(other_email, "pw".into(), "RevOther".into()).await.unwrap();
+    let other = svc.register(other_email, "pw".into(), "RevOther".into(), test_client()).await.unwrap();
     let (a, b, foreign) = (
         family_of(&pool, &first.refresh_token).await,
         family_of(&pool, &second.refresh_token).await,
@@ -624,11 +631,11 @@ async fn revoke_all_ends_every_family_of_the_player_only_and_a_repeat_is_noop() 
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("rev2-{}@test.local", suffix());
-    let first = svc.register(email.clone(), "pw".into(), "RevAll".into()).await.unwrap();
-    svc.login(email, "pw".into()).await.unwrap();
+    let first = svc.register(email.clone(), "pw".into(), "RevAll".into(), test_client()).await.unwrap();
+    svc.login(email, "pw".into(), test_client()).await.unwrap();
     let id = first.player_id.clone();
     let other_email = format!("rev2o-{}@test.local", suffix());
-    let other = svc.register(other_email, "pw".into(), "RevAllOther".into()).await.unwrap();
+    let other = svc.register(other_email, "pw".into(), "RevAllOther".into(), test_client()).await.unwrap();
     let admin = AccountsAdmin::new(Arc::clone(&svc));
     let before = player_rows(&pool, &id).await;
     let revoked = admin.invoke(revoke(REVOKE_ALL, Some(&id), None)).await;
@@ -673,8 +680,8 @@ async fn revoke_all_prepare_names_the_player_and_counts_live_sessions() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("rev3-{}@test.local", suffix());
-    let first = svc.register(email.clone(), "pw".into(), "RevPrep".into()).await.unwrap();
-    svc.login(email, "pw".into()).await.unwrap();
+    let first = svc.register(email.clone(), "pw".into(), "RevPrep".into(), test_client()).await.unwrap();
+    svc.login(email, "pw".into(), test_client()).await.unwrap();
     let id = first.player_id.clone();
     let handle = svc.store.player_row(&id).await.unwrap().map(|r| {
         crate::store::render_handle(&r.display_name, &r.discriminator)
@@ -711,7 +718,7 @@ async fn revoke_all_waits_for_a_racing_login_and_revokes_it_whole() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("rev4-{}@test.local", suffix());
-    let id = svc.register(email.clone(), "pw".into(), "RevRace".into()).await.unwrap().player_id;
+    let id = svc.register(email.clone(), "pw".into(), "RevRace".into(), test_client()).await.unwrap().player_id;
     let mut stamp_gate = pool.begin().await.unwrap();
     let gate_pid = backend_pid(&mut stamp_gate).await;
     sqlx::query("SELECT 1 FROM accounts.identities WHERE player_id = $1::uuid FOR UPDATE")
@@ -721,7 +728,7 @@ async fn revoke_all_waits_for_a_racing_login_and_revokes_it_whole() {
         .unwrap();
     let login = {
         let svc = Arc::clone(&svc);
-        tokio::spawn(async move { svc.login(email, "pw".into()).await })
+        tokio::spawn(async move { svc.login(email, "pw".into(), test_client()).await })
     };
     let login_pid = waiter_of(&pool, gate_pid).await;
     let revoke = {
@@ -754,7 +761,7 @@ async fn a_refresh_racing_revoke_all_finishes_first_and_is_revoked_whole() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("rev6-{}@test.local", suffix());
-    let first = svc.register(email, "pw".into(), "RevRefresh".into()).await.unwrap();
+    let first = svc.register(email, "pw".into(), "RevRefresh".into(), test_client()).await.unwrap();
     let id = first.player_id.clone();
     let mut token_gate = pool.begin().await.unwrap();
     let gate_pid = backend_pid(&mut token_gate).await;
@@ -795,12 +802,9 @@ async fn revoke_all_counts_and_revokes_only_families_that_still_grant_access() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("rev7-{}@test.local", suffix());
-    let id = svc.register(email, "pw".into(), "RevDead".into()).await.unwrap().player_id;
-    for table in ["refresh_tokens", "sessions"] {
-        sqlx::query(&format!(
-            "UPDATE accounts.{table} SET expires_at = now() - interval '1 second' \
-              WHERE player_id = $1::uuid"
-        ))
+    let id = svc.register(email, "pw".into(), "RevDead".into(), test_client()).await.unwrap().player_id;
+    for sql in [EXPIRE_PLAYER_REFRESH, EXPIRE_PLAYER_ACCESS] {
+        sqlx::query(sql)
         .bind(&id)
         .execute(&pool)
         .await
@@ -833,7 +837,7 @@ async fn revoke_all_counts_and_ends_a_browser_session() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("rev6-{}@test.local", suffix());
-    let id = svc.register(email, "pw".into(), "RevBrowser".into()).await.unwrap().player_id;
+    let id = svc.register(email, "pw".into(), "RevBrowser".into(), test_client()).await.unwrap().player_id;
     let mut tx = pool.begin().await.unwrap();
     svc.store.kill_player_families_tx(&mut tx, &id).await.unwrap();
     tx.commit().await.unwrap();
@@ -873,13 +877,13 @@ async fn a_login_racing_revoke_all_waits_and_survives_whole() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("rev5-{}@test.local", suffix());
-    let id = svc.register(email.clone(), "pw".into(), "RevLate".into()).await.unwrap().player_id;
+    let id = svc.register(email.clone(), "pw".into(), "RevLate".into(), test_client()).await.unwrap().player_id;
     let mut gate = pool.begin().await.unwrap();
     let gate_pid = backend_pid(&mut gate).await;
     let killed = svc.store.kill_player_families_tx(&mut gate, &id).await.unwrap();
     let task = {
         let svc = Arc::clone(&svc);
-        tokio::spawn(async move { svc.login(email, "pw".into()).await })
+        tokio::spawn(async move { svc.login(email, "pw".into(), test_client()).await })
     };
     let waited = waits_on(&pool, gate_pid).await;
     gate.commit().await.unwrap();
@@ -964,7 +968,7 @@ async fn create_account_reveals_a_password_that_signs_in_and_a_taken_email_is_a_
     let registered = asyncevents::testing::events_count(&pool, "player.registered", "player_id", &id)
         .await
         .unwrap();
-    let login = svc.login(lower.clone(), password.clone()).await;
+    let login = svc.login(lower.clone(), password.clone(), test_client()).await;
     let same = admin.invoke(create_call(&lower, "OpMadeAgain")).await;
     let other_case = admin.invoke(create_call(&lower.to_ascii_uppercase(), "OpMadeAgain")).await;
     let blank = admin.invoke(create_call("  ", "OpMade")).await;
@@ -1006,7 +1010,7 @@ async fn reset_password_ends_every_login_and_only_the_new_password_signs_in() {
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("Reset-{}@test.local", suffix());
     let lower = email.to_ascii_lowercase();
-    let first = svc.register(email, "old-pw".into(), "ResetMe".into()).await.unwrap();
+    let first = svc.register(email, "old-pw".into(), "ResetMe".into(), test_client()).await.unwrap();
     let id = first.player_id.clone();
     let browser = svc.store.create_browser_session(&id).await.unwrap().unwrap();
     let admin = AccountsAdmin::new(Arc::clone(&svc));
@@ -1016,8 +1020,8 @@ async fn reset_password_ends_every_login_and_only_the_new_password_signs_in() {
     let refreshed = svc.refresh(first.refresh_token.clone()).await;
     let bearer = svc.store.player_by_session(&first.token).await.unwrap();
     let browser_left = svc.store.browser_session(&browser.token).await.unwrap();
-    let old_login = svc.login(lower.clone(), "old-pw".into()).await;
-    let new_login = svc.login(lower.clone(), password.clone()).await;
+    let old_login = svc.login(lower.clone(), "old-pw".into(), test_client()).await;
+    let new_login = svc.login(lower.clone(), password.clone(), test_client()).await;
     let again = admin.invoke(revoke(RESET_PASSWORD, Some(&id), None)).await.unwrap();
     let (_, second) = revealed(again);
     cleanup_player(&pool, &id).await;
@@ -1042,11 +1046,11 @@ async fn a_password_verified_before_a_reset_mints_no_session_after_it() {
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("stale-{}@test.local", suffix());
     let lower = email.to_ascii_lowercase();
-    let id = svc.register(email, "old-pw".into(), "Stale".into()).await.unwrap().player_id;
+    let id = svc.register(email, "old-pw".into(), "Stale".into(), test_client()).await.unwrap().player_id;
     let verified = svc.verify_password(&lower, "old-pw".into()).await.unwrap();
     let admin = AccountsAdmin::new(Arc::clone(&svc));
     admin.invoke(revoke(RESET_PASSWORD, Some(&id), None)).await.unwrap();
-    let bearer = svc.issue_password_session(&verified).await;
+    let bearer = svc.issue_password_session(&verified, TEST_CLIENT_ID).await;
     let browser = svc.issue_password_browser_session(&verified, None).await;
     let rows: (i64, i64, i64) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM accounts.refresh_tokens WHERE player_id = $1::uuid), \
@@ -1078,7 +1082,7 @@ async fn reset_password_refuses_a_player_without_a_password_and_a_missing_player
         .await
         .unwrap_or_else(|_| panic!("an epic-only player"));
     let session = svc
-        .issue_session_tx(&mut tx, &epic, "epic", &subject, None, crate::store::new_token())
+        .issue_session_tx(&mut tx, &epic, "epic", &subject, None, TEST_CLIENT_ID, crate::store::new_token())
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -1122,7 +1126,7 @@ async fn sessions_panel_lists_live_browser_sessions_without_their_token() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("brw-{}@test.local", suffix());
-    let id = svc.register(email, "pw".into(), "BrowserRow".into()).await.unwrap().player_id;
+    let id = svc.register(email, "pw".into(), "BrowserRow".into(), test_client()).await.unwrap().player_id;
     let browser = svc.store.create_browser_session(&id).await.unwrap().unwrap();
     let expired = svc.store.create_browser_session(&id).await.unwrap().unwrap();
     sqlx::query("UPDATE accounts.browser_sessions SET expires_at = now() - interval '1 minute' WHERE token_digest = $1")

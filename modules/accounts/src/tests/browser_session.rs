@@ -16,7 +16,7 @@ async fn a_browser_token_resolves_its_player_but_never_authenticates_an_op() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("browser-{}@test.local", suffix());
-    let pid = svc.register(email, "pw".into(), "Browser".into()).await.unwrap().player_id;
+    let pid = svc.register(email, "pw".into(), "Browser".into(), test_client()).await.unwrap().player_id;
     let minted = svc.store.create_browser_session(&pid).await.unwrap().unwrap();
     let read = svc.store.browser_session(&minted.token).await.unwrap();
     let as_bearer = svc.store.player_by_session(&minted.token).await.unwrap();
@@ -58,12 +58,12 @@ async fn killing_a_players_families_ends_its_browser_sessions() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let pid = svc
-        .register(format!("browser-kill-{}@test.local", suffix()), "pw".into(), "BrKill".into())
+        .register(format!("browser-kill-{}@test.local", suffix()), "pw".into(), "BrKill".into(), test_client())
         .await
         .unwrap()
         .player_id;
     let other = svc
-        .register(format!("browser-keep-{}@test.local", suffix()), "pw".into(), "BrKeep".into())
+        .register(format!("browser-keep-{}@test.local", suffix()), "pw".into(), "BrKeep".into(), test_client())
         .await
         .unwrap()
         .player_id;
@@ -91,7 +91,7 @@ async fn deleting_the_player_removes_its_browser_sessions_and_refuses_new_ones()
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let pid = svc
-        .register(format!("browser-del-{}@test.local", suffix()), "pw".into(), "BrDel".into())
+        .register(format!("browser-del-{}@test.local", suffix()), "pw".into(), "BrDel".into(), test_client())
         .await
         .unwrap()
         .player_id;
@@ -116,7 +116,7 @@ async fn a_raw_player_delete_cascades_to_its_browser_sessions() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let pid = svc
-        .register(format!("browser-cascade-{}@test.local", suffix()), "pw".into(), "BrCasc".into())
+        .register(format!("browser-cascade-{}@test.local", suffix()), "pw".into(), "BrCasc".into(), test_client())
         .await
         .unwrap()
         .player_id;
@@ -140,7 +140,7 @@ async fn a_browser_session_racing_deletion_is_refused() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let pid = svc
-        .register(format!("browser-race-{}@test.local", suffix()), "pw".into(), "BrRace".into())
+        .register(format!("browser-race-{}@test.local", suffix()), "pw".into(), "BrRace".into(), test_client())
         .await
         .unwrap()
         .player_id;

@@ -41,7 +41,7 @@ async fn register_and_login_stamp_and_refresh_does_not() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("used-{}@test.local", suffix().to_lowercase());
-    let reg = svc.register(email.clone(), "pw".into(), "Used".into()).await.unwrap();
+    let reg = svc.register(email.clone(), "pw".into(), "Used".into(), test_client()).await.unwrap();
     let id = reg.player_id.clone();
     let registered = idle_secs(&pool, &id, "password").await;
 
@@ -49,7 +49,7 @@ async fn register_and_login_stamp_and_refresh_does_not() {
     let refreshed = svc.refresh(reg.refresh_token.clone()).await.map(|_| ());
     let after_refresh = idle_secs(&pool, &id, "password").await;
 
-    let login = svc.login(email.clone(), "pw".into()).await.map(|_| ());
+    let login = svc.login(email.clone(), "pw".into(), test_client()).await.map(|_| ());
     let after_login = idle_secs(&pool, &id, "password").await;
     cleanup_player(&pool, &id).await;
 
@@ -65,10 +65,10 @@ async fn a_mixed_case_password_login_stamps_the_one_identity() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("used-{}@test.local", suffix().to_lowercase());
-    let id = svc.register(email.clone(), "pw".into(), "Used".into()).await.unwrap().player_id;
+    let id = svc.register(email.clone(), "pw".into(), "Used".into(), test_client()).await.unwrap().player_id;
     backdate(&pool, &id).await;
 
-    let login = svc.login(email.to_ascii_uppercase(), "pw".into()).await.map(|_| ());
+    let login = svc.login(email.to_ascii_uppercase(), "pw".into(), test_client()).await.map(|_| ());
     let after_login = idle_secs(&pool, &id, "password").await;
     cleanup_player(&pool, &id).await;
 
@@ -81,12 +81,12 @@ async fn external_login_stamps_on_first_and_later_sight() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let sub = format!("used-{}", suffix());
-    let (first, _) = svc.external_login("epic", &sub, "epic:used", None).await.unwrap();
+    let (first, _) = svc.external_login("epic", &sub, "epic:used", None, TEST_CLIENT_ID).await.unwrap();
     let id = first.player_id.clone();
     let provisioned = idle_secs(&pool, &id, "epic").await;
 
     backdate(&pool, &id).await;
-    let again = svc.external_login("epic", &sub, "epic:used", None).await.map(|_| ());
+    let again = svc.external_login("epic", &sub, "epic:used", None, TEST_CLIENT_ID).await.map(|_| ());
     let after_again = idle_secs(&pool, &id, "epic").await;
     cleanup_player(&pool, &id).await;
 
@@ -99,7 +99,7 @@ async fn external_login_stamps_on_first_and_later_sight() {
 async fn a_guest_session_stamps_the_guest_identity() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
-    let guest = svc.create_guest().await.unwrap();
+    let guest = svc.create_guest(test_client()).await.unwrap();
     let idle = idle_secs(&pool, &guest.player_id, "guest").await;
     cleanup_player(&pool, &guest.player_id).await;
 
@@ -111,12 +111,12 @@ async fn a_linked_identity_stays_unused_until_a_session_goes_through_it() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("link-{}@test.local", suffix().to_lowercase());
-    let id = svc.register(email.clone(), "pw".into(), "Link".into()).await.unwrap().player_id;
+    let id = svc.register(email.clone(), "pw".into(), "Link".into(), test_client()).await.unwrap().player_id;
     let sub = format!("used-link-{}", suffix());
     let linked = svc.link_identity(&id, "epic", &sub).await.map(|_| ());
     let after_link = idle_secs(&pool, &id, "epic").await;
 
-    let login = svc.login(email, "pw".into()).await.map(|_| ());
+    let login = svc.login(email, "pw".into(), test_client()).await.map(|_| ());
     let after_dev_login = idle_secs(&pool, &id, "epic").await;
     cleanup_player(&pool, &id).await;
 

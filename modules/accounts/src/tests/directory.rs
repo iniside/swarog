@@ -49,11 +49,11 @@ async fn same_display_name_mints_distinct_handles_that_resolve_back() {
     let name = format!("Dup-{}", suffix());
 
     let a = svc
-        .register(format!("a-{}@test.local", suffix()), "pw".into(), name.clone())
+        .register(format!("a-{}@test.local", suffix()), "pw".into(), name.clone(), test_client())
         .await
         .unwrap();
     let b = svc
-        .register(format!("b-{}@test.local", suffix()), "pw".into(), name.clone())
+        .register(format!("b-{}@test.local", suffix()), "pw".into(), name.clone(), test_client())
         .await
         .unwrap();
 
@@ -89,7 +89,7 @@ async fn players_by_id_omits_unknown_ids() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let p = svc
-        .register(format!("known-{}@test.local", suffix()), "pw".into(), "Known".into())
+        .register(format!("known-{}@test.local", suffix()), "pw".into(), "Known".into(), test_client())
         .await
         .unwrap();
     let unknown = random_uuid();
@@ -118,7 +118,7 @@ async fn malformed_id_in_batch_does_not_poison_the_valid_ones() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let p = svc
-        .register(format!("valid-{}@test.local", suffix()), "pw".into(), "Valid".into())
+        .register(format!("valid-{}@test.local", suffix()), "pw".into(), "Valid".into(), test_client())
         .await
         .unwrap();
 
@@ -188,7 +188,7 @@ async fn register_display_name_is_bracketed_at_the_shared_byte_cap() {
     let at_cap = "é".repeat(accountsapi::MAX_DISPLAY_NAME_BYTES / 2);
     assert_eq!(at_cap.len(), accountsapi::MAX_DISPLAY_NAME_BYTES);
     let ok = svc
-        .register(format!("cap-ok-{}@test.local", suffix()), "pw".into(), at_cap)
+        .register(format!("cap-ok-{}@test.local", suffix()), "pw".into(), at_cap, test_client())
         .await
         .unwrap();
 
@@ -196,7 +196,7 @@ async fn register_display_name_is_bracketed_at_the_shared_byte_cap() {
         let over_cap = format!("{}a", "é".repeat(accountsapi::MAX_DISPLAY_NAME_BYTES / 2));
         assert_eq!(over_cap.len(), accountsapi::MAX_DISPLAY_NAME_BYTES + 1);
         let e = svc
-            .register(format!("cap-over-{}@test.local", suffix()), "pw".into(), over_cap)
+            .register(format!("cap-over-{}@test.local", suffix()), "pw".into(), over_cap, test_client())
             .await
             .unwrap_err();
         assert_eq!(e.status, opsapi::Status::Invalid);
@@ -248,18 +248,18 @@ fn dead_directory_service() -> Arc<Service> {
     })
 }
 
-/// `online_until` is populated for a live session and EMPTY for an expired one. The
-/// expired row is inserted explicitly with `expires_at` in the past — never a sleep
-/// against a real clock (item 7, the timing-sensitive-tests doctrine). This test goes
-/// red on a regression that drops the `s.expires_at > now()` filter (or otherwise
-/// counts an expired session as live): the "expired" assertion would then observe a
+/// `online_until` is populated for a live token family and EMPTY once its access has
+/// expired. The family's `access_expires_at` is moved into the past explicitly — never a
+/// sleep against a real clock (the timing-sensitive-tests doctrine). This test goes red
+/// on a regression that drops the `f.access_expires_at > now()` filter (or otherwise
+/// counts an expired family as live): the "expired" assertion would then observe a
 /// non-empty `online_until`.
 #[tokio::test]
 async fn online_until_reflects_live_session_and_is_empty_when_expired() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let p = svc
-        .register(format!("sess-{}@test.local", suffix()), "pw".into(), "Sessioned".into())
+        .register(format!("sess-{}@test.local", suffix()), "pw".into(), "Sessioned".into(), test_client())
         .await
         .unwrap();
 
@@ -270,19 +270,12 @@ async fn online_until_reflects_live_session_and_is_empty_when_expired() {
         assert_eq!(live.len(), 1);
         assert!(!live[0].online_until.is_empty(), "a freshly minted session must be live");
 
-        // Delete the live session and insert one explicitly expired.
-        sqlx::query("DELETE FROM accounts.sessions WHERE player_id = $1::uuid")
-            .bind(&player_id)
-            .execute(&db)
-            .await
-            .unwrap();
+        // Move the family's access expiry an hour into the past.
         sqlx::query(
-            "INSERT INTO accounts.sessions (token, player_id, family_id, expires_at) \
-             VALUES ($1, $2::uuid, $3::uuid, now() - interval '1 hour')",
+            "UPDATE accounts.token_families SET access_expires_at = now() - interval '1 hour' \
+              WHERE player_id = $1::uuid",
         )
-        .bind(store::new_token())
         .bind(&player_id)
-        .bind(random_uuid())
         .execute(&db)
         .await
         .unwrap();
@@ -306,7 +299,7 @@ async fn me_handle_round_trips_through_find_by_handle() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let p = svc
-        .register(format!("me-{}@test.local", suffix()), "pw".into(), "Rounder".into())
+        .register(format!("me-{}@test.local", suffix()), "pw".into(), "Rounder".into(), test_client())
         .await
         .unwrap();
 
@@ -322,28 +315,27 @@ async fn me_handle_round_trips_through_find_by_handle() {
 }
 
 /// `player_summary` — the branch the `a84538d` follow-up introduced — succeeds for a
-/// player with NO session row at all (item 9). `me`'s own callers can never take this
-/// exact path (a caller of `me` always holds a session that is itself live and would
-/// satisfy `LEFT JOIN`'s predicate), so nothing else in this file constructs a player
-/// with zero session rows before reading its summary. Note the sibling
-/// `online_until_reflects_live_session_and_is_empty_when_expired` test also reaches an
-/// `INNER JOIN` mutation first (its expired-session row fails the join predicate too,
-/// dropping the player row) — this test's distinct value is the zero-rows case, not
-/// exclusivity over the mutation class.
+/// player with NO token family at all. `me`'s own callers can never take this exact path
+/// (a caller of `me` always holds a live family that satisfies `LEFT JOIN`'s predicate),
+/// so nothing else in this file constructs a player with zero family rows before reading
+/// its summary. The sibling `online_until_reflects_live_session_and_is_empty_when_expired`
+/// test also catches an `INNER JOIN` mutation (its expired family fails the join
+/// predicate too, dropping the player row); this test's distinct value is the zero-rows
+/// case.
 #[tokio::test]
 async fn player_summary_succeeds_with_no_session_row() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let p = svc
-        .register(format!("nosess-{}@test.local", suffix()), "pw".into(), "Sessionless".into())
+        .register(format!("nosess-{}@test.local", suffix()), "pw".into(), "Sessionless".into(), test_client())
         .await
         .unwrap();
 
     let (db, player_id) = (pool.clone(), p.player_id.clone());
     with_cleanup(&pool, vec![p.player_id.clone()], async move {
-        // register() mints a live session as a side effect; delete it so the player has
-        // NO row in accounts.sessions at all — the branch `me`'s callers never reach.
-        sqlx::query("DELETE FROM accounts.sessions WHERE player_id = $1::uuid")
+        // register() mints a live family as a side effect; delete it so the player has
+        // NO row in accounts.token_families at all — the branch `me`'s callers never reach.
+        sqlx::query("DELETE FROM accounts.token_families WHERE player_id = $1::uuid")
             .bind(&player_id)
             .execute(&db)
             .await

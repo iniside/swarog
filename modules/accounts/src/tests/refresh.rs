@@ -99,7 +99,7 @@ async fn rotation_kills_the_old_token_and_the_successor_works() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("rot-{}@test.local", suffix());
-    let sess = svc.register(email, "pw".into(), "Rot".into()).await.unwrap();
+    let sess = svc.register(email, "pw".into(), "Rot".into(), test_client()).await.unwrap();
     let pid = sess.player_id.clone();
 
     let next = svc.refresh(sess.refresh_token.clone()).await.unwrap();
@@ -136,9 +136,9 @@ async fn replay_outside_grace_kills_only_its_own_family() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("fam-{}@test.local", suffix());
-    let sess_a = svc.register(email.clone(), "pw".into(), "Fam".into()).await.unwrap();
+    let sess_a = svc.register(email.clone(), "pw".into(), "Fam".into(), test_client()).await.unwrap();
     let pid = sess_a.player_id.clone();
-    let sess_b = svc.login(email, "pw".into()).await.unwrap();
+    let sess_b = svc.login(email, "pw".into(), test_client()).await.unwrap();
     assert_ne!(
         sess_a.refresh_token, sess_b.refresh_token,
         "login must mint a SECOND family, not extend the first"
@@ -186,7 +186,7 @@ async fn replay_inside_grace_returns_the_recorded_successor_and_kills_nothing() 
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("grace-{}@test.local", suffix());
-    let sess = svc.register(email, "pw".into(), "Grace".into()).await.unwrap();
+    let sess = svc.register(email, "pw".into(), "Grace".into(), test_client()).await.unwrap();
     let pid = sess.player_id.clone();
 
     let rotated = svc.refresh(sess.refresh_token.clone()).await.unwrap();
@@ -218,7 +218,7 @@ async fn expired_refresh_token_is_unauthorized() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("exp-{}@test.local", suffix());
-    let sess = svc.register(email, "pw".into(), "Exp".into()).await.unwrap();
+    let sess = svc.register(email, "pw".into(), "Exp".into(), test_client()).await.unwrap();
     let pid = sess.player_id.clone();
 
     set_expires_at_offset(&pool, &sess.refresh_token, -60.0).await;
@@ -236,7 +236,7 @@ async fn unknown_refresh_token_is_byte_identical_to_expired() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("unk-{}@test.local", suffix());
-    let sess = svc.register(email, "pw".into(), "Unk".into()).await.unwrap();
+    let sess = svc.register(email, "pw".into(), "Unk".into(), test_client()).await.unwrap();
     let pid = sess.player_id.clone();
 
     set_expires_at_offset(&pool, &sess.refresh_token, -60.0).await;
@@ -268,7 +268,7 @@ async fn concurrent_refreshes_produce_exactly_one_rotation() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("race-{}@test.local", suffix());
-    let sess = svc.register(email, "pw".into(), "Race".into()).await.unwrap();
+    let sess = svc.register(email, "pw".into(), "Race".into(), test_client()).await.unwrap();
     let pid = sess.player_id.clone();
     let family = refresh_row(&pool, &sess.refresh_token).await.unwrap().family_id;
 
@@ -369,7 +369,7 @@ async fn rolled_back_rotation_leaves_the_original_token_usable() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("rb-{}@test.local", suffix());
-    let sess = svc.register(email, "pw".into(), "Rb".into()).await.unwrap();
+    let sess = svc.register(email, "pw".into(), "Rb".into(), test_client()).await.unwrap();
     let pid = sess.player_id.clone();
 
     let mut tx = svc.store.pool.begin().await.unwrap();
@@ -402,7 +402,7 @@ async fn successor_inherits_the_parents_expiry_never_a_fresh_thirty_days() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("cap-{}@test.local", suffix());
-    let sess = svc.register(email, "pw".into(), "Cap".into()).await.unwrap();
+    let sess = svc.register(email, "pw".into(), "Cap".into(), test_client()).await.unwrap();
     let pid = sess.player_id.clone();
 
     // Simulate a family late in its life: 5 minutes from expiry, not 30 days.

@@ -115,13 +115,13 @@ fn split_handle(handle: &str) -> Option<(&str, &str)> {
 }
 
 /// The one projection every [`accountsapi::PlayerSummary`] read shares: the summary
-/// columns plus the newest live session's expiry, rendered RFC3339 (empty when none).
-/// `max(...)` over a join FILTERED to live sessions, so one statement answers for a
-/// whole batch — never a per-player follow-up query.
+/// columns plus the newest live access token's expiry over the player's token families,
+/// rendered RFC3339 (empty when none). `max(...)` over a join FILTERED to live families,
+/// so one statement answers for a whole batch — never a per-player follow-up query.
 const SUMMARY_SELECT: &str = "SELECT p.id::text, p.display_name, p.discriminator, \
-     coalesce(to_char(max(s.expires_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), '') \
+     coalesce(to_char(max(f.access_expires_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), '') \
        FROM accounts.players p \
-       LEFT JOIN accounts.sessions s ON s.player_id = p.id AND s.expires_at > now() ";
+       LEFT JOIN accounts.token_families f ON f.player_id = p.id AND f.access_expires_at > now() ";
 
 /// The ONE rendering of a `"Name#1234"` handle.
 pub(crate) fn render_handle(display_name: &str, discriminator: &str) -> String {
@@ -345,10 +345,10 @@ pub(crate) struct FamilyRow {
     pub expires_in_secs: i64,
 }
 
-/// The refresh families of player `$1` that still grant access, as one statement
-/// selecting `$select` per family and ending in `$tail`. A family grants access while it
-/// holds an unexpired refresh token or an unexpired access session; per family, `since`
-/// is when its rows were minted and `expires_at` when they expire. The Sessions panel
+/// The token families of player `$1` that still grant access, as one statement
+/// selecting `$select` per family and ending in `$tail`. A family grants access while its
+/// newest access token is unexpired or it holds an unexpired refresh token; per family,
+/// `since` is when its rows were minted and `expires_at` when they expire. The Sessions panel
 /// and Revoke all both read this one predicate, so the panel lists what the modal counts.
 macro_rules! granting_families {
     ($select:literal, $tail:literal) => {
@@ -357,8 +357,8 @@ macro_rules! granting_families {
                SELECT family_id, issued_at AS since, expires_at FROM accounts.refresh_tokens \
                 WHERE player_id = $1::uuid \
                UNION ALL \
-               SELECT family_id, created_at, expires_at FROM accounts.sessions \
-                WHERE player_id = $1::uuid AND family_id IS NOT NULL\
+               SELECT id, created_at, access_expires_at FROM accounts.token_families \
+                WHERE player_id = $1::uuid\
              ) AS family_rows \
              GROUP BY family_id HAVING bool_or(expires_at > now()) ",
             $tail,
@@ -859,25 +859,68 @@ impl Store {
         Ok(done.rows_affected() == 1)
     }
 
-    /// Starts a NEW refresh family on the caller's tx: the row Postgres mints the
-    /// `family_id` for, and the only place a 30-day expiry is ever written.
-    pub async fn insert_refresh_family_tx(
+    /// Starts a NEW token family of `player_id` for `client_id` on the caller's tx, with the
+    /// expiry of the access token minted with it, and answers the id Postgres mints for it.
+    pub async fn insert_family_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        client_id: &str,
+    ) -> Result<String, sqlx::Error> {
+        sqlx::query_scalar(
+            "INSERT INTO accounts.token_families (id, player_id, client_id, access_expires_at) \
+             VALUES (gen_random_uuid(), $1::uuid, $2, now() + make_interval(mins => $3)) \
+             RETURNING id::text",
+        )
+        .bind(player_id)
+        .bind(client_id)
+        .bind(ACCESS_TTL_MINUTES)
+        .fetch_one(&mut *conn)
+        .await
+    }
+
+    /// Moves family `family_id`'s `access_expires_at` to the expiry of an access token
+    /// minted now, on the caller's tx. A vanished family surfaces as `RowNotFound`.
+    pub async fn touch_family_tx(
+        &self,
+        conn: &mut PgConnection,
+        family_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        let done = sqlx::query(
+            "UPDATE accounts.token_families \
+                SET access_expires_at = now() + make_interval(mins => $2) \
+              WHERE id = $1::uuid",
+        )
+        .bind(family_id)
+        .bind(ACCESS_TTL_MINUTES)
+        .execute(&mut *conn)
+        .await?;
+        if done.rows_affected() == 0 {
+            return Err(sqlx::Error::RowNotFound);
+        }
+        Ok(())
+    }
+
+    /// Inserts the first refresh token of family `family_id` on the caller's tx: the only
+    /// place a 30-day expiry is ever written.
+    pub async fn insert_refresh_root_tx(
         &self,
         conn: &mut PgConnection,
         token: &str,
         player_id: &str,
-    ) -> Result<String, sqlx::Error> {
-        let (family_id,): (String,) = sqlx::query_as(
+        family_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
             "INSERT INTO accounts.refresh_tokens (token, player_id, family_id, expires_at) \
-             VALUES ($1, $2::uuid, gen_random_uuid(), now() + make_interval(days => $3)) \
-             RETURNING family_id::text",
+             VALUES ($1, $2::uuid, $3::uuid, now() + make_interval(days => $4))",
         )
         .bind(token)
         .bind(player_id)
+        .bind(family_id)
         .bind(REFRESH_TTL_DAYS)
-        .fetch_one(&mut *conn)
+        .execute(&mut *conn)
         .await?;
-        Ok(family_id)
+        Ok(())
     }
 
     /// Consumes `token` and records `successor` as its replacement, returning the
@@ -888,11 +931,12 @@ impl Store {
     /// The predicate is the whole concurrency story: two dials with the same token
     /// serialize on this row, and only the one that finds `used_at IS NULL` rotates.
     ///
-    /// Lock order: the token's player row FOR KEY SHARE first, then the token row. The
-    /// successor and access-session inserts that follow need that player row too, and
-    /// an operator revocation ([`Store::lock_player_row_tx`]) and a self-delete take the
-    /// player row before the token rows; a refresh holding its token while it waits for
-    /// the player would deadlock with them.
+    /// Lock order: the token's player row and family row FOR KEY SHARE first, then the
+    /// token row. The successor and access-session inserts that follow need that player
+    /// row too, and an operator revocation ([`Store::lock_player_row_tx`]) and a
+    /// self-delete take the player row before the token rows, as a client delete takes
+    /// the family row before its tokens; a refresh holding its token while it waits for
+    /// either would deadlock with them.
     pub async fn rotate_refresh_tx(
         &self,
         conn: &mut PgConnection,
@@ -902,8 +946,9 @@ impl Store {
         sqlx::query(
             "SELECT 1 FROM accounts.players p \
                JOIN accounts.refresh_tokens t ON t.player_id = p.id \
+               JOIN accounts.token_families f ON f.id = t.family_id \
               WHERE t.token = $1 \
-                FOR KEY SHARE OF p",
+                FOR KEY SHARE OF p, f",
         )
         .bind(token)
         .execute(&mut *conn)
@@ -974,20 +1019,19 @@ impl Store {
         ))
     }
 
-    /// Revokes one refresh FAMILY on the caller's tx: every access session and every
-    /// refresh token descended from that login, and nothing belonging to the player's
-    /// other logins. Deletion, not a flag: with the rows gone every token of the family
-    /// answers as unknown, so a replay can never resurrect the family through the grace
-    /// window.
+    /// Revokes one token FAMILY on the caller's tx: its family row, whose deletion takes
+    /// every refresh token descended from that login by cascade, and its access sessions,
+    /// and nothing belonging to the player's other logins. Deletion, not a flag: with the
+    /// rows gone every token of the family answers as unknown, so a replay can never
+    /// resurrect the family through the grace window.
     ///
-    /// Answers how many rows it deleted, tokens and sessions together: 0 when the family
-    /// held nothing.
+    /// Answers how many family and session rows it deleted: 0 when the family held nothing.
     pub async fn kill_family_tx(
         &self,
         conn: &mut PgConnection,
         family_id: &str,
     ) -> Result<u64, sqlx::Error> {
-        let tokens = sqlx::query("DELETE FROM accounts.refresh_tokens WHERE family_id = $1::uuid")
+        let families = sqlx::query("DELETE FROM accounts.token_families WHERE id = $1::uuid")
             .bind(family_id)
             .execute(&mut *conn)
             .await?;
@@ -995,7 +1039,7 @@ impl Store {
             .bind(family_id)
             .execute(&mut *conn)
             .await?;
-        Ok(tokens.rows_affected() + sessions.rows_affected())
+        Ok(families.rows_affected() + sessions.rows_affected())
     }
 
     /// Takes the player row FOR UPDATE on the caller's tx, answering whether the player
@@ -1017,8 +1061,7 @@ impl Store {
         Ok(row.is_some())
     }
 
-    /// Whether `family_id` names a refresh family of `player_id` that still holds a token
-    /// or a session.
+    /// Whether `family_id` names a token family of `player_id` that has not been revoked.
     pub async fn family_of_player_tx(
         &self,
         conn: &mut PgConnection,
@@ -1026,12 +1069,7 @@ impl Store {
         family_id: &str,
     ) -> Result<bool, sqlx::Error> {
         let row: Option<(i32,)> = sqlx::query_as(
-            "SELECT 1 FROM accounts.refresh_tokens \
-              WHERE family_id = $1::uuid AND player_id = $2::uuid \
-             UNION ALL \
-             SELECT 1 FROM accounts.sessions \
-              WHERE family_id = $1::uuid AND player_id = $2::uuid \
-             LIMIT 1",
+            "SELECT 1 FROM accounts.token_families WHERE id = $1::uuid AND player_id = $2::uuid",
         )
         .bind(family_id)
         .bind(player_id)
@@ -1040,10 +1078,11 @@ impl Store {
         Ok(row.is_some())
     }
 
-    /// Revokes every refresh family of a player on the caller's tx: all its refresh tokens,
-    /// access sessions and browser sessions. `None` when there is no such player; otherwise
-    /// a "did anything end" signal only: deleted token and session rows (expired ones
-    /// included) plus the browser sessions that were still live. Not a session count.
+    /// Revokes every token family of a player on the caller's tx: all its family rows (and
+    /// by cascade their refresh tokens), access sessions and browser sessions. `None` when
+    /// there is no such player; otherwise a "did anything end" signal only: deleted family
+    /// and session rows (expired ones included) plus the browser sessions that were still
+    /// live. Not a session count.
     ///
     /// Lock order: the player row first ([`Store::lock_player_row_tx`]), then its token
     /// and session rows — the order every login and refresh takes them (FOR KEY SHARE on
@@ -1058,7 +1097,7 @@ impl Store {
         if !self.lock_player_row_tx(conn, player_id).await? {
             return Ok(None);
         }
-        let tokens = sqlx::query("DELETE FROM accounts.refresh_tokens WHERE player_id = $1::uuid")
+        let families = sqlx::query("DELETE FROM accounts.token_families WHERE player_id = $1::uuid")
             .bind(player_id)
             .execute(&mut *conn)
             .await?;
@@ -1067,7 +1106,7 @@ impl Store {
             .execute(&mut *conn)
             .await?;
         let browsers = self.delete_player_browser_sessions_tx(conn, player_id).await?;
-        Ok(Some(tokens.rows_affected() + sessions.rows_affected() + browsers))
+        Ok(Some(families.rows_affected() + sessions.rows_affected() + browsers))
     }
 
     /// Deletes every browser session of a player, expired ones included, on the caller's
@@ -1105,9 +1144,9 @@ impl Store {
         Ok(live as u64)
     }
 
-    /// The refresh families of a player that still grant access ([`granting_families`]):
-    /// those holding an unexpired refresh token or an unexpired access session. A family
-    /// past both expiries grants nothing; the prune sweeps remove its rows.
+    /// The token families of a player that still grant access ([`granting_families`]):
+    /// those whose newest access token is unexpired or that hold an unexpired refresh
+    /// token. A family past both expiries grants nothing; the prune sweeps remove its rows.
     pub async fn revocable_families_tx(
         &self,
         conn: &mut PgConnection,
@@ -1212,6 +1251,21 @@ impl Store {
         let res = sqlx::query("DELETE FROM accounts.refresh_tokens WHERE expires_at <= now()")
             .execute(&mut *conn)
             .await?;
+        Ok(res.rows_affected())
+    }
+
+    /// Deletes every token family that no longer grants access ([`granting_families`]) on
+    /// the delivery tx: its newest access token expired and it holds no unexpired refresh
+    /// token.
+    pub async fn prune_expired_families(&self, conn: &mut PgConnection) -> Result<u64, sqlx::Error> {
+        let res = sqlx::query(
+            "DELETE FROM accounts.token_families f \
+              WHERE f.access_expires_at <= now() \
+                AND NOT EXISTS (SELECT 1 FROM accounts.refresh_tokens t \
+                                 WHERE t.family_id = f.id AND t.expires_at > now())",
+        )
+        .execute(&mut *conn)
+        .await?;
         Ok(res.rows_affected())
     }
 

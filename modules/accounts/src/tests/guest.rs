@@ -87,7 +87,7 @@ async fn nul_poisoned_subject_is_401_not_503_even_against_a_dead_store() {
     let credential = "00000000-0000-4000-8000-00000000000\0.some-secret".to_string();
 
     let e = svc
-        .login_federated(GUEST.to_string(), credential)
+        .login_federated(GUEST.to_string(), credential, test_client())
         .await
         .expect_err("a malformed subject must never verify");
 
@@ -108,7 +108,7 @@ async fn genuine_store_failure_on_a_well_shaped_ticket_is_503() {
     let ticket = mint_ticket();
 
     let e = svc
-        .login_federated(GUEST.to_string(), ticket.credential)
+        .login_federated(GUEST.to_string(), ticket.credential, test_client())
         .await
         .expect_err("a dead store must not verify anything");
 
@@ -134,7 +134,7 @@ async fn over_cap_credential_is_400_before_any_store_work() {
     assert!(over_cap.len() > MAX_GUEST_CREDENTIAL_BYTES);
 
     let e = svc
-        .login_federated(GUEST.to_string(), over_cap)
+        .login_federated(GUEST.to_string(), over_cap, test_client())
         .await
         .expect_err("an over-cap ticket must never verify");
 
@@ -163,12 +163,12 @@ async fn mint_then_login_round_trip() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired_with_guest(&pool).await;
 
-    let minted = svc.create_guest().await.unwrap();
+    let minted = svc.create_guest(test_client()).await.unwrap();
     assert!(!minted.device_secret.is_empty());
     assert_eq!(registered_events(&pool, &minted.player_id).await, 1);
 
     let replayed = svc
-        .login_federated(GUEST.to_string(), minted.device_secret.clone())
+        .login_federated(GUEST.to_string(), minted.device_secret.clone(), test_client())
         .await
         .unwrap();
     assert_eq!(replayed.player_id, minted.player_id);
@@ -185,11 +185,11 @@ async fn wrong_secret_is_unauthorized() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired_with_guest(&pool).await;
 
-    let minted = svc.create_guest().await.unwrap();
+    let minted = svc.create_guest(test_client()).await.unwrap();
     let (subject, _secret) = minted.device_secret.split_once('.').unwrap();
     let wrong = format!("{subject}.not-the-real-secret");
 
-    let e = svc.login_federated(GUEST.to_string(), wrong).await.unwrap_err();
+    let e = svc.login_federated(GUEST.to_string(), wrong, test_client()).await.unwrap_err();
     assert_eq!(e.status, opsapi::Status::Unauthorized);
 
     cleanup_player(&pool, &minted.player_id).await;
@@ -206,18 +206,18 @@ async fn unknown_subject_and_wrong_secret_are_byte_identical_401() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired_with_guest(&pool).await;
 
-    let minted = svc.create_guest().await.unwrap();
+    let minted = svc.create_guest(test_client()).await.unwrap();
     let (real_subject, _secret) = minted.device_secret.split_once('.').unwrap();
 
     let unknown_ticket = format!("{}.some-secret", mint_ticket().subject);
     let wrong_secret_ticket = format!("{real_subject}.not-the-real-secret");
 
     let unknown_err = svc
-        .login_federated(GUEST.to_string(), unknown_ticket)
+        .login_federated(GUEST.to_string(), unknown_ticket, test_client())
         .await
         .unwrap_err();
     let wrong_err = svc
-        .login_federated(GUEST.to_string(), wrong_secret_ticket)
+        .login_federated(GUEST.to_string(), wrong_secret_ticket, test_client())
         .await
         .unwrap_err();
 
@@ -240,7 +240,7 @@ async fn malformed_credential_without_a_dot_is_unauthorized_not_a_panic() {
     let (_ctx, svc) = wired_with_guest(&pool).await;
 
     let e = svc
-        .login_federated(GUEST.to_string(), "no-dot-here".to_string())
+        .login_federated(GUEST.to_string(), "no-dot-here".to_string(), test_client())
         .await
         .unwrap_err();
     assert_eq!(e.status, opsapi::Status::Unauthorized);
@@ -253,8 +253,8 @@ async fn a_second_create_guest_yields_a_distinct_player() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired_with_guest(&pool).await;
 
-    let a = svc.create_guest().await.unwrap();
-    let b = svc.create_guest().await.unwrap();
+    let a = svc.create_guest(test_client()).await.unwrap();
+    let b = svc.create_guest(test_client()).await.unwrap();
     assert_ne!(a.player_id, b.player_id);
     assert_ne!(a.device_secret, b.device_secret);
 
@@ -271,7 +271,7 @@ async fn stored_digest_cannot_be_replayed_as_the_secret() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired_with_guest(&pool).await;
 
-    let minted = svc.create_guest().await.unwrap();
+    let minted = svc.create_guest(test_client()).await.unwrap();
     let (subject, secret) = minted.device_secret.split_once('.').unwrap();
     let digest = secret_hash(secret);
 
@@ -294,7 +294,7 @@ async fn stored_digest_cannot_be_replayed_as_the_secret() {
     // rejected — the stored form is a one-way digest, not a bearer-equivalent value.
     let replay_digest_as_secret = format!("{subject}.{digest}");
     let e = svc
-        .login_federated(GUEST.to_string(), replay_digest_as_secret)
+        .login_federated(GUEST.to_string(), replay_digest_as_secret, test_client())
         .await
         .unwrap_err();
     assert_eq!(e.status, opsapi::Status::Unauthorized);
@@ -311,12 +311,12 @@ async fn returning_guest_login_preserves_the_stored_digest_across_replays() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired_with_guest(&pool).await;
 
-    let minted = svc.create_guest().await.unwrap();
+    let minted = svc.create_guest(test_client()).await.unwrap();
     let (subject, secret) = minted.device_secret.split_once('.').unwrap();
     let expected_digest = secret_hash(secret);
 
     let second = svc
-        .login_federated(GUEST.to_string(), minted.device_secret.clone())
+        .login_federated(GUEST.to_string(), minted.device_secret.clone(), test_client())
         .await
         .expect("second login with the same ticket must succeed");
     assert_eq!(second.player_id, minted.player_id);
@@ -335,10 +335,39 @@ async fn returning_guest_login_preserves_the_stored_digest_across_replays() {
     );
 
     let third = svc
-        .login_federated(GUEST.to_string(), minted.device_secret.clone())
+        .login_federated(GUEST.to_string(), minted.device_secret.clone(), test_client())
         .await
         .expect("a third login with the untouched ticket must still succeed");
     assert_eq!(third.player_id, minted.player_id);
 
     cleanup_player(&pool, &minted.player_id).await;
+}
+
+/// A client holding only the guest grant mints a guest and lets it log back in, but
+/// refuses a password login.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_guest_only_client_serves_guests_but_not_passwords() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired_with_guest(&pool).await;
+    let client = insert_client(&pool, &[accountsapi::grant_types::GUEST]).await;
+    let email = format!("gonly-{}@test.local", suffix().to_lowercase());
+    let reg = svc.register(email.clone(), "pw".into(), "GOnly".into(), test_client()).await.unwrap();
+
+    let minted = svc.create_guest(client.clone()).await;
+    let replayed = match &minted {
+        Ok(m) => Some(svc.login_federated(GUEST.to_string(), m.device_secret.clone(), client.clone()).await),
+        Err(_) => None,
+    };
+    let password = svc.login(email, "pw".into(), client.clone()).await;
+    if let Ok(m) = &minted {
+        cleanup_player(&pool, &m.player_id).await;
+    }
+    cleanup_player(&pool, &reg.player_id).await;
+    delete_client(&pool, &client).await;
+
+    let minted = minted.unwrap();
+    assert_eq!(replayed.unwrap().unwrap().player_id, minted.player_id);
+    let e = password.unwrap_err();
+    assert_eq!(e.status, opsapi::Status::Unauthorized);
+    assert_eq!(e.msg, "invalid client");
 }

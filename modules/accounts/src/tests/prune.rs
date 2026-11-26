@@ -59,7 +59,7 @@ async fn prune_deletes_only_expired_sessions_for_prune_name() {
 
     // A real player (register mints one) supplies the sessions FK target.
     let email = format!("prune-{}@test.local", suffix());
-    let sess = svc.register(email, "pw".into(), "Prune".into()).await.unwrap();
+    let sess = svc.register(email, "pw".into(), "Prune".into(), test_client()).await.unwrap();
     let pid = sess.player_id.clone();
 
     let expired = insert_session(&pool, &pid, -1).await; // expires_at 1 day in the past
@@ -97,11 +97,11 @@ async fn prune_deletes_expired_delete_ticket_keeps_live_one() {
     let (_ctx, svc) = wired(&pool).await;
 
     let expired_sess = svc
-        .register(format!("prune-ticket-exp-{}@test.local", suffix()), "pw".into(), "PruneTickExp".into())
+        .register(format!("prune-ticket-exp-{}@test.local", suffix()), "pw".into(), "PruneTickExp".into(), test_client())
         .await
         .unwrap();
     let live_sess = svc
-        .register(format!("prune-ticket-live-{}@test.local", suffix()), "pw".into(), "PruneTickLive".into())
+        .register(format!("prune-ticket-live-{}@test.local", suffix()), "pw".into(), "PruneTickLive".into(), test_client())
         .await
         .unwrap();
     let expired_pid = expired_sess.player_id.clone();
@@ -155,7 +155,7 @@ async fn foreign_schedule_name_is_a_committed_noop() {
     let (_ctx, svc) = wired(&pool).await;
 
     let email = format!("noop-{}@test.local", suffix());
-    let sess = svc.register(email, "pw".into(), "Noop".into()).await.unwrap();
+    let sess = svc.register(email, "pw".into(), "Noop".into(), test_client()).await.unwrap();
     let pid = sess.player_id.clone();
     let expired = insert_session(&pool, &pid, -1).await;
 
@@ -177,7 +177,7 @@ async fn prune_deletes_expired_browser_session_keeps_live_one() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("prune-browser-{}@test.local", suffix());
-    let pid = svc.register(email, "pw".into(), "PruneBrowser".into()).await.unwrap().player_id;
+    let pid = svc.register(email, "pw".into(), "PruneBrowser".into(), test_client()).await.unwrap().player_id;
     let expired = svc.store.create_browser_session(&pid).await.unwrap().unwrap();
     let live = svc.store.create_browser_session(&pid).await.unwrap().unwrap();
     sqlx::query(
@@ -205,4 +205,59 @@ async fn prune_deletes_expired_browser_session_keeps_live_one() {
     assert!(expired_read.is_none(), "an expired browser session is not returned");
     assert_eq!(rows, vec![live.csrf_token.clone()], "the prune removes only the expired row");
     assert_eq!(live_read.map(|s| s.player_id), Some(pid), "the live session still resolves");
+}
+
+/// The token-family leg of the prune reaction: a family whose access lapsed and whose
+/// refresh tokens all expired goes; one still holding a live refresh token stays.
+#[tokio::test(flavor = "multi_thread")]
+async fn prune_deletes_a_family_only_once_nothing_in_it_grants_access() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let email = format!("prune-fam-{}@test.local", suffix());
+    let dead = svc.register(email.clone(), "pw".into(), "PruneFam".into(), test_client()).await.unwrap();
+    let refreshable = svc.login(email, "pw".into(), test_client()).await.unwrap();
+    let pid = dead.player_id.clone();
+    let family_of = |token: String| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, String>(
+                "SELECT family_id::text FROM accounts.refresh_tokens WHERE token = $1",
+            )
+            .bind(token)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let (dead_family, refreshable_family) =
+        (family_of(dead.refresh_token.clone()).await, family_of(refreshable.refresh_token.clone()).await);
+    sqlx::query(
+        "UPDATE accounts.token_families SET access_expires_at = now() - interval '1 minute' \
+          WHERE player_id = $1::uuid",
+    )
+    .bind(&pid)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE accounts.refresh_tokens SET expires_at = now() - interval '1 minute' \
+          WHERE family_id = $1::uuid",
+    )
+    .bind(&dead_family)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let handler = PruneHandler { svc: svc.clone() };
+    deliver_prune(&pool, &handler, PRUNE_SCHEDULE_NAME).await;
+    let left: Vec<String> = sqlx::query_scalar(
+        "SELECT id::text FROM accounts.token_families WHERE player_id = $1::uuid",
+    )
+    .bind(&pid)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    cleanup_player(&pool, &pid).await;
+
+    assert_eq!(left, vec![refreshable_family], "only the family with nothing live is pruned");
 }

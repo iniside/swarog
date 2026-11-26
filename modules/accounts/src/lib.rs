@@ -143,6 +143,10 @@ pub(crate) fn credential_within_cap(verifier: &dyn CredentialVerifier, credentia
     credential.len() <= verifier.max_credential_bytes()
 }
 
+pub(crate) fn client_id_within_cap(client_id: &str) -> bool {
+    client_id.len() <= accountsapi::MAX_CLIENT_ID_BYTES
+}
+
 pub(crate) fn session_token_within_cap(token: &str) -> bool {
     token.len() <= accountsapi::MAX_SESSION_TOKEN_BYTES
 }
@@ -227,18 +231,6 @@ CREATE TABLE IF NOT EXISTS accounts.sessions (
 	family_id  uuid
 );
 
--- Rotating refresh tokens. A consumed row is KEPT (until it expires) with the successor
--- it minted: it is the only record that can tell a replay from an unknown token.
-CREATE TABLE IF NOT EXISTS accounts.refresh_tokens (
-	token       text PRIMARY KEY,
-	player_id   uuid        NOT NULL REFERENCES accounts.players(id) ON DELETE CASCADE,
-	family_id   uuid        NOT NULL,
-	issued_at   timestamptz NOT NULL DEFAULT now(),
-	expires_at  timestamptz NOT NULL,
-	used_at     timestamptz,
-	replaced_by text
-);
-
 -- The hosted login pages' signed-in browsers: the cookie's opaque token is stored only as
 -- its SHA-256 digest, and `player_by_session` never reads this table, so a browser cookie
 -- never authenticates an operation.
@@ -258,6 +250,29 @@ CREATE TABLE IF NOT EXISTS accounts.oidc_clients (
 	grant_types  text[]      NOT NULL CHECK (cardinality(grant_types) > 0),
 	audience     text        NOT NULL,
 	created_at   timestamptz NOT NULL DEFAULT now()
+);
+
+-- One login's token family: every token minted from that login, for one client. A revoked
+-- family's row is deleted, and its refresh tokens with it.
+CREATE TABLE IF NOT EXISTS accounts.token_families (
+	id                uuid PRIMARY KEY,
+	player_id         uuid        NOT NULL REFERENCES accounts.players(id) ON DELETE CASCADE,
+	client_id         text        NOT NULL REFERENCES accounts.oidc_clients(client_id) ON DELETE CASCADE,
+	created_at        timestamptz NOT NULL DEFAULT now(),
+	-- The newest access token's expiry, moved forward by every mint in the family.
+	access_expires_at timestamptz NOT NULL
+);
+
+-- Rotating refresh tokens. A consumed row is KEPT (until it expires) with the successor
+-- it minted: it is the only record that can tell a replay from an unknown token.
+CREATE TABLE IF NOT EXISTS accounts.refresh_tokens (
+	token       text PRIMARY KEY,
+	player_id   uuid        NOT NULL REFERENCES accounts.players(id) ON DELETE CASCADE,
+	family_id   uuid        NOT NULL REFERENCES accounts.token_families(id) ON DELETE CASCADE,
+	issued_at   timestamptz NOT NULL DEFAULT now(),
+	expires_at  timestamptz NOT NULL,
+	used_at     timestamptz,
+	replaced_by text
 );
 "#;
 
@@ -314,6 +329,31 @@ async fn refuse_stale_oauth_states(pool: &sqlx::PgPool, schema: &str) -> anyhow:
         }
     }
     Ok(())
+}
+
+/// Refuses an `accounts.refresh_tokens` that predates `accounts.token_families`: `CREATE
+/// TABLE IF NOT EXISTS` keeps the old table, whose tokens would outlive a deleted family.
+async fn refuse_unfamilied_refresh_tokens(pool: &sqlx::PgPool) -> anyhow::Result<()> {
+    let linked: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_constraint \
+                         WHERE conrelid = 'accounts.refresh_tokens'::regclass AND contype = 'f' \
+                           AND confrelid = 'accounts.token_families'::regclass)",
+    )
+    .fetch_one(pool)
+    .await?;
+    if !linked {
+        anyhow::bail!(
+            "accounts: accounts.refresh_tokens has no foreign key to accounts.token_families. \
+             Remedy: DROP SCHEMA accounts CASCADE; and reboot."
+        );
+    }
+    Ok(())
+}
+
+/// The one answer to a client a mint or refresh may not issue for: an id over
+/// [`accountsapi::MAX_CLIENT_ID_BYTES`], no such client, or a client not listing the grant.
+fn invalid_client() -> Error {
+    Error::unauthorized("invalid client")
 }
 
 /// Folds any lower-level error into an `Internal` operation error.
@@ -400,16 +440,19 @@ impl Service {
         }
     }
 
-    /// Mints one login: a new refresh FAMILY and the first access token inside it, on
-    /// the caller's transaction, and stamps the identity `(provider, subject)` it was
-    /// minted through as last used. With `secret_hash` (a password sign-in) the identity
+    /// Mints one login for `client_id`: a new token FAMILY and the first access token
+    /// inside it, on the caller's transaction, and stamps the identity `(provider,
+    /// subject)` it was minted through as last used. The client must exist and list the
+    /// grant [`clients::grant_for_provider`] names, else nothing is minted and the answer
+    /// is [`invalid_client`]. With `secret_hash` (a password sign-in) the identity
     /// must still store the hash that was verified, else nothing is minted and the answer
     /// is the wrong-password 401. All three commit with whatever else that
     /// transaction carries (the player row, the `player.registered` append); a refresh
     /// rotates inside a family and never comes here, so it never stamps.
     ///
-    /// Lock order: the player row (FOR KEY SHARE, taken by the family insert's FK)
-    /// comes BEFORE the identity row (the stamp's UPDATE), the same order
+    /// Lock order: the client row (FOR KEY SHARE, so a client delete waits for this
+    /// commit), then the player row (FOR KEY SHARE, taken by the family insert's FK),
+    /// BEFORE the identity row (the stamp's UPDATE), the same order
     /// `delete_player_tx` locks them in (player, then its identities by cascade). The
     /// stamp must stay after the first statement that references `players`, or a login
     /// racing the same player's self-delete can deadlock.
@@ -420,12 +463,26 @@ impl Service {
         provider: &str,
         subject: &str,
         secret_hash: Option<&str>,
+        client_id: &str,
         token: String,
     ) -> Result<accountsapi::Session, Error> {
-        let refresh_token = store::new_token();
+        if !client_id_within_cap(client_id)
+            || !self
+                .store
+                .client_allows_tx(conn, client_id, clients::grant_for_provider(provider))
+                .await
+                .map_err(internal)?
+        {
+            return Err(invalid_client());
+        }
         let family_id = self
             .store
-            .insert_refresh_family_tx(conn, &refresh_token, &p.id)
+            .insert_family_tx(conn, &p.id, client_id)
+            .await
+            .map_err(internal)?;
+        let refresh_token = store::new_token();
+        self.store
+            .insert_refresh_root_tx(conn, &refresh_token, &p.id, &family_id)
             .await
             .map_err(internal)?;
         self.store
@@ -454,6 +511,7 @@ impl Service {
     async fn issue_password_session(
         &self,
         verified: &VerifiedPassword,
+        client_id: &str,
     ) -> Result<accountsapi::Session, Error> {
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
         let session = self
@@ -463,6 +521,7 @@ impl Service {
                 providers::PASSWORD,
                 &verified.email,
                 Some(&verified.hash),
+                client_id,
                 store::new_token(),
             )
             .await?;
@@ -679,6 +738,7 @@ impl Service {
         email: &str,
         display: &str,
         hash: &str,
+        client_id: &str,
         token: String,
     ) -> Result<accountsapi::Session, Error> {
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
@@ -694,7 +754,7 @@ impl Service {
             }
         };
         let session = match self
-            .issue_session_tx(&mut tx, &p, providers::PASSWORD, email, None, token)
+            .issue_session_tx(&mut tx, &p, providers::PASSWORD, email, None, client_id, token)
             .await
         {
             Ok(session) => session,
@@ -716,6 +776,7 @@ impl Service {
         subject: &str,
         display_name: &str,
         secret_hash: Option<&str>,
+        client_id: &str,
     ) -> Result<(accountsapi::Session, bool), Error> {
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
         let (p, created) =
@@ -727,7 +788,7 @@ impl Service {
                 }
             };
         let session = match self
-            .issue_session_tx(&mut tx, &p, provider, subject, None, store::new_token())
+            .issue_session_tx(&mut tx, &p, provider, subject, None, client_id, store::new_token())
             .await
         {
             Ok(session) => session,
@@ -965,8 +1026,25 @@ impl Service {
             .await
     }
 
-    /// Mints one access token inside an EXISTING family — the half a grace replay
-    /// repeats without rotating anything.
+    /// Refuses a refresh in family `family_id` once its client no longer lists
+    /// `refresh_token`. The caller rolls back on the refusal, so the presented token stays
+    /// unconsumed.
+    async fn refresh_allowed_tx(&self, conn: &mut PgConnection, family_id: &str) -> Result<(), Error> {
+        let allowed = self
+            .store
+            .family_client_allows_tx(conn, family_id, accountsapi::grant_types::REFRESH_TOKEN)
+            .await
+            .map_err(internal)?;
+        if allowed {
+            Ok(())
+        } else {
+            Err(invalid_client())
+        }
+    }
+
+    /// Mints one access token inside an EXISTING family, moving the family's
+    /// `access_expires_at` to its expiry — the half a grace replay repeats without
+    /// rotating anything.
     async fn issue_access_in_family_tx(
         &self,
         conn: &mut PgConnection,
@@ -975,6 +1053,10 @@ impl Service {
         refresh_token: String,
     ) -> Result<accountsapi::Session, Error> {
         let token = store::new_token();
+        self.store
+            .touch_family_tx(conn, family_id)
+            .await
+            .map_err(internal)?;
         self.store
             .insert_session_tx(conn, player_id, &token, family_id)
             .await
@@ -1175,6 +1257,7 @@ impl accountsapi::Auth for Service {
         email: String,
         password: String,
         display_name: String,
+        client_id: String,
     ) -> Result<accountsapi::Session, Error> {
         if !self.open_registration {
             return Err(Error::not_found("registration is not enabled"));
@@ -1196,7 +1279,7 @@ impl accountsapi::Auth for Service {
         }
 
         let hash = self.hash_on_permit(password).await?;
-        self.register_hashed_with_token(&email, &display, &hash, store::new_token())
+        self.register_hashed_with_token(&email, &display, &hash, &client_id, store::new_token())
             .await
     }
 
@@ -1207,10 +1290,15 @@ impl accountsapi::Auth for Service {
     /// method — the gateway injects `Identity` only POST-auth, so no client IP ever
     /// reaches this service. Per-IP throttling, if wanted, lives at the gateway
     /// (which already rate-limits by source IP).
-    async fn login(&self, email: String, password: String) -> Result<accountsapi::Session, Error> {
+    async fn login(
+        &self,
+        email: String,
+        password: String,
+        client_id: String,
+    ) -> Result<accountsapi::Session, Error> {
         let email = normalize_email(&email);
         let verified = self.verify_password(&email, password).await?;
-        self.issue_password_session(&verified).await
+        self.issue_password_session(&verified, &client_id).await
     }
 
     /// Federated login (AuthNone): resolves `provider`, verifies `credential` with
@@ -1225,10 +1313,11 @@ impl accountsapi::Auth for Service {
         &self,
         provider: String,
         credential: String,
+        client_id: String,
     ) -> Result<accountsapi::Session, Error> {
         let verified = self.verify_credential(&provider, &credential).await?;
         let (session, _created) = self
-            .external_login(&provider, &verified.subject, &verified.display_name, None)
+            .external_login(&provider, &verified.subject, &verified.display_name, None, &client_id)
             .await?;
         Ok(session)
     }
@@ -1239,7 +1328,7 @@ impl accountsapi::Auth for Service {
     /// this identity carries a secret digest. The ticket is returned here and nowhere
     /// else: `guest::mint_ticket` is the only place the plaintext exists, and the
     /// store keeps only its SHA-256 digest.
-    async fn create_guest(&self) -> Result<accountsapi::GuestSession, Error> {
+    async fn create_guest(&self, client_id: String) -> Result<accountsapi::GuestSession, Error> {
         let ticket = guest::mint_ticket();
         let display_name = format!("{GUEST}:{}", oidc::short_id(&ticket.subject));
         let (session, _created) = self
@@ -1248,6 +1337,7 @@ impl accountsapi::Auth for Service {
                 &ticket.subject,
                 &display_name,
                 Some(&ticket.secret_hash),
+                &client_id,
             )
             .await?;
         Ok(accountsapi::GuestSession {
@@ -1302,16 +1392,30 @@ impl accountsapi::Auth for Service {
             store::RefreshVerdict::Rotate {
                 player_id,
                 family_id,
-            } => self
-                .complete_rotation_tx(&mut tx, &player_id, &family_id, &refresh_token, successor)
-                .await,
+            } => match self.refresh_allowed_tx(&mut tx, &family_id).await {
+                Ok(()) => {
+                    self.complete_rotation_tx(&mut tx, &player_id, &family_id, &refresh_token, successor)
+                        .await
+                }
+                Err(err) => {
+                    tx.rollback().await.ok();
+                    return Err(err);
+                }
+            },
             store::RefreshVerdict::GraceReplay {
                 player_id,
                 family_id,
                 successor,
-            } => self
-                .issue_access_in_family_tx(&mut tx, &player_id, &family_id, successor)
-                .await,
+            } => match self.refresh_allowed_tx(&mut tx, &family_id).await {
+                Ok(()) => {
+                    self.issue_access_in_family_tx(&mut tx, &player_id, &family_id, successor)
+                        .await
+                }
+                Err(err) => {
+                    tx.rollback().await.ok();
+                    return Err(err);
+                }
+            },
             store::RefreshVerdict::Revoke { family_id } => {
                 tracing::warn!(
                     %family_id,
@@ -1410,9 +1514,9 @@ impl accountsapi::Auth for Service {
 }
 
 // ============================================================================
-// Durable prune reaction — sessions, refresh tokens, delete tickets and browser sessions
-// are all INSERT-only with a TTL filtered on read, so accounts reacts to the seeded daily
-// `accounts-sessions-prune` schedule and deletes the expired rows of all four on the
+// Durable prune reaction — sessions, refresh tokens, token families, delete tickets and
+// browser sessions all carry a TTL filtered on read, so accounts reacts to the seeded daily
+// `accounts-sessions-prune` schedule and deletes the expired rows of all five on the
 // DELIVERY tx (exactly-once with the checkpoint advance).
 // Copied from audit's prune: subscribe raw by the CONTRACT descriptor's topic const, no
 // `schedulerevents::Fired` payload-type import — the handler parses only `name`.
@@ -1465,6 +1569,11 @@ impl TxHandler for PruneHandler {
             self.svc
                 .store
                 .prune_expired_refresh_tokens(conn)
+                .await
+                .map_err(BusError::transport)?;
+            self.svc
+                .store
+                .prune_expired_families(conn)
                 .await
                 .map_err(BusError::transport)?;
             self.svc
@@ -1578,6 +1687,14 @@ impl Accounts {
                 "CREATE INDEX sessions_family_idx ON accounts.sessions(family_id)",
             )
             .index(
+                "accounts.token_families_player_idx",
+                "CREATE INDEX token_families_player_idx ON accounts.token_families(player_id)",
+            )
+            .index(
+                "accounts.token_families_client_idx",
+                "CREATE INDEX token_families_client_idx ON accounts.token_families(client_id)",
+            )
+            .index(
                 "accounts.refresh_family_idx",
                 "CREATE INDEX refresh_family_idx ON accounts.refresh_tokens(family_id)",
             )
@@ -1626,6 +1743,7 @@ impl Accounts {
             );
         }
         refuse_stale_oauth_states(pool, "accounts").await?;
+        refuse_unfamilied_refresh_tokens(pool).await?;
         signing_keys::migrate_signing_keys(pool, SIGNING_KEYS_SCHEMA, &kek).await?;
         clients::migrate_dev_seed(self.dev_seed_on(), pool).await?;
         Ok(())

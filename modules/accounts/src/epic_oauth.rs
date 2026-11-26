@@ -212,7 +212,7 @@ async fn complete(svc: &Service, outcome: Outcome) -> Response {
 /// browser at its 60-minute expiry with nothing to renew from.
 async fn login(svc: &Service, subject: &str) -> Response {
     let session = match svc
-        .external_login(SPEC.name, subject, &SPEC.display_name(subject), None)
+        .external_login(SPEC.name, subject, &SPEC.display_name(subject), None, accountsapi::DEV_GAME_CLIENT_ID)
         .await
     {
         Ok((session, _created)) => session,

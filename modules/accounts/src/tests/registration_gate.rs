@@ -28,14 +28,14 @@ async fn closed_registration_withholds_register_but_not_login() {
     let svc = gated_service(false);
 
     let e = svc
-        .register("a@x.io".into(), "pw".into(), "N".into())
+        .register("a@x.io".into(), "pw".into(), "N".into(), test_client())
         .await
         .unwrap_err();
     assert_eq!(e.status, opsapi::Status::NotFound, "register is withheld when closed");
 
     // Empty input never reaches the store, so the lazy pool is never dialled: login
     // answers its own 401, not the registration gate's 404.
-    let e = svc.login(String::new(), String::new()).await.unwrap_err();
+    let e = svc.login(String::new(), String::new(), test_client()).await.unwrap_err();
     assert_eq!(e.status, opsapi::Status::Unauthorized, "login has no gate");
 }
 
@@ -44,7 +44,7 @@ async fn open_registration_lets_register_reach_validation() {
     let svc = gated_service(true);
 
     let e = svc
-        .register(String::new(), String::new(), String::new())
+        .register(String::new(), String::new(), String::new(), test_client())
         .await
         .unwrap_err();
     assert_eq!(
@@ -83,12 +83,12 @@ async fn ops_contributed_unconditionally_while_guard_rejects() {
     );
 
     let e = svc
-        .register("a@x.io".into(), "pw".into(), "N".into())
+        .register("a@x.io".into(), "pw".into(), "N".into(), test_client())
         .await
         .unwrap_err();
     assert_eq!(e.status, opsapi::Status::NotFound);
     let e = svc
-        .login_federated("epic".into(), "some-token".into())
+        .login_federated("epic".into(), "some-token".into(), test_client())
         .await
         .unwrap_err();
     assert_eq!(
@@ -105,7 +105,7 @@ async fn login_and_verify_session_work_without_open_registration() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let email = format!("gate-{}@test.local", suffix());
-    let sess = svc.register(email.clone(), "pw".into(), "G".into()).await.unwrap();
+    let sess = svc.register(email.clone(), "pw".into(), "G".into(), test_client()).await.unwrap();
 
     let closed = Arc::new(Service {
         store: Store { pool: pool.clone() },
@@ -117,7 +117,7 @@ async fn login_and_verify_session_work_without_open_registration() {
         verifier: Arc::new(ArgonVerifier),
     });
 
-    let login = closed.login(email, "pw".into()).await;
+    let login = closed.login(email, "pw".into(), test_client()).await;
     let verified = closed.verify_session(sess.token.clone()).await;
     cleanup_player(&pool, &sess.player_id).await;
 

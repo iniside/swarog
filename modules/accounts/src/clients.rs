@@ -7,7 +7,9 @@ use std::ffi::OsString;
 use accountsapi::{grant_types, DEV_GAME_CLIENT_ID, SWAROG_AUDIENCE};
 use base64::Engine as _;
 use rand::RngCore as _;
+use sqlx::PgConnection;
 
+use crate::providers;
 use crate::store::Store;
 
 pub(crate) const DEV_SEED_ENV: &str = "ACCOUNTS_DEV_SEED";
@@ -79,6 +81,16 @@ pub(crate) async fn migrate_dev_seed<'e, E: sqlx::PgExecutor<'e>>(on: bool, db: 
     Ok(())
 }
 
+/// The grant a mint through identity `provider` needs its client to list; `None` when the
+/// client only has to exist, since the provider itself proves who the user is.
+pub(crate) fn grant_for_provider(provider: &str) -> Option<&'static str> {
+    match provider {
+        providers::PASSWORD => Some(grant_types::PASSWORD),
+        providers::GUEST => Some(grant_types::GUEST),
+        _ => None,
+    }
+}
+
 impl Store {
     /// Every client, newest first.
     pub(crate) async fn clients(&self) -> sqlx::Result<Vec<ClientRow>> {
@@ -114,6 +126,45 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(client_id)
+    }
+
+    /// Whether `client_id` names a client listing `grant` (any client for `None`), taking
+    /// its row FOR KEY SHARE on the caller's tx so a delete of that client waits for the mint.
+    pub(crate) async fn client_allows_tx(
+        &self,
+        conn: &mut PgConnection,
+        client_id: &str,
+        grant: Option<&str>,
+    ) -> sqlx::Result<bool> {
+        let row: Option<(i32,)> = sqlx::query_as(
+            "SELECT 1 FROM accounts.oidc_clients \
+              WHERE client_id = $1 AND ($2::text IS NULL OR $2 = ANY(grant_types)) \
+                FOR KEY SHARE",
+        )
+        .bind(client_id)
+        .bind(grant)
+        .fetch_optional(&mut *conn)
+        .await?;
+        Ok(row.is_some())
+    }
+
+    /// Whether the client of family `family_id` lists `grant`.
+    pub(crate) async fn family_client_allows_tx(
+        &self,
+        conn: &mut PgConnection,
+        family_id: &str,
+        grant: &str,
+    ) -> sqlx::Result<bool> {
+        let row: Option<(i32,)> = sqlx::query_as(
+            "SELECT 1 FROM accounts.token_families f \
+               JOIN accounts.oidc_clients c ON c.client_id = f.client_id \
+              WHERE f.id = $1::uuid AND $2 = ANY(c.grant_types)",
+        )
+        .bind(family_id)
+        .bind(grant)
+        .fetch_optional(&mut *conn)
+        .await?;
+        Ok(row.is_some())
     }
 
     /// Whether a row was deleted.
