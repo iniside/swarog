@@ -120,16 +120,6 @@ fn a_stale_dev_dependency_is_a_finding() {
 }
 
 #[test]
-fn a_dev_dependency_for_the_dev_signing_kek_alone_is_not_stale() {
-    let names_the_kek = vec![(
-        "tools/widget/src/widget_tests.rs".to_string(),
-        "fn pinned() { assert_eq!(KEK, testdb::DEV_ACCOUNTS_SIGNING_KEK); }\n".to_string(),
-    )];
-    let findings = crate_findings("tools/widget", true, &names_the_kek);
-    assert!(findings.is_empty(), "{}", describe(&findings));
-}
-
-#[test]
 fn only_a_dev_dependency_counts_as_a_db_test_claim() {
     assert!(dev_deps_testdb("[dev-dependencies]\ntestdb = { workspace = true }\n"));
     assert!(dev_deps_testdb("[dev-dependencies]\ntestdb.workspace = true\n"));

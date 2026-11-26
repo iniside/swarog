@@ -143,9 +143,15 @@ pub const PROOF_ACCOUNTS_ISSUER_SPLIT: &str = "http://127.0.0.1:8082/accounts/oi
 /// The issuer the monolith `Proof` overlay pins, on the monolith's own port.
 pub const PROOF_ACCOUNTS_ISSUER_MONOLITH: &str = "http://127.0.0.1:8080/accounts/oidc";
 
-/// A plain copy of `testdb::DEV_ACCOUNTS_SIGNING_KEK`, which fleet_tests pins: depending on
-/// testdb would put its sqlx's ring into processctl's normal deps.
+/// A plain copy of `testdb::DEV_ACCOUNTS_SIGNING_KEK`, which verifyctl's
+/// `tests/dev_signing_kek.rs` pins through the fleet builders: depending on testdb would put
+/// its sqlx's ring into processctl's normal deps.
 pub(crate) const DEV_ACCOUNTS_SIGNING_KEK: &str = "c3dhcm9nLWRldi1hY2NvdW50cy1zaWduaW5nLWtlayE=";
+
+/// The issuer the split `Development` fleet gives accounts-svc: gateway-svc's origin, the
+/// split's front door. Port 8080 there is characters-svc, so accounts' own default
+/// (the monolith's port) would name the wrong process.
+pub(crate) const DEV_ACCOUNTS_ISSUER_SPLIT: &str = "http://localhost:8082/accounts/oidc";
 
 /// The provider every fleet flavor configures `mail` with, and the value
 /// `tools/splitproof` asserts a delivered row was sent BY. The harness reads this
@@ -961,6 +967,9 @@ pub fn game_backend_fleet_with_environment(
     accounts
         .env
         .insert("ACCOUNTS_SIGNING_KEK".into(), DEV_ACCOUNTS_SIGNING_KEK.into());
+    accounts
+        .env
+        .insert("ACCOUNTS_OIDC_ISSUER".into(), DEV_ACCOUNTS_ISSUER_SPLIT.into());
     accounts
         .env
         .insert("TRUSTED_PROXY_CIDRS".into(), "127.0.0.1/32".into());

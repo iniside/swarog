@@ -224,6 +224,10 @@ fn boot(
     environment.insert("ACCOUNTS_OPEN_REGISTRATION".into(), "1".into());
     environment.insert("ACCOUNTS_COOKIE_SECURE".into(), "0".into());
     environment.insert("ACCOUNTS_SIGNING_KEK".into(), testdb::DEV_ACCOUNTS_SIGNING_KEK.into());
+    environment.insert(
+        "ACCOUNTS_OIDC_ISSUER".into(),
+        format!("http://localhost:{HTTP_PORT}/accounts/oidc"),
+    );
     environment.insert("INVENTORY_DEV_GRANT".into(), "1".into());
     for (key, value) in extra {
         environment.insert((*key).into(), value.clone());

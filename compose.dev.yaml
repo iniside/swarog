@@ -25,6 +25,7 @@ services:
       - ACCOUNTS_OPEN_REGISTRATION=1
       - ACCOUNTS_COOKIE_SECURE=0
       - ACCOUNTS_SIGNING_KEK=c3dhcm9nLWRldi1hY2NvdW50cy1zaWduaW5nLWtlayE=
+      - ACCOUNTS_OIDC_ISSUER=http://localhost:${SWAROG_HTTP_PORT:-8080}/accounts/oidc
       - INVENTORY_DEV_GRANT=1
       - WALLET_DEV_SEED=1
       - ADMIN_COOKIE_SECURE=0

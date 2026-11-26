@@ -113,6 +113,7 @@ fn full_fleet_env_goldens() {
                 ("ACCOUNTS_OPEN_REGISTRATION", "1"),
                 ("ACCOUNTS_COOKIE_SECURE", "0"),
                 ("ACCOUNTS_SIGNING_KEK", "c3dhcm9nLWRldi1hY2NvdW50cy1zaWduaW5nLWtlayE="),
+                ("ACCOUNTS_OIDC_ISSUER", "http://localhost:8082/accounts/oidc"),
                 ("TRUSTED_PROXY_CIDRS", "127.0.0.1/32"),
             ],
         ),

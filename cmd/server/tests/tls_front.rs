@@ -217,6 +217,7 @@ fn spawn_server(
         .env("PORT", format!("127.0.0.1:{http_port}"))
         .env("PLAYER_EDGE_ADDR", format!("127.0.0.1:{quic_port}"))
         .env("DATABASE_URL", testdb::dsn())
+        .env("ACCOUNTS_SIGNING_KEK", testdb::DEV_ACCOUNTS_SIGNING_KEK)
         .env("DATABASE_POOL_MAX_CONNECTIONS", "4")
         .env("MAIL_PROVIDER", "log")
         .env("MAIL_FROM", "dev@localhost");

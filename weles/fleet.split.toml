@@ -46,7 +46,7 @@ pkg = "accounts-svc"
 provider = "accounts"
 http_port = 8084
 edge_port = 9003
-env = { ACCOUNTS_OPEN_REGISTRATION = "1", ACCOUNTS_COOKIE_SECURE = "0", ACCOUNTS_SIGNING_KEK = "c3dhcm9nLWRldi1hY2NvdW50cy1zaWduaW5nLWtlayE=", TRUSTED_PROXY_CIDRS = "127.0.0.1/32", DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }
+env = { ACCOUNTS_OPEN_REGISTRATION = "1", ACCOUNTS_COOKIE_SECURE = "0", ACCOUNTS_SIGNING_KEK = "c3dhcm9nLWRldi1hY2NvdW50cy1zaWduaW5nLWtlayE=", ACCOUNTS_OIDC_ISSUER = "http://localhost:8082/accounts/oidc", TRUSTED_PROXY_CIDRS = "127.0.0.1/32", DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }
 
 [[service]]
 name = "apikeys-svc"
