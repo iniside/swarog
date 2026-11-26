@@ -4294,7 +4294,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
         .http
         .post(format!("{g}/accounts/register"))
         .header("X-Api-Key", "dev-key-client")
-        .json(&serde_json::json!({"email": email, "password": "pw", "displayName": "Proof"}))
+        .json(&serde_json::json!({"email": email, "password": "pw", "displayName": "Proof", "clientId": accountsapi::DEV_GAME_CLIENT_ID}))
         .send()
         .await?;
     let reg_code = reg.status();
@@ -4311,7 +4311,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
         .http
         .post(format!("{g}/accounts/login"))
         .header("X-Api-Key", "dev-key-client")
-        .json(&serde_json::json!({"email": email, "password": "pw"}))
+        .json(&serde_json::json!({"email": email, "password": "pw", "clientId": accountsapi::DEV_GAME_CLIENT_ID}))
         .send()
         .await?;
     let login_code = login.status();
@@ -4444,7 +4444,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
         .cookie_store(true)
         .build()?;
     // [EP1] start -> authorize_url carrying a state param.
-    let ep1 = epic_http.post(format!("{g}/accounts/epic/start")).send().await?;
+    let ep1 = epic_http.post(format!("{g}/accounts/epic/start?client_id={}", accountsapi::DEV_GAME_CLIENT_ID)).send().await?;
     let ep1_body = ep1.text().await.unwrap_or_default();
     let state = ep1_body
         .split("state=")
@@ -6482,7 +6482,7 @@ async fn register_login(ctx: &Ctx, g: &str, email: &str) -> Result<String> {
     for _ in 0..15 {
         let reg = ctx.http.post(format!("{g}/accounts/register"))
             .header("X-Api-Key", "dev-key-client")
-            .json(&serde_json::json!({"email": email, "password": "pw", "displayName": "P"}))
+            .json(&serde_json::json!({"email": email, "password": "pw", "displayName": "P", "clientId": accountsapi::DEV_GAME_CLIENT_ID}))
             .send().await?;
         if reg.status().as_u16() == 429 {
             tokio::time::sleep(Duration::from_millis(300)).await;
@@ -6493,7 +6493,7 @@ async fn register_login(ctx: &Ctx, g: &str, email: &str) -> Result<String> {
     for _ in 0..15 {
         let login = ctx.http.post(format!("{g}/accounts/login"))
             .header("X-Api-Key", "dev-key-client")
-            .json(&serde_json::json!({"email": email, "password": "pw"}))
+            .json(&serde_json::json!({"email": email, "password": "pw", "clientId": accountsapi::DEV_GAME_CLIENT_ID}))
             .send().await?;
         if login.status().as_u16() == 429 {
             tokio::time::sleep(Duration::from_millis(300)).await;
@@ -6522,7 +6522,7 @@ async fn register_capture(
             .http
             .post(format!("{base}/accounts/register"))
             .header("X-Api-Key", "dev-key-client")
-            .json(&serde_json::json!({"email": email, "password": "pw", "displayName": display_name}))
+            .json(&serde_json::json!({"email": email, "password": "pw", "displayName": display_name, "clientId": accountsapi::DEV_GAME_CLIENT_ID}))
             .send()
             .await?;
         if reg.status().as_u16() == 429 {
@@ -6539,7 +6539,7 @@ async fn register_capture(
             .http
             .post(format!("{base}/accounts/login"))
             .header("X-Api-Key", "dev-key-client")
-            .json(&serde_json::json!({"email": email, "password": "pw"}))
+            .json(&serde_json::json!({"email": email, "password": "pw", "clientId": accountsapi::DEV_GAME_CLIENT_ID}))
             .send()
             .await?;
         if login.status().as_u16() == 429 {
@@ -6680,7 +6680,7 @@ async fn federated_status(ctx: &Ctx, base: &str, provider: &str, credential: &st
     let (code, _) = post_json(
         ctx,
         &format!("{base}/accounts/login/federated"),
-        serde_json::json!({"provider": provider, "credential": credential}),
+        serde_json::json!({"provider": provider, "credential": credential, "clientId": accountsapi::DEV_GAME_CLIENT_ID}),
     )
     .await?;
     Ok(code)
@@ -6698,7 +6698,7 @@ async fn grant_target(ctx: &Ctx, base: &str) -> Result<String> {
 }
 
 async fn create_guest(ctx: &Ctx, base: &str) -> Result<(u16, Guest)> {
-    let (code, body) = post_json(ctx, &format!("{base}/accounts/guest"), serde_json::json!({})).await?;
+    let (code, body) = post_json(ctx, &format!("{base}/accounts/guest"), serde_json::json!({"clientId": accountsapi::DEV_GAME_CLIENT_ID})).await?;
     let pick = |k: &str| body.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
     Ok((
         code,
@@ -7031,7 +7031,8 @@ async fn federated_assertions(
         serde_json::json!({
             "email": format!("refresh-{suffix}@test.local"),
             "password": "pw",
-            "displayName": "R"
+            "displayName": "R",
+            "clientId": accountsapi::DEV_GAME_CLIENT_ID
         }),
     )
     .await?;
@@ -7090,7 +7091,7 @@ async fn federated_assertions(
     // [A6]'s codes: google `Unauthorized` (401) where the split configures it,
     // `Unavailable` (503) in the monolith, which does not; `nope` `Invalid` (400).
     let p8_google = if m.is_empty() { "Unauthorized" } else { "Unavailable" };
-    let p8_guest_call = ("accounts.createGuest", "{}".to_string());
+    let p8_guest_call = ("accounts.createGuest", serde_json::json!({"clientId": accountsapi::DEV_GAME_CLIENT_ID}).to_string());
     let p8 = player_session(ctx, &[p8_guest_call]).await?;
     let p8_secret = p8.first().and_then(|v| find_str(v, "device_secret")).unwrap_or_default();
     let p8_refresh = p8.first().and_then(|v| find_str(v, "refresh_token")).unwrap_or_default();
@@ -7099,15 +7100,15 @@ async fn federated_assertions(
         &[
             (
                 "accounts.loginFederated",
-                serde_json::json!({"provider": "guest", "credential": p8_secret}).to_string(),
+                serde_json::json!({"provider": "guest", "credential": p8_secret, "clientId": accountsapi::DEV_GAME_CLIENT_ID}).to_string(),
             ),
             (
                 "accounts.loginFederated",
-                serde_json::json!({"provider": "google", "credential": "irrelevant"}).to_string(),
+                serde_json::json!({"provider": "google", "credential": "irrelevant", "clientId": accountsapi::DEV_GAME_CLIENT_ID}).to_string(),
             ),
             (
                 "accounts.loginFederated",
-                serde_json::json!({"provider": "nope", "credential": "irrelevant"}).to_string(),
+                serde_json::json!({"provider": "nope", "credential": "irrelevant", "clientId": accountsapi::DEV_GAME_CLIENT_ID}).to_string(),
             ),
             (
                 "accounts.refresh",

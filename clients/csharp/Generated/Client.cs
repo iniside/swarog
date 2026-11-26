@@ -33,8 +33,9 @@ public sealed class GameBackendStatusException(Status status, string? detail)
 /// <summary>Request for <c>accounts.beginDelete</c> (no arguments — serializes to <c>{}</c>).</summary>
 public sealed record AccountsBeginDeleteRequest();
 
-/// <summary>Request for <c>accounts.createGuest</c> (no arguments — serializes to <c>{}</c>).</summary>
-public sealed record AccountsCreateGuestRequest();
+/// <summary>Request for <c>accounts.createGuest</c>.</summary>
+public sealed record AccountsCreateGuestRequest(
+    [property: JsonPropertyName("clientId")] string ClientId);
 
 /// <summary>Request for <c>accounts.deleteAccount</c>.</summary>
 public sealed record AccountsDeleteAccountRequest(
@@ -48,12 +49,14 @@ public sealed record AccountsLinkRequest(
 /// <summary>Request for <c>accounts.login</c>.</summary>
 public sealed record AccountsLoginRequest(
     [property: JsonPropertyName("email")] string Email,
-    [property: JsonPropertyName("password")] string Password);
+    [property: JsonPropertyName("password")] string Password,
+    [property: JsonPropertyName("clientId")] string ClientId);
 
 /// <summary>Request for <c>accounts.loginFederated</c>.</summary>
 public sealed record AccountsLoginFederatedRequest(
     [property: JsonPropertyName("provider")] string Provider,
-    [property: JsonPropertyName("credential")] string Credential);
+    [property: JsonPropertyName("credential")] string Credential,
+    [property: JsonPropertyName("clientId")] string ClientId);
 
 /// <summary>Request for <c>accounts.me</c> (no arguments — serializes to <c>{}</c>).</summary>
 public sealed record AccountsMeRequest();
@@ -66,7 +69,8 @@ public sealed record AccountsRefreshRequest(
 public sealed record AccountsRegisterRequest(
     [property: JsonPropertyName("email")] string Email,
     [property: JsonPropertyName("password")] string Password,
-    [property: JsonPropertyName("displayName")] string DisplayName);
+    [property: JsonPropertyName("displayName")] string DisplayName,
+    [property: JsonPropertyName("clientId")] string ClientId);
 
 /// <summary>Request for <c>characters.create</c>.</summary>
 public sealed record CharactersCreateRequest(
@@ -285,9 +289,9 @@ public sealed class GameBackendClient(IPlayerTransport transport)
     }
 
     /// <summary>Invokes <c>accounts.createGuest</c> (unauthenticated).</summary>
-    public async Task<GuestSession> AccountsCreateGuestAsync(CancellationToken ct = default)
+    public async Task<GuestSession> AccountsCreateGuestAsync(string clientId, CancellationToken ct = default)
     {
-        var _request = new AccountsCreateGuestRequest();
+        var _request = new AccountsCreateGuestRequest(clientId);
         byte[] _payload = JsonSerializer.SerializeToUtf8Bytes(_request, JsonOpts);
         PlayerResponse _resp = await _transport.CallAsync("accounts.createGuest", null, _payload, ct).ConfigureAwait(false);
         JsonNode _envelope = Unwrap(_resp);
@@ -321,9 +325,9 @@ public sealed class GameBackendClient(IPlayerTransport transport)
     }
 
     /// <summary>Invokes <c>accounts.login</c> (unauthenticated).</summary>
-    public async Task<Session> AccountsLoginAsync(string email, string password, CancellationToken ct = default)
+    public async Task<Session> AccountsLoginAsync(string email, string password, string clientId, CancellationToken ct = default)
     {
-        var _request = new AccountsLoginRequest(email, password);
+        var _request = new AccountsLoginRequest(email, password, clientId);
         byte[] _payload = JsonSerializer.SerializeToUtf8Bytes(_request, JsonOpts);
         PlayerResponse _resp = await _transport.CallAsync("accounts.login", null, _payload, ct).ConfigureAwait(false);
         JsonNode _envelope = Unwrap(_resp);
@@ -333,9 +337,9 @@ public sealed class GameBackendClient(IPlayerTransport transport)
     }
 
     /// <summary>Invokes <c>accounts.loginFederated</c> (unauthenticated).</summary>
-    public async Task<Session> AccountsLoginFederatedAsync(string provider, string credential, CancellationToken ct = default)
+    public async Task<Session> AccountsLoginFederatedAsync(string provider, string credential, string clientId, CancellationToken ct = default)
     {
-        var _request = new AccountsLoginFederatedRequest(provider, credential);
+        var _request = new AccountsLoginFederatedRequest(provider, credential, clientId);
         byte[] _payload = JsonSerializer.SerializeToUtf8Bytes(_request, JsonOpts);
         PlayerResponse _resp = await _transport.CallAsync("accounts.loginFederated", null, _payload, ct).ConfigureAwait(false);
         JsonNode _envelope = Unwrap(_resp);
@@ -369,9 +373,9 @@ public sealed class GameBackendClient(IPlayerTransport transport)
     }
 
     /// <summary>Invokes <c>accounts.register</c> (unauthenticated).</summary>
-    public async Task<Session> AccountsRegisterAsync(string email, string password, string displayName, CancellationToken ct = default)
+    public async Task<Session> AccountsRegisterAsync(string email, string password, string displayName, string clientId, CancellationToken ct = default)
     {
-        var _request = new AccountsRegisterRequest(email, password, displayName);
+        var _request = new AccountsRegisterRequest(email, password, displayName, clientId);
         byte[] _payload = JsonSerializer.SerializeToUtf8Bytes(_request, JsonOpts);
         PlayerResponse _resp = await _transport.CallAsync("accounts.register", null, _payload, ct).ConfigureAwait(false);
         JsonNode _envelope = Unwrap(_resp);

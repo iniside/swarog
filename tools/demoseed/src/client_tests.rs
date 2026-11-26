@@ -189,7 +189,7 @@ async fn call_retries_a_429_then_accepts() {
 async fn call_accepts_a_listed_409_with_its_text_body() {
     let (base, _lines) = canned(vec![(409, "already registered")]);
     let gateway = gateway(&base);
-    let result = gateway.call("accounts.register", &[], Caller::Anonymous, Some(&json!({})), &[201, 409]).await;
+    let result = gateway.call("accounts.register", &[], Caller::Anonymous, Some(&json!({"clientId": accountsapi::DEV_GAME_CLIENT_ID})), &[201, 409]).await;
     assert_eq!(result, CallResult::Ok { status: 409, body: Value::String("already registered".to_string()) });
     let report = gateway.take_report();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
@@ -201,7 +201,7 @@ async fn call_accepts_a_listed_409_with_its_text_body() {
 async fn call_counts_the_declared_success_as_coverage() {
     let (base, _lines) = canned(vec![(201, r#"{"player_id":"p"}"#)]);
     let gateway = gateway(&base);
-    let result = gateway.call("accounts.register", &[], Caller::Anonymous, Some(&json!({})), &[201, 409]).await;
+    let result = gateway.call("accounts.register", &[], Caller::Anonymous, Some(&json!({"clientId": accountsapi::DEV_GAME_CLIENT_ID})), &[201, 409]).await;
     assert_eq!(result, CallResult::Ok { status: 201, body: json!({"player_id": "p"}) });
     let report = gateway.take_report();
     assert_eq!(report.calls["accounts.register"], crate::report::OpCalls { succeeded: 1, expected: 0, failed: 0 });

@@ -134,7 +134,7 @@ async Task<int> RunFlowAsync(string[] flowArgs)
     {
         string email = $"csharp-{Guid.NewGuid():N}@test.local";
         Console.Error.WriteLine($"[flow] register {email}");
-        Session session = await gb.AccountsRegisterAsync(email, "hunter2-longenough", "C# Flow");
+        Session session = await gb.AccountsRegisterAsync(email, "hunter2-longenough", "C# Flow", "dev-game");
         Console.Error.WriteLine($"[flow] registered player_id={session.PlayerId} token={Truncate(session.Token)}");
 
         Console.Error.WriteLine("[flow] create character 'hero'");

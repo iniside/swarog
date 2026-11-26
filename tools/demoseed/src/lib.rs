@@ -115,8 +115,8 @@ USAGE:
                      how long an event-fed read polls before it is an error (default 10)
   --clients <n>      throwaway client scenarios to run after the seed (default 8, at least 1)
 
-Requires a fleet started with the dev flags (devctl up sets APIKEYS_DEV_SEED, ACCOUNTS_OPEN_REGISTRATION,
-INVENTORY_DEV_GRANT, WALLET_DEV_SEED). Re-running converges: only missing rows are created, and
+Requires a fleet started with the dev flags (devctl up sets APIKEYS_DEV_SEED, ACCOUNTS_DEV_SEED (the
+dev-game client every login names), ACCOUNTS_OPEN_REGISTRATION, INVENTORY_DEV_GRANT, WALLET_DEV_SEED). Re-running converges: only missing rows are created, and
 every seeded kind is read back. Then each client scenario creates its own guest players and a
 registered account, drives the session, party and destructive ops on them, and deletes them.
 Exits 1 when any call failed (unexpected status, transport, shape or timeout) or an op of the catalog never answered its
@@ -731,12 +731,12 @@ fn or_skip<T>(gateway: &Gateway, value: Option<T>, skipped: &str) -> Option<T> {
 }
 
 async fn seed_player(gateway: &Gateway, player: &PlayerPlan) -> Option<Session> {
-    let register = json!({"email": player.email, "password": PASSWORD, "displayName": player.display_name});
+    let register = json!({"email": player.email, "password": PASSWORD, "displayName": player.display_name, "clientId": accountsapi::DEV_GAME_CLIENT_ID});
     let registered =
         gateway.call(ops::ACCOUNTS_REGISTER, &[], Caller::Anonymous, Some(&register), expect::ACCOUNTS_REGISTER).await.ok();
     let (status, _) = or_skip(gateway, registered, "login and profile read skipped: the registration failed")?;
     gateway.tally(|s| s.players.record(Outcome::from_status(status)));
-    let login = json!({"email": player.email, "password": PASSWORD});
+    let login = json!({"email": player.email, "password": PASSWORD, "clientId": accountsapi::DEV_GAME_CLIENT_ID});
     let session = gateway
         .call(ops::ACCOUNTS_LOGIN, &[], Caller::Anonymous, Some(&login), expect::ACCOUNTS_LOGIN)
         .await

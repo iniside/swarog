@@ -65,7 +65,7 @@ const PLAYERS: &str = "/admin/p/accounts/players";
 const LOGIN: &str = "/accounts/oidc/login";
 const LANDING: &str = "/accounts/oidc/";
 const LOGOUT: &str = "/accounts/oidc/logout";
-const EPIC_START: &str = "/accounts/epic/start";
+const EPIC_START: &str = "/accounts/epic/start?client_id=dev-game";
 const EPIC_CALLBACK: &str = "/accounts/epic/callback";
 const GOOGLE_START: &str = "/accounts/oidc/google";
 const GOOGLE_CALLBACK: &str = "/accounts/oidc/google/callback";
@@ -142,7 +142,7 @@ async fn sign_in_checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, ad
         .with_context(|| format!("fixture: create-account answered a password but no password identity holds {email}"))?;
     // The handle the landing page must show, read the way a game client reads it: the revealed
     // password over the JSON login op, then `/accounts/me`.
-    let (login_code, login) = post_json(ctx, &format!("{front}/accounts/login"), serde_json::json!({ "email": email, "password": password })).await?;
+    let (login_code, login) = post_json(ctx, &format!("{front}/accounts/login"), serde_json::json!({ "email": email, "password": password, "clientId": accountsapi::DEV_GAME_CLIENT_ID })).await?;
     let token = login.get("token").and_then(|v| v.as_str()).unwrap_or_default().to_string();
     if !(200..300).contains(&login_code) || token.is_empty() {
         bail!("fixture: the revealed password on /accounts/login -> {login_code} {login}");

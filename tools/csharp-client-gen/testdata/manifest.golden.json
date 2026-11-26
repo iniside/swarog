@@ -19,7 +19,13 @@
       "path": "/accounts/guest",
       "auth": "none",
       "success": 201,
-      "args": [],
+      "args": [
+        {
+          "name": "client_id",
+          "wire_name": "clientId",
+          "ty": "String"
+        }
+      ],
       "ret": {
         "Struct": "GuestSession"
       }
@@ -82,6 +88,11 @@
           "name": "password",
           "wire_name": "password",
           "ty": "String"
+        },
+        {
+          "name": "client_id",
+          "wire_name": "clientId",
+          "ty": "String"
         }
       ],
       "ret": {
@@ -104,6 +115,11 @@
         {
           "name": "credential",
           "wire_name": "credential",
+          "ty": "String"
+        },
+        {
+          "name": "client_id",
+          "wire_name": "clientId",
           "ty": "String"
         }
       ],
@@ -162,6 +178,11 @@
         {
           "name": "display_name",
           "wire_name": "displayName",
+          "ty": "String"
+        },
+        {
+          "name": "client_id",
+          "wire_name": "clientId",
           "ty": "String"
         }
       ],

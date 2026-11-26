@@ -52,8 +52,8 @@ pub(super) async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &
 async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &reqwest::Client, tag: &str) -> Result<()> {
     let nonce = pass_nonce(tag);
     let email = format!("ar-{nonce}@test.local");
-    let register = serde_json::json!({ "email": email, "password": "pw", "displayName": "ArA" });
-    let login = serde_json::json!({ "email": email, "password": "pw" });
+    let register = serde_json::json!({ "email": email, "password": "pw", "displayName": "ArA", "clientId": accountsapi::DEV_GAME_CLIENT_ID });
+    let login = serde_json::json!({ "email": email, "password": "pw", "clientId": accountsapi::DEV_GAME_CLIENT_ID });
     let (pid, a) = session(ctx, pool, front, "/accounts/register", register).await?;
     let (_, b) = session(ctx, pool, front, "/accounts/login", login.clone()).await?;
     let (_, c) = session(ctx, pool, front, "/accounts/login", login).await?;

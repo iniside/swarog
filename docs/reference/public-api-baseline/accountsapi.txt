@@ -33,6 +33,7 @@ impl core::marker::UnsafeUnpin for accountsapi::auth_rpc::BeginDeleteResponse
 impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::auth_rpc::BeginDeleteResponse
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::BeginDeleteResponse
 pub struct accountsapi::auth_rpc::CreateGuestRequest
+pub accountsapi::auth_rpc::CreateGuestRequest::client_id: alloc::string::String
 impl core::default::Default for accountsapi::auth_rpc::CreateGuestRequest
 pub fn accountsapi::auth_rpc::CreateGuestRequest::default() -> Self
 impl serde_core::ser::Serialize for accountsapi::auth_rpc::CreateGuestRequest
@@ -129,6 +130,7 @@ impl core::marker::UnsafeUnpin for accountsapi::auth_rpc::LinkResponse
 impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::auth_rpc::LinkResponse
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::LinkResponse
 pub struct accountsapi::auth_rpc::LoginFederatedRequest
+pub accountsapi::auth_rpc::LoginFederatedRequest::client_id: alloc::string::String
 pub accountsapi::auth_rpc::LoginFederatedRequest::credential: alloc::string::String
 pub accountsapi::auth_rpc::LoginFederatedRequest::provider: alloc::string::String
 impl core::default::Default for accountsapi::auth_rpc::LoginFederatedRequest
@@ -162,6 +164,7 @@ impl core::marker::UnsafeUnpin for accountsapi::auth_rpc::LoginFederatedResponse
 impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::auth_rpc::LoginFederatedResponse
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::LoginFederatedResponse
 pub struct accountsapi::auth_rpc::LoginRequest
+pub accountsapi::auth_rpc::LoginRequest::client_id: alloc::string::String
 pub accountsapi::auth_rpc::LoginRequest::email: alloc::string::String
 pub accountsapi::auth_rpc::LoginRequest::password: alloc::string::String
 impl core::default::Default for accountsapi::auth_rpc::LoginRequest
@@ -258,6 +261,7 @@ impl core::marker::UnsafeUnpin for accountsapi::auth_rpc::RefreshResponse
 impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::auth_rpc::RefreshResponse
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::RefreshResponse
 pub struct accountsapi::auth_rpc::RegisterRequest
+pub accountsapi::auth_rpc::RegisterRequest::client_id: alloc::string::String
 pub accountsapi::auth_rpc::RegisterRequest::display_name: alloc::string::String
 pub accountsapi::auth_rpc::RegisterRequest::email: alloc::string::String
 pub accountsapi::auth_rpc::RegisterRequest::password: alloc::string::String
@@ -612,14 +616,14 @@ pub const accountsapi::MAX_SESSION_TOKEN_BYTES: usize
 pub const accountsapi::SWAROG_AUDIENCE: &str
 pub trait accountsapi::Auth: core::marker::Send + core::marker::Sync
 pub fn accountsapi::Auth::begin_delete<'life0, 'async_trait>(&'life0 self, opsapi::Identity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::DeleteTicket, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn accountsapi::Auth::create_guest<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::GuestSession, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn accountsapi::Auth::create_guest<'life0, 'async_trait>(&'life0 self, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::GuestSession, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Auth::delete_account<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::DeleteReceipt, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Auth::link<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::MeView, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn accountsapi::Auth::login<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn accountsapi::Auth::login_federated<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn accountsapi::Auth::login<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn accountsapi::Auth::login_federated<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Auth::me<'life0, 'async_trait>(&'life0 self, opsapi::Identity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::MeView, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Auth::refresh<'life0, 'async_trait>(&'life0 self, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn accountsapi::Auth::register<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn accountsapi::Auth::register<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait accountsapi::Directory: core::marker::Send + core::marker::Sync
 pub fn accountsapi::Directory::find_by_handle<'life0, 'async_trait>(&'life0 self, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<accountsapi::PlayerSummary>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Directory::players_by_id<'life0, 'async_trait>(&'life0 self, alloc::vec::Vec<alloc::string::String>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<accountsapi::PlayerSummary>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

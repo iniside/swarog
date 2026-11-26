@@ -10,6 +10,8 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use accountsapi::DEV_GAME_CLIENT_ID as CLIENT_ID;
+
 use crate::client::{Caller, Gateway};
 use crate::readback::{self, Deadline, NotificationRow, KIND_FRIEND_ACCEPTED};
 use crate::{expect, ops, or_skip, CharacterRow, FriendBody, GroupRow, MeBody, Session, SessionBody, PASSWORD};
@@ -161,8 +163,9 @@ async fn guests(gateway: &Gateway) -> (Vec<Held>, [Option<Session>; 3]) {
     const LABELS: [&str; 3] = ["A", "B", "C"];
     let mut made = Vec::with_capacity(LABELS.len());
     for label in LABELS {
+        let body = json!({"clientId": CLIENT_ID});
         let answered = gateway
-            .call(ops::ACCOUNTS_CREATE_GUEST, &[], Caller::Anonymous, None, expect::ACCOUNTS_CREATE_GUEST)
+            .call(ops::ACCOUNTS_CREATE_GUEST, &[], Caller::Anonymous, Some(&body), expect::ACCOUNTS_CREATE_GUEST)
             .await
             .ok()
             .map(|(_, body)| body);
@@ -209,7 +212,7 @@ fn created<T: DeserializeOwned>(gateway: &Gateway, op: &'static str, answered: O
 /// token (never replayed: a replay outside the grace window revokes the family), then a link of
 /// its own guest identity. Returns the newest bearer.
 async fn sign_in_again(gateway: &Gateway, guest: &GuestBody) -> String {
-    let credential = json!({"provider": GUEST, "credential": guest.device_secret});
+    let credential = json!({"provider": GUEST, "credential": guest.device_secret, "clientId": CLIENT_ID});
     let signed_in = gateway
         .call(ops::ACCOUNTS_LOGIN_FEDERATED, &[], Caller::Anonymous, Some(&credential), expect::ACCOUNTS_LOGIN_FEDERATED)
         .await
@@ -260,7 +263,7 @@ async fn me(gateway: &Gateway, token: &str) -> Option<String> {
 /// registration failed, since nothing then holds a bearer for D.
 async fn registered(gateway: &Gateway, client: &Client) -> Option<Held> {
     let email = client.email();
-    let register = json!({"email": email, "password": PASSWORD, "displayName": format!("Sim {}", client.index)});
+    let register = json!({"email": email, "password": PASSWORD, "displayName": format!("Sim {}", client.index), "clientId": CLIENT_ID});
     let answered = gateway
         .call(ops::ACCOUNTS_REGISTER, &[], Caller::Anonymous, Some(&register), expect::ACCOUNTS_REGISTER_FRESH)
         .await
@@ -268,7 +271,7 @@ async fn registered(gateway: &Gateway, client: &Client) -> Option<Held> {
         .map(|(_, body)| body);
     let session = created::<SessionBody>(gateway, ops::ACCOUNTS_REGISTER, answered, "login, profile read and deletion of D")?;
     let mut held = Held { label: "D", player_id: session.player_id, token: session.token };
-    let login = json!({"email": email, "password": PASSWORD});
+    let login = json!({"email": email, "password": PASSWORD, "clientId": CLIENT_ID});
     let logged_in = gateway
         .call(ops::ACCOUNTS_LOGIN, &[], Caller::Anonymous, Some(&login), expect::ACCOUNTS_LOGIN)
         .await
