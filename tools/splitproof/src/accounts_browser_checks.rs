@@ -31,6 +31,13 @@
 //!   (`modules/accounts/src/store.rs`): BR1, BR2 and BL6 red as new (every burst one client, the
 //!   second client's requests 429; the cookie minted before the reset still 200 with its row kept),
 //!   BL1-BL5 and BL7 green (2026-11-26, step 7).
+//! - the Epic start router given its own `IpLimiter` ("accounts_login_epic", same rate and burst)
+//!   instead of the hosted form's `login_limiter` (`modules/accounts/src/lib.rs`), run
+//!   splitproof-62180: BR3 alone red as new (`epic codes=[200x5]` after the form drained the
+//!   client, `run_gateway_429=0`), BL1-BL7, BR1 and BR2 green (2026-11-26, step 7).
+//! - `create_browser_session_tx` also inserting the plaintext token into `accounts.sessions`
+//!   (`modules/accounts/src/web/session.rs`), run splitproof-63840: BL3 alone red as new
+//!   (`code=200 cookie_present=true`), BL1, BL2, BL4-BL7 and BR1-BR3 green (2026-11-26, step 7).
 
 use std::time::{Duration, Instant};
 
