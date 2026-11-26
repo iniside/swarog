@@ -63,8 +63,8 @@ fn is_front_door(service: &ServiceDef) -> bool {
         || service.provider.as_deref() == Some("gateway")
 }
 
-/// Every `weles/fleet*.toml`: each service hosting accounts (the monolith `server` or the
-/// `accounts` provider) seals with the testdb KEK and names the fleet's front door as issuer.
+/// Every `weles/fleet*.toml`: each service hosting accounts (selected by executable package
+/// `server` or `accounts-svc`) seals with the testdb KEK and names the fleet's front door as issuer.
 #[test]
 fn weles_fleets_seal_with_the_testdb_kek_and_name_their_front_door() {
     let mut fleets: Vec<PathBuf> = std::fs::read_dir(repo("weles"))
@@ -131,13 +131,17 @@ fn server_environment(file: &str) -> Vec<String> {
 }
 
 /// The compose tests below name compose.yaml and compose.dev.yaml; a new repo-root compose
-/// file fails here until it is pinned too.
+/// file (`compose*` or `docker-compose*`, `.yaml` or `.yml`, e.g. a `compose.override.yml` that
+/// `docker compose up` merges on its own) fails here until it is pinned too.
 #[test]
 fn compose_files_are_the_pinned_pair() {
     let mut files: Vec<String> = std::fs::read_dir(repo(""))
         .expect("read the repo root")
         .map(|entry| entry.expect("repo root entry").file_name().to_string_lossy().into_owned())
-        .filter(|name| name.starts_with("compose") && name.ends_with(".yaml"))
+        .filter(|name| {
+            (name.starts_with("compose") || name.starts_with("docker-compose"))
+                && (name.ends_with(".yaml") || name.ends_with(".yml"))
+        })
         .collect();
     files.sort();
     assert_eq!(files, ["compose.dev.yaml", "compose.yaml"]);

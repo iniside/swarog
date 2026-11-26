@@ -16,7 +16,10 @@ fn stage_env_pins_the_kek_and_names_the_fixture_port_as_issuer() {
     };
     let issuer = value("ACCOUNTS_OIDC_ISSUER");
     assert_eq!(issuer.len(), 1, "{issuer:?}");
-    assert!(issuer[0].ends_with(&format!(":{HTTP_PORT}/accounts/oidc")), "{issuer:?}");
+    let port = value("PORT");
+    assert_eq!(port.len(), 1, "{port:?}");
+    assert_eq!(issuer[0], format!("http://localhost{}/accounts/oidc", port[0]));
+    assert_eq!(port[0], format!(":{HTTP_PORT}"));
     assert_eq!(value("ACCOUNTS_SIGNING_KEK"), [testdb::DEV_ACCOUNTS_SIGNING_KEK]);
 }
 
