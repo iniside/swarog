@@ -52,6 +52,11 @@ If status says no active fleet but `*-svc` or `server` processes remain, treat
 them as leftovers and identify ownership before stopping anything; never kill
 unrelated processes by name.
 
+One shared `target/`: never set `CARGO_TARGET_DIR` or pass `--target-dir` to
+dodge a running build. Each private directory is a full workspace rebuild that
+nobody deletes (they once filled 250+ GB); wait for the running build instead.
+`.claude/hooks/target_dir_guard.py` denies it.
+
 ## Step 2 — Check for leftovers from a dead/hung run
 
 A killed run can orphan test binaries holding advisory locks or

@@ -17,7 +17,8 @@ architecture doc.
 Every section in `.agents/shared/` and `.claude/rules/` is binding. Hooks
 enforce git safety (no stash, restore or checkout over uncommitted work), the
 commit subject format and trailer, an explicit `model` on every Agent call (plus
-`effort` for built-in agent types), and no worktrees.
+`effort` for built-in agent types), no worktrees, and no private cargo target
+directories.
 
 ## Read Before The Action
 
