@@ -1,5 +1,6 @@
 //! The router `init` mounts, served from `ctx.take_router()`: `register`, then the init body with
-//! both browser flows parsed by `ProviderConfig::from_vars`, so no test touches process env.
+//! both browser flows parsed by `ProviderConfig::from_vars` and a given issuer, so no test touches
+//! process env.
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr};
@@ -35,7 +36,8 @@ async fn init_mounts_both_callbacks_outside_the_bucket_and_the_page_headers() {
     let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
     let accounts = Accounts::new();
     accounts.register(&ctx).unwrap();
-    accounts.init_with(&ctx, both_flows(), false, Vec::new()).unwrap();
+    let issuer = "http://127.0.0.1:8082/accounts/oidc";
+    accounts.init_with(&ctx, both_flows(), false, Vec::new(), issuer).unwrap();
     let app = ctx.take_router();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -62,6 +64,22 @@ async fn init_mounts_both_callbacks_outside_the_bucket_and_the_page_headers() {
         callbacks.push((path, resp));
     }
 
+    let discovery = client()
+        .get(format!("{base}/accounts/oidc/.well-known/openid-configuration"))
+        .send()
+        .await
+        .unwrap();
+    let jwks = client().get(format!("{base}/accounts/oidc/jwks")).send().await.unwrap();
+
+    assert_eq!(discovery.status(), 200, "init mounts the discovery document");
+    assert_eq!(
+        discovery.json::<serde_json::Value>().await.unwrap(),
+        serde_json::json!({"issuer": issuer, "jwks_uri": format!("{issuer}/jwks")}),
+        "the discovery document holds exactly the issuer and its JWKS URI"
+    );
+    assert_eq!(jwks.status(), 200, "init mounts the JWKS");
+    let jwks: serde_json::Value = jwks.json().await.unwrap();
+    assert!(!jwks["keys"].as_array().unwrap().is_empty(), "the JWKS lists the active key: {jwks}");
     assert_eq!(epic_start.status(), 429, "init mounts the Epic start on the sign-in bucket");
     for (path, resp) in &callbacks {
         assert_eq!(resp.status(), 400, "{path} reaches its handler with the bucket empty: unknown state");

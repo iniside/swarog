@@ -4,13 +4,18 @@
 //! the dev KEK.
 
 use super::*;
+use super::hosted_login::client;
 use crate::signing_keys::{
-    kek_from, migrate_signing_keys, oidc_issuer, open, required_kek, seal, thumbprint, NewKey,
-    SigningKek,
+    kek_from, migrate_signing_keys, oidc_issuer, open, required_kek, seal, thumbprint, Clock,
+    NewKey, SigningKek, SigningKeys, JWKS_CACHE_TTL,
 };
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
-use ring::signature::{EcdsaKeyPair, KeyPair as _, ECDSA_P256_SHA256_FIXED_SIGNING};
+use ring::signature::{
+    EcdsaKeyPair, KeyPair as _, UnparsedPublicKey, ECDSA_P256_SHA256_FIXED,
+    ECDSA_P256_SHA256_FIXED_SIGNING,
+};
 use std::ffi::OsString;
+use std::time::{Duration, Instant};
 
 fn os(value: &str) -> Option<OsString> {
     Some(value.into())
@@ -53,6 +58,28 @@ async fn key_rows(pool: &PgPool, schema: &str) -> Vec<KeyRow> {
     .fetch_all(pool)
     .await
     .unwrap()
+}
+
+/// Inserts `key` into `{schema}.signing_keys` with `status`, storing `public_jwk` as its JWK.
+async fn insert_key(
+    pool: &PgPool,
+    schema: &str,
+    key: &NewKey,
+    status: &str,
+    public_jwk: &serde_json::Value,
+) {
+    sqlx::query(&format!(
+        "INSERT INTO {schema}.signing_keys (kid, alg, sealed_key, nonce, public_jwk, status) \
+         VALUES ($1, 'ES256', $2, $3, $4::jsonb, $5)"
+    ))
+    .bind(&key.kid)
+    .bind(&key.sealed_key)
+    .bind(&key.nonce)
+    .bind(public_jwk.to_string())
+    .bind(status)
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 /// Asserts `refused` is the does-not-open failure naming `kid`, with its remedy.
@@ -125,6 +152,7 @@ fn the_issuer_defaults_to_the_monolith_and_refuses_every_other_shape() {
         "http://auth.example.com/accounts/oidc?x=1",
         "http://auth.example.com/accounts/oidc?",
         "http://auth.example.com/accounts/oidc#top",
+        "http://auth.example.com/accounts/oidc#",
         "http://user:pass@auth.example.com/accounts/oidc",
         "HTTP://auth.example.com/accounts/oidc",
         "http://auth.example.com:80/accounts/oidc",
@@ -341,17 +369,7 @@ async fn a_retiring_key_under_another_kek_fails_boot() {
     let Some(pool) = test_pool().await else { return };
     let schema = booted_schema(&pool, "staleretiring").await;
     let stale = NewKey::generate(&other_kek()).unwrap();
-    sqlx::query(&format!(
-        "INSERT INTO {schema}.signing_keys (kid, alg, sealed_key, nonce, public_jwk, status) \
-         VALUES ($1, 'ES256', $2, $3, $4::jsonb, 'retiring')"
-    ))
-    .bind(&stale.kid)
-    .bind(&stale.sealed_key)
-    .bind(&stale.nonce)
-    .bind(stale.public_jwk.to_string())
-    .execute(&pool)
-    .await
-    .unwrap();
+    insert_key(&pool, &schema, &stale, "retiring", &stale.public_jwk).await;
     let before = key_rows(&pool, &schema).await;
     let refused = migrate_signing_keys(&pool, &schema, &dev_kek()).await;
     let after = key_rows(&pool, &schema).await;
@@ -399,4 +417,102 @@ async fn a_signing_keys_table_of_another_shape_is_refused_with_the_drop_remedy()
         );
         assert_eq!(rows, 0, "{label}");
     }
+}
+
+/// The JWKS lists the active and the retiring key as their public JWKs, without the `d` a
+/// stored JWK carries, and not the retired key; each listed key verifies an ES256 signature made
+/// with the private key its row opens to.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_jwks_lists_the_live_public_keys_and_each_verifies_its_own_signature() {
+    let Some(pool) = test_pool().await else { return };
+    let schema = booted_schema(&pool, "jwks").await;
+    let retiring = NewKey::generate(&dev_kek()).unwrap();
+    let mut with_private_member = retiring.public_jwk.clone();
+    with_private_member["d"] = serde_json::json!("a private scalar");
+    insert_key(&pool, &schema, &retiring, "retiring", &with_private_member).await;
+    let retired = NewKey::generate(&dev_kek()).unwrap();
+    insert_key(&pool, &schema, &retired, "retired", &retired.public_jwk).await;
+    let rows = key_rows(&pool, &schema).await;
+    let set = SigningKeys::new(pool.clone(), &schema).jwks().await;
+    drop_schema(&pool, &schema).await;
+
+    let set = serde_json::to_value(&*set.unwrap()).unwrap();
+    let keys = set["keys"].as_array().unwrap();
+    let mut listed: Vec<&str> = keys.iter().map(|k| k["kid"].as_str().unwrap()).collect();
+    listed.sort_unstable();
+    let mut live: Vec<&str> =
+        rows.iter().filter(|r| r.1 != "retired").map(|r| r.0.as_str()).collect();
+    live.sort_unstable();
+    assert_eq!(live.len(), 2, "the active and the retiring key");
+    assert!(live.contains(&retiring.kid.as_str()));
+    assert_eq!(listed, live, "the JWKS lists exactly the active and retiring keys");
+
+    let rng = ring::rand::SystemRandom::new();
+    for jwk in keys {
+        let mut members: Vec<&str> = jwk.as_object().unwrap().keys().map(String::as_str).collect();
+        members.sort_unstable();
+        assert_eq!(members, ["alg", "crv", "kid", "kty", "use", "x", "y"], "{jwk}");
+        assert_eq!((&jwk["kty"], &jwk["crv"], &jwk["alg"], &jwk["use"]), (
+            &serde_json::json!("EC"),
+            &serde_json::json!("P-256"),
+            &serde_json::json!("ES256"),
+            &serde_json::json!("sig"),
+        ));
+        let kid = jwk["kid"].as_str().unwrap();
+        let (_, _, _, sealed, nonce) = rows.iter().find(|r| r.0 == kid).unwrap();
+        let der = open(&dev_kek(), kid, nonce, sealed).expect("the row opens under the dev KEK");
+        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &der, &rng).unwrap();
+        let message = format!("signed with {kid}");
+        let signature = pair.sign(&rng, message.as_bytes()).unwrap();
+        let mut point = vec![0x04];
+        point.extend(URL_SAFE_NO_PAD.decode(jwk["x"].as_str().unwrap()).unwrap());
+        point.extend(URL_SAFE_NO_PAD.decode(jwk["y"].as_str().unwrap()).unwrap());
+        UnparsedPublicKey::new(&ECDSA_P256_SHA256_FIXED, &point)
+            .verify(message.as_bytes(), signature.as_ref())
+            .unwrap_or_else(|_| panic!("the listed key {kid} does not verify its own signature"));
+    }
+}
+
+/// Serves `app` on a free local port; its base URL.
+async fn serve(app: axum::Router) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    base
+}
+
+/// With the key table dropped, a JWKS read inside the cache window still answers the set it
+/// read, so it did not query the DB; the first read past the window fails on the DB and is 503,
+/// and so is the next, never the set read before.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_jwks_read_inside_the_window_skips_the_db_and_one_past_it_that_fails_is_503() {
+    let Some(pool) = test_pool().await else { return };
+    let schema = booted_schema(&pool, "cache").await;
+    let start = Instant::now();
+    let elapsed = Arc::new(std::sync::Mutex::new(Duration::ZERO));
+    let clock: Clock = {
+        let elapsed = elapsed.clone();
+        Arc::new(move || start + *elapsed.lock().unwrap())
+    };
+    let keys = Arc::new(SigningKeys::with_clock(pool.clone(), &schema, clock));
+    let base = serve(crate::discovery::router(accountsapi::DEFAULT_OIDC_ISSUER, keys)).await;
+    let jwks = || async {
+        let resp = client().get(format!("{base}/accounts/oidc/jwks")).send().await.unwrap();
+        (resp.status().as_u16(), resp.text().await.unwrap())
+    };
+
+    let first = jwks().await;
+    sqlx::query(&format!("DROP TABLE {schema}.signing_keys")).execute(&pool).await.unwrap();
+    *elapsed.lock().unwrap() = JWKS_CACHE_TTL - Duration::from_millis(1);
+    let inside = jwks().await;
+    *elapsed.lock().unwrap() = JWKS_CACHE_TTL;
+    let past = jwks().await;
+    let again = jwks().await;
+    drop_schema(&pool, &schema).await;
+
+    assert_eq!(first.0, 200, "{}", first.1);
+    assert!(first.1.contains("\"kid\""), "{}", first.1);
+    assert_eq!(inside, first, "a read inside the window queried the dropped table");
+    assert_eq!(past.0, 503, "a failed read past the window answered {}", past.1);
+    assert_eq!(again.0, 503, "a failed read past the window answered {}", again.1);
 }

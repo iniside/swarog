@@ -2,6 +2,8 @@
 //! AES-256-GCM under `ACCOUNTS_SIGNING_KEK` and stored in `accounts.signing_keys`.
 
 use std::ffi::OsString;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
@@ -9,10 +11,17 @@ use lifecycle::Ddl;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN};
 use ring::rand::{SecureRandom, SystemRandom};
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub(crate) const KEK_ENV: &str = "ACCOUNTS_SIGNING_KEK";
 pub(crate) const ISSUER_ENV: &str = "ACCOUNTS_OIDC_ISSUER";
+
+/// How long a JWKS read from the DB is served before a request reads the keys again.
+pub(crate) const JWKS_CACHE_TTL: Duration = Duration::from_secs(60);
+
+/// The clock [`SigningKeys`] ages its cached JWKS by.
+pub(crate) type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 
 /// `{schema}` here and in [`SIGNING_KEYS_ONE_ACTIVE_DDL`] stands for the schema
 /// [`migrate_signing_keys`] runs on.
@@ -139,17 +148,89 @@ impl NewKey {
             .map_err(|e| anyhow::anyhow!("accounts: parse the generated signing key: {e}"))?;
         let (x, y) = point_coordinates(pair.public_key().as_ref())?;
         let kid = thumbprint(&x, &y);
-        let public_jwk = serde_json::json!({
-            "kty": "EC",
-            "crv": "P-256",
-            "x": x,
-            "y": y,
-            "kid": kid,
-            "use": "sig",
-            "alg": "ES256",
-        });
+        let public_jwk = serde_json::to_value(PublicJwk::es256(x, y, kid.clone()))?;
         let (nonce, sealed_key) = seal(kek, &kid, pkcs8.as_ref())?;
         Ok(NewKey { kid, sealed_key, nonce, public_jwk })
+    }
+}
+
+/// The public half of an ES256 signing key as a JWK: it has no member a private key could fill.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct PublicJwk {
+    kty: String,
+    crv: String,
+    x: String,
+    y: String,
+    kid: String,
+    #[serde(rename = "use")]
+    use_: String,
+    alg: String,
+}
+
+impl PublicJwk {
+    fn es256(x: String, y: String, kid: String) -> PublicJwk {
+        PublicJwk {
+            kty: "EC".into(),
+            crv: "P-256".into(),
+            x,
+            y,
+            kid,
+            use_: "sig".into(),
+            alg: "ES256".into(),
+        }
+    }
+}
+
+/// The JWKS document: every `active` and `retiring` key's [`PublicJwk`].
+#[derive(Serialize)]
+pub(crate) struct JwkSet {
+    keys: Vec<PublicJwk>,
+}
+
+/// The live public keys of `{schema}.signing_keys`, read again at most once per
+/// [`JWKS_CACHE_TTL`]; a read that fails past the window is an error, never the previous set.
+pub(crate) struct SigningKeys {
+    pool: sqlx::PgPool,
+    schema: String,
+    now: Clock,
+    cached: tokio::sync::Mutex<Option<(Instant, Arc<JwkSet>)>>,
+}
+
+impl SigningKeys {
+    pub(crate) fn new(pool: sqlx::PgPool, schema: &str) -> SigningKeys {
+        SigningKeys::with_clock(pool, schema, Arc::new(Instant::now))
+    }
+
+    pub(crate) fn with_clock(pool: sqlx::PgPool, schema: &str, now: Clock) -> SigningKeys {
+        SigningKeys { pool, schema: schema.to_string(), now, cached: tokio::sync::Mutex::new(None) }
+    }
+
+    pub(crate) async fn jwks(&self) -> anyhow::Result<Arc<JwkSet>> {
+        let mut cached = self.cached.lock().await;
+        let now = (self.now)();
+        if let Some((read_at, set)) = cached.as_ref() {
+            if now.saturating_duration_since(*read_at) < JWKS_CACHE_TTL {
+                return Ok(set.clone());
+            }
+        }
+        let set = Arc::new(self.read().await?);
+        *cached = Some((now, set.clone()));
+        Ok(set)
+    }
+
+    async fn read(&self) -> anyhow::Result<JwkSet> {
+        let rows: Vec<(String,)> = sqlx::query_as(&format!(
+            "SELECT public_jwk::text FROM {}.signing_keys \
+             WHERE status IN ('active', 'retiring') ORDER BY created_at, kid",
+            self.schema
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+        let keys = rows
+            .iter()
+            .map(|(jwk,)| serde_json::from_str(jwk))
+            .collect::<Result<Vec<PublicJwk>, _>>()?;
+        Ok(JwkSet { keys })
     }
 }
 

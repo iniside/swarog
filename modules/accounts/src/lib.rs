@@ -33,6 +33,7 @@
 
 mod admin;
 pub mod conformance;
+mod discovery;
 mod epic_oauth;
 mod guest;
 mod oauth_flow;
@@ -1483,6 +1484,7 @@ pub struct Accounts {
     web_limiter: OnceLock<Arc<httpmw::IpLimiter>>,
     web_limiter_reaper: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     signing_kek: OnceLock<signing_keys::SigningKek>,
+    issuer: OnceLock<String>,
 }
 
 impl Default for Accounts {
@@ -1498,6 +1500,7 @@ impl Accounts {
             web_limiter: OnceLock::new(),
             web_limiter_reaper: std::sync::Mutex::new(None),
             signing_kek: OnceLock::new(),
+            issuer: OnceLock::new(),
         }
     }
 
@@ -1617,6 +1620,7 @@ impl Accounts {
         config: ProviderConfig,
         cookie_secure: bool,
         trusted: Vec<ipnet::IpNet>,
+        issuer: &str,
     ) -> anyhow::Result<()> {
         let svc = self.svc();
 
@@ -1679,6 +1683,8 @@ impl Accounts {
         }
         let flows = web::Flows { epic: epic_flow, google: google_flow };
         ctx.mount(web::hosted_browser_router(svc.clone(), cookie_secure, login_limiter, flows)?);
+        let signing_keys = signing_keys::SigningKeys::new(svc.store.pool.clone(), "accounts");
+        ctx.mount(discovery::router(issuer, Arc::new(signing_keys)));
         svc.providers
             .set(Arc::new(config.providers(&svc.store.pool)))
             .map_err(|_| anyhow::anyhow!("accounts.init ran twice"))?;
@@ -1754,7 +1760,8 @@ impl Module for Accounts {
     /// resolves it), `accounts.auth` and `accounts.directory` — so a dependent's
     /// `require` resolves regardless of registration order.
     fn register(&self, ctx: &Context) -> anyhow::Result<()> {
-        signing_keys::oidc_issuer(std::env::var_os(signing_keys::ISSUER_ENV))?;
+        let issuer = signing_keys::oidc_issuer(std::env::var_os(signing_keys::ISSUER_ENV))?;
+        self.issuer.get_or_init(|| issuer);
         if let Some(kek) = signing_keys::kek_from(std::env::var_os(signing_keys::KEK_ENV))? {
             self.signing_kek.get_or_init(|| kek);
         }
@@ -1797,9 +1804,9 @@ impl Module for Accounts {
     /// Only wires up — no I/O (#8). Reads the env gates, parses and validates the
     /// credential providers (verifier construction is pure — the JWKS fetch is
     /// LAZY — so a malformed value can only be caught here), mounts the OAuth
-    /// browser routes, contributes the player operations (all unconditional — the
-    /// dev/epic gating lives at the impl), and the generated Sessions + Auth RPC faces
-    /// to the edge slot.
+    /// browser routes and the OIDC discovery and JWKS, contributes the player
+    /// operations (all unconditional — the dev/epic gating lives at the impl), and the
+    /// generated Sessions + Auth RPC faces to the edge slot.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         // Federated credential providers, parsed and VALIDATED by the one typed
         // authority. A present-but-malformed provider is an `Err` here and fails
@@ -1810,7 +1817,11 @@ impl Module for Accounts {
         let cookie_secure = web::cookie_secure_from_env();
         let trusted = httpmw::parse_cidrs(&std::env::var("TRUSTED_PROXY_CIDRS").unwrap_or_default())
             .map_err(|e| anyhow::anyhow!("accounts: parse TRUSTED_PROXY_CIDRS: {e}"))?;
-        self.init_with(ctx, config, cookie_secure, trusted)
+        let issuer = self
+            .issuer
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("accounts.register must run before init"))?;
+        self.init_with(ctx, config, cookie_secure, trusted, issuer)
     }
 
     /// First I/O/CPU (#8): forces the argon2 `DUMMY_HASH` LazyLock here, on a
