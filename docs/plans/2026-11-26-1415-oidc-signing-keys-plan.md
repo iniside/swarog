@@ -34,6 +34,12 @@ every recommendation. The review-fix commit for Step 1 carries E1-E4; Step 2 car
 - E6. After the accounts-browser-fixes plan, `init` is split into an env half and a body (its D3): Steps 2
   and 3 put new env reads in the env half and new routes in the body. The `init` anchors in Facts
   (lib.rs:1627-1655) predate that split; re-anchor before dispatch.
+- E7 (review of 84ea1397). Step 2 exports accounts' default issuer (D4) as a public const in
+  `api/accounts/api`; tools/verifyctl/tests/dev_signing_kek.rs (its `ACCOUNTS_DEFAULT_ISSUER` literal, :15)
+  and the processctl monolith check in fleet_tests `accounts_signing_env_in_both_topologies` read it, so a
+  changed default or a moved monolith port goes red.
+- Note on E2: the pin landed in verifyctl, which depends on testdb as a normal dependency and does not
+  call `test_pool`; the drift gate reads only dev-dependencies, so no exemption is needed.
 
 ## Problem
 
