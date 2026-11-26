@@ -139,7 +139,13 @@ impl IpLimiter {
     /// IP's bucket (creating the bucket, full, on first sight) and refreshing its
     /// last-seen time.
     pub fn allow(&self, ip: IpAddr) -> bool {
-        let now = Instant::now();
+        self.allow_at(ip, Instant::now())
+    }
+
+    /// [`IpLimiter::allow`] as of `now` instead of the real clock: a deterministic clock
+    /// for tests that pin a limiter's burst and refill rate. `now` must not go backwards
+    /// for one IP (an earlier `now` refills nothing).
+    pub fn allow_at(&self, ip: IpAddr, now: Instant) -> bool {
         let mut visitors = self.visitors.lock().unwrap();
 
         if let Some(visitor) = visitors.get_mut(&ip) {

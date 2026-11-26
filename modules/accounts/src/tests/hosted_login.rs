@@ -319,14 +319,27 @@ async fn an_unsafe_return_to_lands_on_the_landing_page() {
 }
 
 /// The bucket accounts builds for sign-in admits one client exactly `accountsapi::LOGIN_LIMIT_BURST`
-/// requests back to back before its first refusal, so the burst a harness reads off the contract
-/// is the one the module runs.
+/// requests at once, then refills exactly `accountsapi::LOGIN_LIMIT_PER_SEC` a second: on a clock
+/// the test drives, a drained client gets that many whole tokens one second later and one fewer a
+/// millisecond earlier. So the burst and rate a harness reads off the contract are the ones the
+/// module runs.
 #[test]
-fn the_sign_in_bucket_admits_the_published_burst() {
-    let limiter = crate::login_ip_limiter();
+fn the_sign_in_bucket_runs_the_published_burst_and_refill_rate() {
     let ip: std::net::IpAddr = "203.0.113.9".parse().unwrap();
-    let admitted = (0..accountsapi::LOGIN_LIMIT_BURST * 2).take_while(|_| limiter.allow(ip)).count();
-    assert_eq!(admitted, accountsapi::LOGIN_LIMIT_BURST as usize);
+    let admitted = |limiter: &httpmw::IpLimiter, at: std::time::Instant| {
+        (0..accountsapi::LOGIN_LIMIT_BURST * 2).take_while(|_| limiter.allow_at(ip, at)).count()
+    };
+    let t0 = std::time::Instant::now();
+    let rate = accountsapi::LOGIN_LIMIT_PER_SEC as usize;
+
+    let limiter = crate::login_ip_limiter();
+    assert_eq!(admitted(&limiter, t0), accountsapi::LOGIN_LIMIT_BURST as usize, "the burst at t0");
+    assert_eq!(admitted(&limiter, t0 + std::time::Duration::from_secs(1)), rate, "one second's refill");
+
+    let early = crate::login_ip_limiter();
+    assert_eq!(admitted(&early, t0), accountsapi::LOGIN_LIMIT_BURST as usize, "the burst at t0");
+    let just_short = t0 + std::time::Duration::from_secs(1) - std::time::Duration::from_millis(1);
+    assert_eq!(admitted(&early, just_short), rate - 1, "a millisecond short of one second's refill");
 }
 
 /// Behind a trusted proxy each forwarded client gets its own limiter bucket; the proxy's
