@@ -19,7 +19,9 @@ use super::{
 };
 use crate::store::FamilyRow;
 use crate::web::session::BrowserSessionRow;
-use crate::tests::{cleanup_player, insert_client, suffix, test_client, wired, TEST_CLIENT_ID};
+use crate::tests::{
+    cleanup_player, delete_client, insert_client, suffix, test_client, wired, TEST_CLIENT_ID,
+};
 
 /// A canonical uuid no registration mints: registrations are v4, this is v0.
 const NO_PLAYER: &str = "00000000-0000-0000-0000-000000000000";
@@ -1276,8 +1278,9 @@ async fn client_families(pool: &PgPool, client_id: &str) -> i64 {
 }
 
 /// A login holding its client row (FOR KEY SHARE) when the client is deleted: the delete
-/// waits for it, then takes the login's family by cascade. The real `login` is parked at
-/// its identity stamp by a third transaction holding the identity row.
+/// waits for it, then takes the login's family by cascade. The real `login` is parked right
+/// after its client check, at the family insert's FK check, by a third transaction holding
+/// the player row: the family insert has not locked the client yet.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_client_delete_waits_for_a_racing_login_and_cascades_its_family() {
     let Some(pool) = test_pool().await else { return };
@@ -1286,11 +1289,11 @@ async fn a_client_delete_waits_for_a_racing_login_and_cascades_its_family() {
     let client = insert_client(&pool, &grants).await;
     let email = format!("delcl1-{}@test.local", suffix());
     let id = svc.register(email.clone(), "pw".into(), "DelClLogin".into(), client.clone()).await.unwrap().player_id;
-    let mut stamp_gate = pool.begin().await.unwrap();
-    let gate_pid = backend_pid(&mut stamp_gate).await;
-    sqlx::query("SELECT 1 FROM accounts.identities WHERE player_id = $1::uuid FOR UPDATE")
+    let mut player_gate = pool.begin().await.unwrap();
+    let gate_pid = backend_pid(&mut player_gate).await;
+    sqlx::query("SELECT 1 FROM accounts.players WHERE id = $1::uuid FOR UPDATE")
         .bind(&id)
-        .execute(&mut *stamp_gate)
+        .execute(&mut *player_gate)
         .await
         .unwrap();
     let login = {
@@ -1305,14 +1308,14 @@ async fn a_client_delete_waits_for_a_racing_login_and_cascades_its_family() {
         tokio::spawn(async move { admin.invoke(delete_client_call(&client)).await })
     };
     let waited = login_pid.is_some() && waits_on(&pool, login_pid.unwrap()).await;
-    stamp_gate.rollback().await.unwrap();
+    player_gate.rollback().await.unwrap();
     let session = login.await.unwrap();
     let deleted = delete.await.unwrap();
     let families = client_families(&pool, &client).await;
     let left = player_rows(&pool, &id).await;
     cleanup_player(&pool, &id).await;
 
-    assert!(login_pid.is_some(), "the login must park at its identity stamp");
+    assert!(login_pid.is_some(), "the login must park at its family insert");
     assert!(waited, "the client delete must wait on the login holding the client row");
     assert_eq!(session.expect("the login commits first").player_id, id);
     assert!(matches!(deleted.expect("the delete finishes without a 500"), InvokeOutcome::Ok { .. }));
@@ -1364,4 +1367,116 @@ async fn a_client_delete_waits_for_a_racing_refresh_and_cascades_its_family() {
     assert!(matches!(deleted.expect("the delete finishes without a 500"), InvokeOutcome::Ok { .. }));
     assert_eq!(families, 0, "the delete cascades the rotated family");
     assert_eq!(left, 0, "no token or session of the deleted client is left");
+}
+
+/// An admin action that deletes several token families at once.
+#[derive(Clone, Copy)]
+enum FamilyDeleter {
+    RevokeAll,
+    ResetPassword,
+    DeleteClient,
+}
+
+fn spawn_deleter(
+    svc: &Arc<crate::Service>,
+    deleter: FamilyDeleter,
+    player: &str,
+    client: &str,
+) -> tokio::task::JoinHandle<Result<(), String>> {
+    let svc = Arc::clone(svc);
+    let (player, client) = (player.to_string(), client.to_string());
+    tokio::spawn(async move {
+        let admin = AccountsAdmin::new(Arc::clone(&svc));
+        let outcome = match deleter {
+            FamilyDeleter::RevokeAll => admin.invoke(revoke(REVOKE_ALL, Some(&player), None)).await,
+            FamilyDeleter::DeleteClient => admin.invoke(delete_client_call(&client)).await,
+            FamilyDeleter::ResetPassword => {
+                return svc.reset_password(&player).await.map(drop).map_err(|e| format!("{e:?}"));
+            }
+        };
+        match outcome {
+            Ok(InvokeOutcome::Ok { .. }) => Ok(()),
+            other => Err(format!("{other:?}")),
+        }
+    })
+}
+
+/// Two deletes racing over the same two live families of one player under one client. The
+/// family with the larger id is inserted first and a third transaction holds it (FOR KEY
+/// SHARE), so `first` parks there holding whatever it locked before it, and `second` then
+/// waits behind `first`. Both take families in ascending id, so they finish one after the
+/// other; a delete taking the larger family first would hold it while `second` holds the
+/// smaller one, and Postgres would abort one of them with a deadlock.
+async fn race_two_families(first: FamilyDeleter, second: FamilyDeleter) {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let client = insert_client(&pool, &[accountsapi::grant_types::PASSWORD]).await;
+    let email = format!("twofam-{}@test.local", suffix());
+    let id = svc.register(email, "pw".into(), "TwoFamilies".into(), test_client()).await.unwrap().player_id;
+    let (larger, smaller): (String, String) = sqlx::query_as(
+        "SELECT greatest(a, b)::text, least(a, b)::text \
+           FROM (SELECT gen_random_uuid() AS a, gen_random_uuid() AS b) AS ids",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    for family in [&larger, &smaller] {
+        sqlx::query(
+            "INSERT INTO accounts.token_families (id, player_id, client_id, access_expires_at) \
+             VALUES ($1::uuid, $2::uuid, $3, now() + interval '1 hour')",
+        )
+        .bind(family)
+        .bind(&id)
+        .bind(&client)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let mut gate = pool.begin().await.unwrap();
+    let gate_pid = backend_pid(&mut gate).await;
+    sqlx::query("SELECT 1 FROM accounts.token_families WHERE id = $1::uuid FOR KEY SHARE")
+        .bind(&larger)
+        .execute(&mut *gate)
+        .await
+        .unwrap();
+    let first_task = spawn_deleter(&svc, first, &id, &client);
+    let first_pid = waiter_of(&pool, gate_pid).await;
+    let second_task = spawn_deleter(&svc, second, &id, &client);
+    let queued = match first_pid {
+        Some(pid) => waits_on_any(&pool, &[gate_pid, pid]).await,
+        None => false,
+    };
+    gate.rollback().await.unwrap();
+    let first_done = first_task.await.unwrap();
+    let second_done = second_task.await.unwrap();
+    let families: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM accounts.token_families WHERE id IN ($1::uuid, $2::uuid)")
+            .bind(&larger)
+            .bind(&smaller)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    cleanup_player(&pool, &id).await;
+    delete_client(&pool, &client).await;
+
+    assert!(first_pid.is_some(), "the first delete must park on the held family");
+    assert!(queued, "the second delete must wait behind the first");
+    first_done.expect("the first delete finishes without a deadlock");
+    second_done.expect("the second delete finishes without a deadlock");
+    assert_eq!(families, 0, "both families are gone");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_delete_and_a_racing_revoke_all_take_two_families_in_one_order() {
+    race_two_families(FamilyDeleter::DeleteClient, FamilyDeleter::RevokeAll).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revoke_all_and_a_racing_client_delete_take_two_families_in_one_order() {
+    race_two_families(FamilyDeleter::RevokeAll, FamilyDeleter::DeleteClient).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_password_reset_and_a_racing_client_delete_take_two_families_in_one_order() {
+    race_two_families(FamilyDeleter::ResetPassword, FamilyDeleter::DeleteClient).await;
 }

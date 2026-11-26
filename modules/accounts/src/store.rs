@@ -1078,11 +1078,13 @@ impl Store {
     /// family rows (expired ones included) plus the browser sessions that were still live.
     /// Not a session count.
     ///
-    /// Lock order: the player row first ([`Store::lock_player_row_tx`]), then its token
-    /// and session rows — the order every login and refresh takes them (FOR KEY SHARE on
-    /// the player, then their own rows). Holding the player row makes the two deletes one
-    /// cut: a login or refresh racing this either committed before the lock was granted
-    /// and both deletes see its rows, or waits on the lock and commits after, whole.
+    /// Lock order: the player row first ([`Store::lock_player_row_tx`]), then its families
+    /// in ascending id (the order every delete of several families takes them, so two such
+    /// deletes cannot deadlock), then their token and session rows — the order every login
+    /// and refresh takes them (FOR KEY SHARE on the player, then their own rows). Holding
+    /// the player row makes the two deletes one cut: a login or refresh racing this either
+    /// committed before the lock was granted and both deletes see its rows, or waits on the
+    /// lock and commits after, whole.
     pub async fn kill_player_families_tx(
         &self,
         conn: &mut PgConnection,
@@ -1091,6 +1093,12 @@ impl Store {
         if !self.lock_player_row_tx(conn, player_id).await? {
             return Ok(None);
         }
+        sqlx::query(
+            "SELECT 1 FROM accounts.token_families WHERE player_id = $1::uuid ORDER BY id FOR UPDATE",
+        )
+        .bind(player_id)
+        .execute(&mut *conn)
+        .await?;
         let families = sqlx::query("DELETE FROM accounts.token_families WHERE player_id = $1::uuid")
             .bind(player_id)
             .execute(&mut *conn)
@@ -1134,15 +1142,16 @@ impl Store {
         Ok(live as u64)
     }
 
-    /// The token families of a player that still grant access ([`granting_families`]):
-    /// those whose newest access token is unexpired or that hold an unexpired refresh
-    /// token. A family past both expiries grants nothing; the prune sweeps remove its rows.
+    /// The token families of a player that still grant access ([`granting_families`]), in
+    /// ascending id: those whose newest access token is unexpired or that hold an unexpired
+    /// refresh token. A family past both expiries grants nothing; the prune sweeps remove
+    /// its rows.
     pub async fn revocable_families_tx(
         &self,
         conn: &mut PgConnection,
         player_id: &str,
     ) -> Result<Vec<String>, sqlx::Error> {
-        sqlx::query_scalar(granting_families!("family_id::text", ""))
+        sqlx::query_scalar(granting_families!("family_id::text", "ORDER BY family_id"))
         .bind(player_id)
         .fetch_all(&mut *conn)
         .await
@@ -1154,7 +1163,8 @@ impl Store {
     /// sessions it revoked. The set it counts is the set it deletes, read after the player
     /// row lock ([`Store::lock_player_row_tx`], the lock order of
     /// [`Store::kill_player_families_tx`]), so no login or refresh can add a family between
-    /// the two.
+    /// the two. It deletes the families one at a time in ascending id, the family lock order
+    /// of [`Store::kill_player_families_tx`].
     pub async fn revoke_player_families_tx(
         &self,
         conn: &mut PgConnection,
@@ -1246,13 +1256,17 @@ impl Store {
 
     /// Deletes every token family that no longer grants access ([`granting_families`]) on
     /// the delivery tx: its newest access token expired and it holds no unexpired refresh
-    /// token.
+    /// token. Locks them in ascending id first, the order of
+    /// [`Store::kill_player_families_tx`].
     pub async fn prune_expired_families(&self, conn: &mut PgConnection) -> Result<u64, sqlx::Error> {
         let res = sqlx::query(
-            "DELETE FROM accounts.token_families f \
-              WHERE f.access_expires_at <= now() \
-                AND NOT EXISTS (SELECT 1 FROM accounts.refresh_tokens t \
-                                 WHERE t.family_id = f.id AND t.expires_at > now())",
+            "WITH doomed AS ( \
+               SELECT f.id FROM accounts.token_families f \
+                WHERE f.access_expires_at <= now() \
+                  AND NOT EXISTS (SELECT 1 FROM accounts.refresh_tokens t \
+                                   WHERE t.family_id = f.id AND t.expires_at > now()) \
+                ORDER BY f.id FOR UPDATE OF f) \
+             DELETE FROM accounts.token_families WHERE id IN (SELECT id FROM doomed)",
         )
         .execute(&mut *conn)
         .await?;

@@ -334,9 +334,9 @@ async fn refuse_stale_oauth_states(pool: &sqlx::PgPool, schema: &str) -> anyhow:
     Ok(())
 }
 
-/// Refuses a `{schema}.refresh_tokens` or `{schema}.sessions` that predates
-/// `{schema}.token_families`: `CREATE TABLE IF NOT EXISTS` keeps the old table, whose
-/// tokens would outlive a deleted family.
+/// Refuses a `{schema}.refresh_tokens` or `{schema}.sessions` without an ON DELETE
+/// CASCADE foreign key to `{schema}.token_families`: `CREATE TABLE IF NOT EXISTS` keeps
+/// an older table, whose tokens would outlive a deleted family.
 async fn refuse_unfamilied_tokens(pool: &sqlx::PgPool, schema: &str) -> anyhow::Result<()> {
     let families = format!("{schema}.token_families");
     for table in ["refresh_tokens", "sessions"] {
@@ -344,7 +344,7 @@ async fn refuse_unfamilied_tokens(pool: &sqlx::PgPool, schema: &str) -> anyhow::
         let linked: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM pg_constraint \
                              WHERE conrelid = $1::regclass AND contype = 'f' \
-                               AND confrelid = $2::regclass)",
+                               AND confrelid = $2::regclass AND confdeltype = 'c')",
         )
         .bind(&table)
         .bind(&families)
@@ -352,7 +352,7 @@ async fn refuse_unfamilied_tokens(pool: &sqlx::PgPool, schema: &str) -> anyhow::
         .await?;
         if !linked {
             anyhow::bail!(
-                "accounts: {table} has no foreign key to {families}. \
+                "accounts: {table} has no ON DELETE CASCADE foreign key to {families}. \
                  Remedy: DROP SCHEMA {schema} CASCADE; and reboot."
             );
         }
@@ -469,12 +469,15 @@ impl Service {
     /// `player.registered` append); a refresh rotates inside a family and never comes here,
     /// so it never stamps.
     ///
-    /// Lock order: the client row (FOR KEY SHARE, so a client delete waits for this
-    /// commit), then the player row (FOR KEY SHARE, taken by the family insert's FK),
-    /// BEFORE the identity row (the stamp's UPDATE), the same order
-    /// `delete_player_tx` locks them in (player, then its identities by cascade). The
-    /// stamp must stay after the first statement that references `players`, or a login
-    /// racing the same player's self-delete can deadlock.
+    /// Lock order: whatever the caller already holds (a registration or first external
+    /// login has inserted the player, identity and handle rows; an external login holds the
+    /// identity's advisory lock), then the client row (FOR KEY SHARE, so a client delete
+    /// waits for this commit), then the player row (FOR KEY SHARE, taken by the family
+    /// insert's FK), BEFORE the identity row (the stamp's UPDATE), the same order
+    /// `delete_player_tx` locks them in (player, then its identities by cascade). Taking
+    /// the client after the caller's rows makes no cycle: a client delete takes no player,
+    /// identity or handle lock. The stamp must stay after the first statement that
+    /// references `players`, or a login racing the same player's self-delete can deadlock.
     async fn issue_session_tx(
         &self,
         conn: &mut PgConnection,

@@ -549,6 +549,36 @@ async fn the_epic_start_refuses_an_oversized_client_before_the_lookup() {
     assert_eq!(states, 0, "a refused start writes no state");
 }
 
+/// A link start mints nothing, so it takes no client: a valid bearer without `client_id`
+/// is admitted and stores a link state carrying no client.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_link_start_needs_no_client_id() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let email = format!("epic-link-{}@test.local", suffix().to_lowercase());
+    let session = svc.register(email, "pw".into(), "EpicLink".into(), test_client()).await.unwrap();
+    let oauth = mock_epic(&pool, &format!("epic-link-{}", suffix())).await;
+    let base = serve(Arc::clone(&svc), oauth).await;
+
+    let resp = client()
+        .post(format!("{base}/accounts/epic/start"))
+        .header("Authorization", format!("Bearer {}", session.token))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let states: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT intent, client_id FROM accounts.oauth_states WHERE session_token = $1")
+            .bind(&session.token)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    cleanup_player(&pool, &session.player_id).await;
+
+    assert_eq!(status, 200, "a link start is admitted without a client");
+    assert_eq!(states, [("link".to_string(), None)], "one link state, with no client");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_epic_login_mints_for_the_client_that_started_it() {
     let Some(pool) = test_pool().await else { return };

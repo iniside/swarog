@@ -277,6 +277,72 @@ pub fn conformance_refresh_token_rejected(len: usize) -> bool {
     matches!(outcome, Err(error) if error.status == opsapi::Status::Unauthorized)
 }
 
+/// A login op that takes a `clientId`, for [`client_id_outcome`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ClientIdOp {
+    Register,
+    Login,
+    LoginFederated,
+    CreateGuest,
+}
+
+/// Drives `op` with a `len`-byte `client_id` and every other input valid, on a pool that
+/// CANNOT connect, answering its error. The client lookup needs that pool, so an unknown
+/// client cannot answer `invalid client` here: only the `client_id` cap can.
+pub(crate) fn client_id_outcome(op: ClientIdOp, len: usize) -> Result<(), opsapi::Error> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread runtime");
+    let svc = {
+        let _guard = rt.enter();
+        Service { open_registration: true, ..service_on(dead_pool()) }
+    };
+    let client_id = "c".repeat(len);
+    rt.block_on(async {
+        match op {
+            ClientIdOp::Register => svc
+                .register("cap@test.local".into(), "pw".into(), "Cap".into(), client_id)
+                .await
+                .map(drop),
+            ClientIdOp::Login => {
+                svc.login("cap@test.local".into(), "pw".into(), client_id).await.map(drop)
+            }
+            ClientIdOp::LoginFederated => {
+                svc.login_federated(GUEST.into(), "credential".into(), client_id).await.map(drop)
+            }
+            ClientIdOp::CreateGuest => svc.create_guest(client_id).await.map(drop),
+        }
+    })
+}
+
+fn client_id_rejected(op: ClientIdOp, len: usize) -> bool {
+    matches!(
+        client_id_outcome(op, len),
+        Err(error) if error.status == opsapi::Status::Unauthorized && error.msg == "invalid client"
+    )
+}
+
+#[doc(hidden)]
+pub fn conformance_register_client_id_rejected(len: usize) -> bool {
+    client_id_rejected(ClientIdOp::Register, len)
+}
+
+#[doc(hidden)]
+pub fn conformance_login_client_id_rejected(len: usize) -> bool {
+    client_id_rejected(ClientIdOp::Login, len)
+}
+
+#[doc(hidden)]
+pub fn conformance_login_federated_client_id_rejected(len: usize) -> bool {
+    client_id_rejected(ClientIdOp::LoginFederated, len)
+}
+
+#[doc(hidden)]
+pub fn conformance_create_guest_client_id_rejected(len: usize) -> bool {
+    client_id_rejected(ClientIdOp::CreateGuest, len)
+}
+
 /// A pool pointed at a port nothing listens on, with the acquire wait bounded so the
 /// at-cap case fails fast instead of sitting out sqlx's 30-second default.
 fn dead_pool() -> PgPool {

@@ -116,7 +116,8 @@ pub(crate) fn router(oauth: Arc<EpicOAuth>, svc: Arc<Service>, limiter: Arc<web:
 /// Builds the authorize URL. Called via fetch with the user's bearer token: if
 /// present and valid, this becomes a LINK flow bound to that player; otherwise a
 /// plain login flow for `client_id`. Returns JSON so the page can redirect (Go's
-/// `handleEpicStart`). A missing, over-cap or unknown `client_id` is 401 before any state.
+/// `handleEpicStart`). A login start with a missing, over-cap or unknown `client_id` is 401
+/// before any state; a link start mints nothing and ignores `client_id`.
 async fn handle_start(
     oauth: Arc<EpicOAuth>,
     svc: Arc<Service>,
@@ -124,14 +125,11 @@ async fn handle_start(
     headers: HeaderMap,
     client_id: &str,
 ) -> Response {
-    if !crate::client_id_within_cap(client_id) {
-        return invalid_client();
-    }
-    let mut intent = Intent::Login { client_id: client_id.to_string() };
+    let mut link = None;
     if let Some(tok) = bearer(&headers) {
         match svc.store.player_by_session(&tok).await {
             // Valid session ⇒ LINK flow bound to that player.
-            Ok(Some(_)) => intent = Intent::Link { session_token: tok },
+            Ok(Some(_)) => link = Some(Intent::Link { session_token: tok }),
             // No such session ⇒ genuine LOGIN flow.
             Ok(None) => {}
             // Store outage: DO NOT fold into "no session" — that would silently
@@ -148,14 +146,23 @@ async fn handle_start(
             }
         }
     }
-    match svc.store.client(client_id).await {
-        Ok(Some(_)) => {}
-        Ok(None) => return invalid_client(),
-        Err(err) => {
-            tracing::error!(%err, "epic start: client lookup failed");
-            return (StatusCode::SERVICE_UNAVAILABLE, "internal error, try again").into_response();
+    let intent = match link {
+        Some(link) => link,
+        None => {
+            if !crate::client_id_within_cap(client_id) {
+                return invalid_client();
+            }
+            match svc.store.client(client_id).await {
+                Ok(Some(_)) => Intent::Login { client_id: client_id.to_string() },
+                Ok(None) => return invalid_client(),
+                Err(err) => {
+                    tracing::error!(%err, "epic start: client lookup failed");
+                    return (StatusCode::SERVICE_UNAVAILABLE, "internal error, try again")
+                        .into_response();
+                }
+            }
         }
-    }
+    };
     let browser_binding = browser_binding(&jar);
     let state = match oauth.new_state(intent, browser_binding.clone()).await {
         Ok(s) => s,

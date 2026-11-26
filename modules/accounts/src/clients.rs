@@ -167,13 +167,29 @@ impl Store {
         Ok(row.is_some())
     }
 
-    /// Whether a row was deleted.
+    /// Whether a row was deleted. Lock order: the client row first, so no login adds a
+    /// family under it after the next lock, then its families in ascending id (the order of
+    /// [`Store::kill_player_families_tx`]), then the delete, whose cascade takes them.
     pub(crate) async fn delete_client(&self, client_id: &str) -> sqlx::Result<bool> {
-        let done = sqlx::query("DELETE FROM accounts.oidc_clients WHERE client_id = $1")
+        let mut tx = self.pool.begin().await?;
+        let found: Option<(i32,)> =
+            sqlx::query_as("SELECT 1 FROM accounts.oidc_clients WHERE client_id = $1 FOR UPDATE")
+                .bind(client_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if found.is_none() {
+            return Ok(false);
+        }
+        sqlx::query("SELECT 1 FROM accounts.token_families WHERE client_id = $1 ORDER BY id FOR UPDATE")
             .bind(client_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
-        Ok(done.rows_affected() == 1)
+        sqlx::query("DELETE FROM accounts.oidc_clients WHERE client_id = $1")
+            .bind(client_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 }
 

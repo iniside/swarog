@@ -58,20 +58,29 @@ async fn an_unknown_client_is_refused_on_every_login_op() {
     assert_invalid_client(login.unwrap_err(), "login");
 }
 
-#[tokio::test]
-async fn an_oversized_client_id_is_refused_like_an_unknown_one() {
-    let Some(pool) = test_pool().await else { return };
-    let (_ctx, svc) = wired(&pool).await;
-    let email = format!("bigcl-{}@test.local", suffix().to_lowercase());
-    let reg = svc.register(email.clone(), "pw".into(), "BigCl".into(), test_client()).await.unwrap();
-    let oversized = "c".repeat(accountsapi::MAX_CLIENT_ID_BYTES + 1);
-
-    let login = svc.login(email, "pw".into(), oversized.clone()).await;
-    let guest = svc.create_guest(oversized).await;
-    cleanup_player(&pool, &reg.player_id).await;
-
-    assert_invalid_client(login.unwrap_err(), "login");
-    assert_invalid_client(guest.unwrap_err(), "create_guest");
+/// Every login op's `clientId` cap at its edge, driven through the op on a pool that cannot
+/// connect: at exactly the cap the op gets past the guard to the store (Internal) or the
+/// provider registry (Unavailable); one byte over, the guard alone answers `invalid client`.
+#[test]
+fn every_login_op_admits_a_client_id_of_exactly_the_cap_and_refuses_one_byte_more() {
+    use crate::conformance::{self as c, client_id_outcome, ClientIdOp};
+    let cap = accountsapi::MAX_CLIENT_ID_BYTES;
+    let ops = [
+        (ClientIdOp::Register, c::conformance_register_client_id_rejected as fn(usize) -> bool),
+        (ClientIdOp::Login, c::conformance_login_client_id_rejected),
+        (ClientIdOp::LoginFederated, c::conformance_login_federated_client_id_rejected),
+        (ClientIdOp::CreateGuest, c::conformance_create_guest_client_id_rejected),
+    ];
+    for (op, rejected) in ops {
+        let at_cap = client_id_outcome(op, cap).expect_err("a dead pool mints nothing").status;
+        assert!(
+            matches!(at_cap, opsapi::Status::Internal | opsapi::Status::Unavailable),
+            "{op:?} at the cap: {at_cap:?}"
+        );
+        let over = client_id_outcome(op, cap + 1).expect_err("one byte over the cap");
+        assert_invalid_client(over, &format!("{op:?} over the cap"));
+        assert!(!rejected(cap) && rejected(cap + 1), "{op:?}: the conformance probe");
+    }
 }
 
 #[tokio::test]
@@ -203,9 +212,10 @@ async fn an_external_login_needs_only_an_existing_client() {
     session.expect("a client listing neither password nor guest still serves an external login");
 }
 
-/// Migrate refuses a `refresh_tokens` or `sessions` without a foreign key to its schema's
-/// `token_families`, naming the table and the drop remedy; a key to another table does
-/// not count, and a fully linked set, like the one migrate creates, passes.
+/// Migrate refuses a `refresh_tokens` or `sessions` without an ON DELETE CASCADE foreign
+/// key to its schema's `token_families`, naming the table and the drop remedy; a key to
+/// another table or one that does not cascade does not count, and a fully cascading set,
+/// like the one migrate creates, passes.
 #[tokio::test(flavor = "multi_thread")]
 async fn boot_refusal_fires_on_tokens_without_a_family_key() {
     let Some(pool) = test_pool().await else { return };
@@ -228,22 +238,31 @@ async fn boot_refusal_fires_on_tokens_without_a_family_key() {
         ))
         .await;
     }
-    let link = |table: &str| {
+    let link = |table: &str, on_delete: &str| {
         format!(
-            "ALTER TABLE {schema}.{table} \
-             ADD FOREIGN KEY (family_id) REFERENCES {schema}.token_families(id)"
+            "ALTER TABLE {schema}.{table} ADD CONSTRAINT family_key \
+             FOREIGN KEY (family_id) REFERENCES {schema}.token_families(id) {on_delete}"
         )
     };
     let no_refresh_key = crate::refuse_unfamilied_tokens(&pool, &schema).await;
-    exec(link("refresh_tokens")).await;
+    exec(link("refresh_tokens", "")).await;
+    let refresh_key_kept = crate::refuse_unfamilied_tokens(&pool, &schema).await;
+    exec(format!("ALTER TABLE {schema}.refresh_tokens DROP CONSTRAINT family_key")).await;
+    exec(link("refresh_tokens", "ON DELETE CASCADE")).await;
     let no_session_key = crate::refuse_unfamilied_tokens(&pool, &schema).await;
-    exec(link("sessions")).await;
+    exec(link("sessions", "ON DELETE CASCADE")).await;
     let linked = crate::refuse_unfamilied_tokens(&pool, &schema).await;
     exec(format!("DROP SCHEMA {schema} CASCADE")).await;
 
-    for (table, refused) in [("refresh_tokens", no_refresh_key), ("sessions", no_session_key)] {
+    for (table, refused) in [
+        ("refresh_tokens", no_refresh_key),
+        ("refresh_tokens", refresh_key_kept),
+        ("sessions", no_session_key),
+    ] {
         let err = refused.expect_err(table).to_string();
-        let names = format!("{schema}.{table} has no foreign key to {schema}.token_families");
+        let names = format!(
+            "{schema}.{table} has no ON DELETE CASCADE foreign key to {schema}.token_families"
+        );
         assert!(err.contains(&names), "{err}");
         assert!(err.contains(&format!("DROP SCHEMA {schema} CASCADE;")), "{err}");
     }
