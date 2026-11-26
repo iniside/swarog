@@ -31,7 +31,7 @@ _None._
 
 - [ ] **The writer cap gate is a hand list**
   The per-field cases are a hand list in tools/conformance/src/policy.rs, so a new form field
-  without a domain cap passes (only the generic 4096-byte value cap bounds it). Fix: derive the
+  without a domain cap passes. Fix: derive the
   expected set from the module manifests' form fields.
   Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, owner decision 11 (2026-11-26).
 
