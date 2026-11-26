@@ -91,6 +91,12 @@ pub(crate) fn grant_for_provider(provider: &str) -> Option<&'static str> {
     }
 }
 
+/// What [`Store::client_allows_tx`] found a mint may issue beyond its access token.
+pub(crate) struct MintGrants {
+    /// The client lists `refresh_token`, so the mint also issues a refresh token.
+    pub(crate) refresh_token: bool,
+}
+
 impl Store {
     /// Every client, newest first.
     pub(crate) async fn clients(&self) -> sqlx::Result<Vec<ClientRow>> {
@@ -128,24 +134,27 @@ impl Store {
         Ok(client_id)
     }
 
-    /// Whether `client_id` names a client listing `grant` (any client for `None`), taking
-    /// its row FOR KEY SHARE on the caller's tx so a delete of that client waits for the mint.
+    /// What a mint for `client_id` may issue: `None` unless it names a client listing
+    /// `grant` (any client for `None`), else whether that client also lists `refresh_token`,
+    /// read in the same statement. Takes the row FOR KEY SHARE on the caller's tx, so a
+    /// delete of that client waits for the mint.
     pub(crate) async fn client_allows_tx(
         &self,
         conn: &mut PgConnection,
         client_id: &str,
         grant: Option<&str>,
-    ) -> sqlx::Result<bool> {
-        let row: Option<(i32,)> = sqlx::query_as(
-            "SELECT 1 FROM accounts.oidc_clients \
+    ) -> sqlx::Result<Option<MintGrants>> {
+        let row: Option<(bool,)> = sqlx::query_as(
+            "SELECT $3 = ANY(grant_types) FROM accounts.oidc_clients \
               WHERE client_id = $1 AND ($2::text IS NULL OR $2 = ANY(grant_types)) \
                 FOR KEY SHARE",
         )
         .bind(client_id)
         .bind(grant)
+        .bind(grant_types::REFRESH_TOKEN)
         .fetch_optional(&mut *conn)
         .await?;
-        Ok(row.is_some())
+        Ok(row.map(|(refresh_token,)| MintGrants { refresh_token }))
     }
 
     /// Whether the client of family `family_id` lists `grant`.

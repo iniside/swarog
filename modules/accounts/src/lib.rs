@@ -460,7 +460,10 @@ impl Service {
 
     /// Mints one login for `client_id`: a new token FAMILY and the first access token
     /// inside it, on the caller's transaction, and stamps the identity `via` names as last
-    /// used. The client must exist and list the grant [`clients::grant_for_provider`]
+    /// used. The family's first refresh token is minted only when the client lists
+    /// `refresh_token`; otherwise the answer's `refresh_token` is empty, the family holds no
+    /// refresh row, and it grants only until its access token expires. The client must
+    /// exist and list the grant [`clients::grant_for_provider`]
     /// names, else nothing is minted and the answer is [`invalid_client`]; every caller has
     /// already capped `client_id` at its op's entry ([`client_id_within_cap`]). With
     /// `via.secret_hash` (a password sign-in) the identity must still store the hash that
@@ -487,24 +490,29 @@ impl Service {
         token: String,
     ) -> Result<accountsapi::Session, Error> {
         let MintedVia { provider, subject, secret_hash } = via;
-        if !self
+        let Some(grants) = self
             .store
             .client_allows_tx(conn, client_id, clients::grant_for_provider(provider))
             .await
             .map_err(internal)?
-        {
+        else {
             return Err(invalid_client());
-        }
+        };
         let family_id = self
             .store
             .insert_family_tx(conn, &p.id, client_id)
             .await
             .map_err(internal)?;
-        let refresh_token = store::new_token();
-        self.store
-            .insert_refresh_root_tx(conn, &refresh_token, &p.id, &family_id)
-            .await
-            .map_err(internal)?;
+        let refresh_token = if grants.refresh_token {
+            let refresh_token = store::new_token();
+            self.store
+                .insert_refresh_root_tx(conn, &refresh_token, &p.id, &family_id)
+                .await
+                .map_err(internal)?;
+            refresh_token
+        } else {
+            String::new()
+        };
         self.store
             .insert_session_tx(conn, &p.id, &token, &family_id)
             .await

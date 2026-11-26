@@ -122,7 +122,9 @@ pub struct Session {
     pub token: String,
     /// The single-use refresh token: presenting it to [`Auth::refresh`] consumes it
     /// and yields its successor. It outlives `token` and belongs to a family whose
-    /// expiry a rotation never extends.
+    /// expiry a rotation never extends. Empty when the client the login named does not
+    /// hold the `refresh_token` grant ([`grant_types::REFRESH_TOKEN`]): that login is
+    /// over once `token` expires.
     pub refresh_token: String,
     /// The lifetime of `token` — far shorter than the refresh token's, which is the
     /// point of the split.
@@ -137,8 +139,10 @@ pub struct GuestSession {
     pub player_id: String,
     pub token: String,
     /// The device's refresh token, rotated through [`Auth::refresh`] exactly like a
-    /// [`Session`]'s. It matters most here: a guest is the longest-lived client class
-    /// and the only one that cannot re-authenticate from an external identity provider.
+    /// [`Session`]'s, and empty under the same rule: when the client does not hold the
+    /// `refresh_token` grant. It matters most here: a guest is the longest-lived client
+    /// class and the only one that cannot re-authenticate from an external identity
+    /// provider; without it the device logs back in with `device_secret`.
     pub refresh_token: String,
     /// The lifetime of `token`, not of the refresh family behind it.
     pub access_expires_in_secs: i64,

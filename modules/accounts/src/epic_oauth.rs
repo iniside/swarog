@@ -236,7 +236,8 @@ async fn complete(svc: &Service, outcome: Outcome) -> Response {
 /// player.registered on first sight), mint a session for the client that started the
 /// login, hand BOTH tokens back via the URL fragment for the page to pick up — the
 /// access token alone would strand the browser at its 60-minute expiry with nothing to
-/// renew from. A client deleted since the start fails the mint.
+/// renew from. `refresh` is empty when that client lacks the `refresh_token` grant.
+/// A client deleted since the start fails the mint.
 async fn login(svc: &Service, subject: &str, client_id: &str) -> Response {
     let session = match svc
         .external_login(SPEC.name, subject, &SPEC.display_name(subject), None, client_id)

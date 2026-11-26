@@ -372,6 +372,74 @@ async fn a_guest_only_client_serves_guests_but_not_passwords() {
     assert_eq!(e.msg, "invalid client");
 }
 
+/// Refresh rows and token families of `player_id`.
+async fn token_rows(pool: &PgPool, player_id: &str) -> (i64, Vec<String>) {
+    let refresh: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM accounts.refresh_tokens WHERE player_id = $1::uuid")
+            .bind(player_id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    let families: Vec<String> =
+        sqlx::query_scalar("SELECT id::text FROM accounts.token_families WHERE player_id = $1::uuid")
+            .bind(player_id)
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    (refresh, families)
+}
+
+/// A client without the `refresh_token` grant gets an empty refresh token and no refresh
+/// row, so its family is pruned once its access token's expiry has passed (set in the past
+/// here, no clock), and `refresh("")` is a clean 401. A client holding the grant still gets
+/// a refresh token that rotates.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_without_the_refresh_grant_mints_no_refresh_token() {
+    use accountsapi::grant_types::{GUEST as GUEST_GRANT, REFRESH_TOKEN};
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired_with_guest(&pool).await;
+    let bare = insert_client(&pool, &[GUEST_GRANT]).await;
+    let refreshing = insert_client(&pool, &[GUEST_GRANT, REFRESH_TOKEN]).await;
+
+    let bare_guest = svc.create_guest(bare.clone()).await.unwrap();
+    let (bare_refresh_rows, bare_families) = token_rows(&pool, &bare_guest.player_id).await;
+    sqlx::query(
+        "UPDATE accounts.token_families SET access_expires_at = now() - interval '1 minute' \
+          WHERE player_id = $1::uuid",
+    )
+    .bind(&bare_guest.player_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    svc.store.prune_expired_token_rows(&mut tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let (_, families_after_prune) = token_rows(&pool, &bare_guest.player_id).await;
+    let empty_refresh = svc.refresh(String::new()).await;
+
+    let held = svc.create_guest(refreshing.clone()).await.unwrap();
+    let (held_refresh_rows, _) = token_rows(&pool, &held.player_id).await;
+    let rotated = svc.refresh(held.refresh_token.clone()).await.map(|_| ());
+
+    cleanup_player(&pool, &bare_guest.player_id).await;
+    cleanup_player(&pool, &held.player_id).await;
+    delete_client(&pool, &bare).await;
+    delete_client(&pool, &refreshing).await;
+
+    assert_eq!(bare_guest.refresh_token, "", "no refresh_token grant, no refresh token");
+    assert_eq!(bare_refresh_rows, 0, "no refresh_token grant, no refresh row");
+    assert_eq!(bare_families.len(), 1, "the login still keeps its family");
+    assert!(
+        families_after_prune.is_empty(),
+        "a family with no refresh row is pruned once its access expires"
+    );
+    let e = empty_refresh.unwrap_err();
+    assert_eq!(e.status, opsapi::Status::Unauthorized, "refresh of an empty token: {e:?}");
+    assert!(!held.refresh_token.is_empty(), "a client with the grant still gets a refresh token");
+    assert_eq!(held_refresh_rows, 1);
+    rotated.unwrap();
+}
+
 /// A client without the guest grant mints no guest and logs no guest back in; an
 /// unknown client is refused the guest login too.
 #[tokio::test(flavor = "multi_thread")]
