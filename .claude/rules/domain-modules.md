@@ -19,9 +19,12 @@ Per-module mechanics live in each `modules/<name>/src/lib.rs` header and the
   30s grace window kills that family only, never the player's other devices. A guest
   gaining its first non-guest identity emits durable `player.promoted`. The gateway's
   session verifier resolves `accountsapi::Sessions` — a process hosting a gateway
-  without the accounts capability FAILS STARTUP unless `ACCOUNTS_DEV_AUTH=1` (dev
-  verifier, loud warn); `ACCOUNTS_DEV_AUTH` is explicit-only (default OFF) and the
-  `devctl` and split-proof development profiles set it. `wallet` grants starter
+  without the accounts capability FAILS STARTUP unless `GATEWAY_DEV_VERIFIER=1` (dev
+  verifier, loud warn); `GATEWAY_DEV_VERIFIER` is explicit-only (default OFF); the
+  split proof never sets it. The hosted browser login lives under `/accounts/oidc`
+  (served by accounts); its cookies are `Secure` unless `ACCOUNTS_COOKIE_SECURE` is
+  `0`/`false`/`off` (dev/proof opt-out, loud warn), and password self-registration
+  stays behind `ACCOUNTS_OPEN_REGISTRATION` (default OFF). `wallet` grants starter
   currency on `player.promoted` (and non-guest `player.registered`) when configured.
   Self-delete: `begin` mints/upserts a confirmation ticket (a repeat returns the same
   live one); `delete` consumes it and in one tx revokes sessions, reserves the handle
@@ -178,7 +181,7 @@ Per-module mechanics live in each `modules/<name>/src/lib.rs` header and the
   row of `docs/roadmap/feature-tracker.md`.
 - **gateway** — Local vs Remote is decided purely by slot presence; peer addresses
   are injected by `cmd/*` via `remote::Stub` → `opsapi::PEER_SLOT` contributions and
-  the module never reads env. Passthrough origins (`/admin`, `/accounts/epic`) are
+  the module never reads env. Passthrough origins (`/admin`, `/accounts/epic`, `/accounts/oidc`) are
   passed in by `cmd/gateway-svc` via `Gateway::with_passthrough`. A `/push` hub is
   just a topic-prefix label (no per-hub subscription or authz); a client may `invoke`
   any `#[http]`-bound player op over the socket under the same API-key policy and

@@ -1,7 +1,7 @@
 //! The front door's HTTP reverse-proxy passthrough (port of Go's
 //! `gateway/httpproxy.go`). Some public surfaces are HTML/browser flows, NOT typed
-//! operations: the admin portal (`/admin`) and the Epic web OAuth redirect
-//! (`/accounts/epic/*`). They are served by a DIFFERENT process, so the front door
+//! operations: the admin portal (`/admin`), the Epic web OAuth redirect
+//! (`/accounts/epic/*`) and the hosted login pages (`/accounts/oidc/*`). They are served by a DIFFERENT process, so the front door
 //! reverse-proxies them to that origin instead of dispatching them as ops.
 //!
 //! A request that matches no operation (the fallback's 404 path) is offered to this

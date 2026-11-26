@@ -1,6 +1,6 @@
 # Conformance
 
-Last updated: 2026-11-24
+Last updated: 2026-11-26
 
 ## In progress
 
@@ -28,6 +28,12 @@ _None._
   CONFORMANCE-02. The check compares `opaque.name == written` (tools/conformance/src/input_inventory.rs:354-356),
   so a foreign type imported under the bare name `Identity` bypasses the inventory.
   Source: docs/plans/2026-09-10-1917-account-deletion-purge-plan.md:635 (2026-09-10).
+
+- [ ] **The writer cap gate is a hand list**
+  The per-field cases are a hand list in tools/conformance/src/policy.rs, so a new form field
+  without a domain cap passes (only the generic 4096-byte value cap bounds it). Fix: derive the
+  expected set from the module manifests' form fields.
+  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, owner decision 11 (2026-11-26).
 
 ### Known limits (admin-control-plane-redesign step 25)
 

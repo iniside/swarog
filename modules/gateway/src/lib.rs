@@ -399,7 +399,7 @@ impl Gateway {
     }
 
     /// Adds one HTTP reverse-proxy passthrough: an unmatched request under `prefix`
-    /// (`/admin`, `/accounts/epic`) is proxied to `origin` (a bare `host:port` or a
+    /// (`/admin`, `/accounts/epic`, `/accounts/oidc`) is proxied to `origin` (a bare `host:port` or a
     /// full URL) instead of 404-ing. Builder-style + accumulating, so a composition
     /// root can wire several. `origin` is resolved by `cmd/*` (typically from env via
     /// its `env_addr` helper); a blank origin is dropped by [`proxy::ProxyTable`], so
@@ -657,7 +657,7 @@ pub struct FrontDoor {
     /// topologies, so nothing here is conditional on how the process was composed.
     push: Arc<PushHub>,
     /// The HTTP reverse-proxy passthrough for non-operation routes (`/admin`,
-    /// `/accounts/epic`), built from the routes the composition root wired via
+    /// `/accounts/epic`, `/accounts/oidc`), built from the routes the composition root wired via
     /// [`Gateway::with_passthrough`]. Empty when nothing is configured, so an
     /// unmatched route stays a 404 (the prior behaviour).
     proxy: proxy::ProxyTable,
@@ -1930,8 +1930,8 @@ async fn handle(front: Arc<FrontDoor>, peer: Option<SocketAddr>, req: Request) -
     let table = front.table();
 
     // (1) Match. A non-operation route is offered to the HTTP passthrough (Go's
-    // reverse proxy: `/admin`, `/accounts/epic` are HTML/browser flows served by
-    // another process) — the body is still unconsumed, so the proxy streams it. When
+    // reverse proxy: `/admin`, `/accounts/epic`, `/accounts/oidc` are HTML/browser flows
+    // served by another process) — the body is still unconsumed, so the proxy streams it. When
     // no prefix is configured the passthrough returns 404, exactly as before. A proxied
     // request is labelled with its prefix pattern (e.g. `/admin/*`) so `metrics` records
     // it under one bounded series rather than the fixed `"unmatched"`.

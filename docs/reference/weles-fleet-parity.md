@@ -126,7 +126,7 @@ Both manifests fold three unrelated concerns into one untagged bag of env pairs
 
 1. **Topology wiring** — `PORT`, `EDGE_ADDR`, peer `*_EDGE_ADDR`/`*_HTTP_ADDR`,
    `PLAYER_EDGE_ADDR` (structural, identical in any deployment flavor).
-2. **Dev-mode seeds / opt-ins** — `ACCOUNTS_DEV_AUTH`, `APIKEYS_DEV_SEED`,
+2. **Dev-mode seeds / opt-ins** — `GATEWAY_DEV_VERIFIER`, `APIKEYS_DEV_SEED`,
    `INVENTORY_DEV_GRANT`, `ADMIN_COOKIE_SECURE=0` (development-only; a real
    deployment must NOT ship these).
 3. **A security knob** — `TRUSTED_PROXY_CIDRS` (a production concern living in

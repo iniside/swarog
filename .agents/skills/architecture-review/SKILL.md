@@ -83,7 +83,7 @@ semantics = new versioned id), a `StartPosition` chosen without thought
 
 Any new dev-only convenience (seed data, dev auth, open portal) must default
 OFF and require an explicit env opt-in with a loud warning — the pattern of
-`ACCOUNTS_DEV_AUTH` / `APIKEYS_DEV_SEED` / `ADMIN_OPEN`. Flag defaults-on dev
+`GATEWAY_DEV_VERIFIER` / `APIKEYS_DEV_SEED` / `ADMIN_OPEN`. Flag defaults-on dev
 behavior.
 
 ## 9. House rules

@@ -36,8 +36,8 @@
 //!     shape LB already handles — and must NOT be widened into the 404.
 //!
 //!   A client may treat 404 as fatal-and-final; it may not treat `[]` that way.
-//! * **`kind` is a parameter** because the gateway needs eight addresses of TWO
-//!   classes: six edge peers plus two HTTP passthrough origins. `accounts` is
+//! * **`kind` is a parameter** because the gateway needs fourteen addresses of TWO
+//!   classes: twelve edge peers plus two HTTP passthrough origins. `accounts` is
 //!   both at once (edge 9003, http 8084) and `admin` has `edge_port: None` and
 //!   is only ever an origin. A verb keyed on `provider` alone structurally
 //!   could not answer. It is [`crate::manifest::AddrKind`] itself on the wire,

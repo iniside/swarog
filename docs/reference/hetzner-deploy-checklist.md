@@ -36,7 +36,7 @@ Companion plan: `docs/plans/2026-07-10-2314-admin-hardening-plan.md`.
       and no `PLAYER_TLS_*` it serves a dev certificate and logs a warning.
 - [ ] `ADMIN_HTTP_ADDR=<admin-svc host:port>` (the `/admin` passthrough origin;
       `cmd/gateway-svc` only — `cmd/server` does not read it)
-- [ ] Dev knobs NOT set: no `APIKEYS_DEV_ALLOW`, no `ACCOUNTS_DEV_AUTH` unless
+- [ ] Dev knobs NOT set: no `APIKEYS_DEV_ALLOW`, no `GATEWAY_DEV_VERIFIER` unless
       deliberately on.
 
 ## Admin process (cmd/admin-svc or monolith) env

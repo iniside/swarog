@@ -23,6 +23,13 @@ _None._
   2026-07-11). Typed edge codes (audit-remediation step 16) allow re-pointing it.
   Source: docs/plans/2026-07-13-1415-audit-remediation-plan.md:204.
 
+### Known limits (accounts-browser-login step 7)
+
+- [ ] **Sign-in bucket checks (BR) run on the split only**
+  The monolith's shared sign-in bucket is proved only by the accounts unit test
+  `the_sign_in_bucket_runs_the_published_burst_and_refill_rate`.
+  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, Step 7 (2026-11-26).
+
 ### Known limits (admin-second-pass step 15)
 
 - [ ] **SH2 and SH2m assert the Fire now that step 15 implemented is refused**

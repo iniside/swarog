@@ -1,6 +1,6 @@
 # Accounts
 
-Last updated: 2026-11-25
+Last updated: 2026-11-26
 
 ## In progress
 
@@ -28,3 +28,31 @@ _None._
   ACCOUNTS-14. modules/accounts/src/lib.rs:562 sets `from_provider: GUEST`; only
   guest accounts are promotable today. Source: modules/accounts/src/lib.rs:562
   (2026-08-29); docs/roadmap/feature-tracker.md:150 @ fd797b3a.
+- [ ] **Open registration (1b)**
+  `ACCOUNTS_OPEN_REGISTRATION` stays (default OFF) until this lands.
+  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, owner decision 1 (2026-11-25).
+- [ ] **Google server-side OIDC redirect flow on the hosted login page**
+  The next phase after the accounts-browser-login plan.
+  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, owner decision 4 (2026-11-25).
+- [ ] **UILayout mockup of the hosted login page**
+  Add a `UILayout/` mockup that roughly matches the shipped page, then port the page to it.
+  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, owner decision 8 (2026-11-25).
+- [ ] **No single browser-session revoke for operators**
+  An operator cannot end one browser session; only Revoke all ends them.
+  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, owner decision 11 (2026-11-26).
+
+### Known limits (accounts-browser-login step 8)
+
+- [ ] **`login_submit` deletes the old browser session outside the transaction**
+  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
+- [ ] **`browser_sign_in` and `login_submit` delete then create without one transaction**
+  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
+- [ ] **The old `/accounts/epic` binding cookie can coexist for up to 10 minutes**
+  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
+- [ ] **The boot refusal on an old `oauth_states` table has no test**
+  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).
+- [ ] **Sign-in limiter test helpers repeat 5.0/20**
+  modules/accounts/src/tests.rs:1850, modules/accounts/src/tests/hosted_login.rs:24 and
+  modules/accounts/src/tests/epic_browser.rs:60 should use `accountsapi::LOGIN_LIMIT_PER_SEC` and
+  `accountsapi::LOGIN_LIMIT_BURST`.
+  Source: docs/plans/2026-11-24-2128-accounts-browser-login-plan.md, deferred review leftover (2026-11-26).

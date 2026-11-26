@@ -29,7 +29,7 @@ Walk the hops in order; the failure is at the first broken one:
    envelope field on player-QUIC); 403 = key policy denies the wire method.
    Split-proof uses `dev-key-client`/`dev-key-server` (require
    `APIKEYS_DEV_SEED=1`). Session verifier needs the accounts capability (or
-   `ACCOUNTS_DEV_AUTH=1`).
+   `GATEWAY_DEV_VERIFIER=1`).
 3. **Registry key match?** Consumer `require`s
    `registry::key(provider, snake_trait)`; the stub must provide under the SAME
    key. A key mismatch = works in monolith (local provider registered under the
@@ -81,7 +81,7 @@ did the event row get appended? Did the checkpoint advance?
 - `app::validate_requires` fail = a declared capability has no provider AND no
   stub in that process's module set → add the stub or fix `requires()`.
 - Gateway process without accounts capability fails unless
-  `ACCOUNTS_DEV_AUTH=1`; without apikeys capability unless `APIKEYS_DEV_ALLOW=1`;
+  `GATEWAY_DEV_VERIFIER=1`; without apikeys capability unless `APIKEYS_DEV_ALLOW=1`;
   these are deliberate fail-closed gates — set the env or host the capability,
   don't weaken the gate. Admin no longer accepts `ADMIN_USER`/`ADMIN_PASS`: seed
   a user through `adminctl`; zero-user boot warns, while `ADMIN_OPEN=1` is the
