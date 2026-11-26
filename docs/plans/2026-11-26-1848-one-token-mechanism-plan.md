@@ -188,6 +188,9 @@ Callers and generated surfaces:
   - `refresh_token` for refresh.
   An unknown client, an oversized id or a grant the client does not list answers one
   `Unauthorized("invalid client")`.
+  A mint for a client that does not list `refresh_token` issues no refresh token (standard OAuth;
+  owner ruling 2026-11-26): `Session.refresh_token` is empty and the family holds no refresh row, so it
+  grants only while `access_expires_at > now()`.
   The Epic browser login: `/accounts/epic/start` takes a `client_id` query parameter, stored on the
   `oauth_states` row, and the callback mints for that client after checking that it still exists. This follows
   the ruling that every family has a client.
@@ -304,7 +307,10 @@ over-built").
 - epic_oauth.rs: `/accounts/epic/start` takes `client_id`, stored on `oauth_states`, checked at the
   callback (D3);
 - conformance.rs and tools/conformance/src/policy.rs: four `clientId` rows capped by
-  `MAX_CLIENT_ID_BYTES`.
+  `MAX_CLIENT_ID_BYTES`;
+- `issue_session_tx` writes no refresh row and returns an empty `refresh_token` when the client does
+  not list `refresh_token`; the `Session.refresh_token` doc in api/accounts/api/src/lib.rs says so (D3,
+  owner ruling 2026-11-26, added in review of Step 2).
 Tests: one `login_with_dev_client` style helper; point the ~175 accounts test call sites at it instead of
 spelling the id each time.
 (b) Families must carry a client before a JWT can name it. Opaque sessions keep minting and verifying in
@@ -313,6 +319,8 @@ this step, so accounts and the gateway still work.
 - an unknown client, an oversized id and a grant the client lacks each give 401;
 - a guest-only client can `create_guest` and log back in with `provider="guest"`, but not `password`;
 - refresh is refused once the client drops `refresh_token`;
+- a mint for a client without `refresh_token` returns an empty refresh token, writes no refresh row, and
+  its family is pruned once its access expires;
 - the Epic start without `client_id` is refused;
 - a revoked family's row is gone and `online_until` no longer counts it.
 (d) core-implementer, opus, high. Tell it that `cargo fmt` is not safe and that the workspace does not
