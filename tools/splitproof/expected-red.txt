@@ -24,6 +24,7 @@ PH11m | guest=201 ack=true grant=404 inbox_row=false result=Ok(Object {"err": St
 FR8m | code=404 | reads the retired /admin/friends page; re-pointed in plan step 25h4
 GR5m | code=404 | reads the retired /admin/groups page; re-pointed in 25h4
 PY7m | quiesced=true && grant=404 && create={"status":"Ok" && state=Some(("party", && cleanup=Ok | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
+SH2m | panel_refused=[] && menu=200 && menu_refused=[] && post=303 | expects Fire now refused as not implemented, but admin-second-pass step 15 implemented it (2026-11-24); re-point SH2 at the implemented Fire now (owner 2026-11-26)
 
 # split
 AD3a | code=404 | reads the retired /admin/characters page; re-pointed once the admin panel port is complete (owner 2026-11-21)
@@ -49,3 +50,4 @@ PH11 | guest=201 ack=true grant=404 inbox_row=false result=Ok(Object {"err": Str
 FR8 | code=404 | reads the retired /admin/friends page; re-pointed in plan step 25h4
 GR5 | code=404 | reads the retired /admin/groups page; re-pointed in 25h4
 PY7 | quiesced=true && grant=404 && create={"status":"Ok" && state=Some(("party", && cleanup=Ok | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
+SH2 | panel_refused=[] && menu=200 && menu_refused=[] && post=303 | expects Fire now refused as not implemented, but admin-second-pass step 15 implemented it (2026-11-24); re-point SH2 at the implemented Fire now (owner 2026-11-26)

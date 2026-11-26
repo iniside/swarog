@@ -1,6 +1,6 @@
 # Splitproof
 
-Last updated: 2026-11-24
+Last updated: 2026-11-26
 
 ## In progress
 
@@ -22,6 +22,15 @@ _None._
   SPLITPROOF-02. The `Err` arm does `e.to_string().contains(want)` (tools/splitproof/src/main.rs:7109,
   2026-07-11). Typed edge codes (audit-remediation step 16) allow re-pointing it.
   Source: docs/plans/2026-07-13-1415-audit-remediation-plan.md:204.
+
+### Known limits (admin-second-pass step 15)
+
+- [ ] **SH2 and SH2m assert the Fire now that step 15 implemented is refused**
+  `[SH2]` (`tools/splitproof/src/scheduler_admin_checks.rs:118-145`) expects the Schedules row
+  menu's Fire now to be drawn as not implemented and a direct POST to be refused by admission;
+  since admin-second-pass step 15 it fires (post=303, the schedule's fire time moves). Both
+  are listed in `tools/splitproof/expected-red.txt`. Fix: assert the implemented Fire now
+  (fire recorded, Edit/Delete/Schedule tool still absent) and drop the two entries.
 
 ### Known limits (admin-control-plane-redesign step 25)
 
