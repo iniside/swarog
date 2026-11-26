@@ -81,6 +81,13 @@ _None._
   `accounts_signing_env_in_both_topologies`, weles/master/src/manifest_tests.rs. oidc-signing-keys Step 1
   took three review-fix rounds over them. Check whether generating the copies from one source (or fewer
   copies) replaces the pins. Related: PROCESSCTL-09.
+  The monolith port 8080 is still spelled on its own in three places, each tied only by a test, if at all:
+  - `PROOF_ACCOUNTS_ISSUER_MONOLITH` (tools/processctl/src/fleet.rs:144), pinned against `PORT` by
+    `accounts_signing_env_in_both_topologies`;
+  - `accountsapi::default_front_origin!()`;
+  - core/app's private `DEFAULT_LISTEN_ADDR` (core/app/src/lib.rs:27), which nothing ties to the issuer
+    default.
+  The last one was found by the proof-auditor of oidc-signing-keys Step 2 (2026-11-26).
   Source: owner, after oidc-signing-keys Step 1 ("cos tu jest przekombinowane, zbadamy to pozniej", 2026-11-26).
 
 ### Known limits (admin-control-plane-redesign step 15)

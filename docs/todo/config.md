@@ -1,6 +1,6 @@
 # Config
 
-Last updated: 2026-11-24
+Last updated: 2026-11-26
 
 ## In progress
 
@@ -20,6 +20,14 @@ _None._
   it; the survey's "clean some namespaces only" is narrower than it was
   (docs/research/2026-07-14-2058-timing-sensitive-tests-survey.md:105,
   2026-07-14). Low severity.
+
+- [ ] **archcheck fails on config's DDL**
+  `cargo run -p archcheck` is red at HEAD with six rule-22 findings in `modules/config/src/lib.rs`:
+  - :114, `CREATE SCHEMA` text outside a `*_DDL` const (`SCHEMA_DDL_TEMPLATE` is not named `*_DDL`);
+  - :115, :123 and :129, `CREATE TABLE` text;
+  - :139 and :159, `CREATE OR REPLACE FUNCTION` text.
+  The file was last changed in admin-second-pass (2026-11-24). Found while verifying the
+  oidc-signing-keys Step 2 review fix (309d8708, 2026-11-26).
 
 ### Known limits (admin-control-plane-redesign step 23)
 
