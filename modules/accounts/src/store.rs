@@ -370,12 +370,19 @@ macro_rules! access_exp_leeway_secs {
 const _: () = assert!(access_exp_leeway_secs!() == accountsapi::ACCESS_EXP_LEEWAY.as_secs());
 
 /// SQL that holds while the newest access token of a family whose `access_expires_at` is
-/// `$col` can still verify: every verifier accepts a token until its `exp` plus
-/// [`accountsapi::ACCESS_EXP_LEEWAY`]. Revoke all and the prune read this one predicate, so a
-/// family is neither skipped by the one nor deleted by the other while its token verifies.
+/// `$col` can still verify. Every verifier floors its clock to whole seconds and accepts a
+/// token while that second is at most `exp` plus [`accountsapi::ACCESS_EXP_LEEWAY`]; for the
+/// whole-second `exp` [`Store::mint_access_tx`] stores, that is until `exp` plus the leeway
+/// plus one second. Revoke all and the prune read this one predicate, so a family is neither
+/// skipped by the one nor deleted by the other while its token verifies.
 macro_rules! access_verifies {
     ($col:literal) => {
-        concat!($col, " > now() - interval '", access_exp_leeway_secs!(), " seconds'")
+        concat!(
+            $col,
+            " > now() - interval '",
+            access_exp_leeway_secs!(),
+            " seconds' - interval '1 second'"
+        )
     };
 }
 
@@ -1099,12 +1106,21 @@ impl Store {
         Ok(deleted.rows_affected() > 0)
     }
 
-    /// Writes one `token_revocations` row on the caller's tx. `revoked_at` is
-    /// `clock_timestamp()`, read after the locks the caller's revoke holds, so every mint
-    /// that committed before them has `iat <= revoked_at` rounded up to the second (the
-    /// verifiers' rule); and at least one second past the
-    /// subject's latest live cut-off, because a mint after that cut-off carries an `iat` one
-    /// second past it ([`Store::mint_access_tx`]) and must fall under this one.
+    /// Writes one `token_revocations` row on the caller's tx, after the locks the caller's
+    /// revoke holds and before it deletes the families the row covers. A player or client row
+    /// refuses that subject's tokens with `iat <= revoked_at` rounded up to the second (the
+    /// verifiers' rule), so every token minted before those locks must fall under it, and
+    /// `revoked_at` is the latest of:
+    /// - `clock_timestamp()`;
+    /// - the newest `iat` any family of the subject was minted with, its `access_expires_at`
+    ///   less [`ACCESS_TTL_MINUTES`]: [`Store::mint_access_tx`] raises an `iat` past the
+    ///   live cut-offs of BOTH kinds, so it can lead the clock, and a row of the other kind
+    ///   stamped by the clock alone would let that token through;
+    /// - one second past the subject's latest live cut-off of the same kind, the `iat` a mint
+    ///   after that cut-off carries.
+    ///
+    /// A family row refuses every token of its family whatever its `iat`, so its stamp
+    /// orders nothing.
     pub(crate) async fn insert_revocation_tx(
         &self,
         conn: &mut PgConnection,
@@ -1124,13 +1140,17 @@ impl Store {
                               (SELECT max(r.revoked_at) + interval '1 second' \
                                  FROM accounts.token_revocations r \
                                 WHERE (r.player_id = $2::uuid OR r.client_id = $3) \
-                                  AND r.expires_at > now()) \
+                                  AND r.expires_at > now()), \
+                              (SELECT max(f.access_expires_at) - make_interval(mins => $5) \
+                                 FROM accounts.token_families f \
+                                WHERE f.player_id = $2::uuid OR f.client_id = $3) \
                             ) AS t) stamp",
         )
         .bind(family)
         .bind(player)
         .bind(client)
         .bind(REVOCATION_LIFETIME_SECS)
+        .bind(ACCESS_TTL_MINUTES)
         .execute(&mut *conn)
         .await?;
         Ok(())
@@ -1286,10 +1306,10 @@ impl Store {
             return Ok(None);
         }
         let families = self.revocable_families_tx(conn, player_id).await?;
+        self.insert_revocation_tx(conn, Revocation::Player(player_id)).await?;
         for family in &families {
             self.delete_family_tx(conn, family).await?;
         }
-        self.insert_revocation_tx(conn, Revocation::Player(player_id)).await?;
         let browsers = self.delete_player_browser_sessions_tx(conn, player_id).await?;
         Ok(Some(families.len() + browsers as usize))
     }

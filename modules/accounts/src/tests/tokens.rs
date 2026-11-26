@@ -483,3 +483,94 @@ async fn revoke_all_counts_a_family_whose_token_is_inside_the_exp_leeway() {
     assert_eq!(revoked, Some(0), "a family past the leeway still counted");
     cleanup_player(&pool, &past).await;
 }
+
+/// A login whose `iat` a cut-off of one kind raised past the clock is refused by a later
+/// revocation of the other kind stamped by the clock: a client delete after a player cut-off,
+/// and a player revocation after a client cut-off. Each revocation is stamped at or past the
+/// newest `iat` of the families it covers.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revocation_refuses_a_mint_raised_past_the_other_kinds_cut_off() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+
+    let client = insert_client(&pool, &accountsapi::grant_types::ALL[..]).await;
+    let email = format!("cross-client-{}@test.local", suffix());
+    let pid = svc.register(email.clone(), "pw".into(), "CrossClient".into(), client.clone()).await.unwrap().player_id;
+    let cut = cut_off(&pool, Some(&pid), None, 600.0).await;
+    let raised = svc.login(email, "pw".into(), client.clone()).await.unwrap();
+    let claims = svc.tokens.verify_access(&raised.token).await.unwrap().expect("the raised login did not verify");
+    assert_eq!(claims.iat, cut + 1, "the player cut-off did not raise the login's iat");
+    assert!(svc.store.delete_client(&client).await.unwrap());
+    assert_eq!(
+        svc.tokens.verify_access(&raised.token).await.unwrap(),
+        None,
+        "a client delete let through a token its player cut-off raised past the clock"
+    );
+    cleanup_player(&pool, &pid).await;
+
+    let client = insert_client(&pool, &accountsapi::grant_types::ALL[..]).await;
+    let email = format!("cross-player-{}@test.local", suffix());
+    let pid = svc.register(email.clone(), "pw".into(), "CrossPlayer".into(), client.clone()).await.unwrap().player_id;
+    let cut = cut_off(&pool, None, Some(&client), 600.0).await;
+    let raised = svc.login(email, "pw".into(), client.clone()).await.unwrap();
+    let claims = svc.tokens.verify_access(&raised.token).await.unwrap().expect("the raised login did not verify");
+    assert_eq!(claims.iat, cut + 1, "the client cut-off did not raise the login's iat");
+    let mut tx = pool.begin().await.unwrap();
+    assert!(svc.store.kill_player_families_tx(&mut tx, &pid).await.unwrap().is_some());
+    tx.commit().await.unwrap();
+    assert_eq!(
+        svc.tokens.verify_access(&raised.token).await.unwrap(),
+        None,
+        "a player revocation let through a token its client cut-off raised past the clock"
+    );
+    cleanup_player(&pool, &pid).await;
+    delete_client(&pool, &client).await;
+}
+
+/// A family whose access token is in its last accepted second, `exp` plus
+/// `ACCESS_EXP_LEEWAY` with the clock floored as every verifier floors it, still verifies:
+/// the prune keeps it and Revoke all counts it. One transaction pins `now()` for the stamp,
+/// the prune and the revoke, so no real clock is raced.
+#[tokio::test(flavor = "multi_thread")]
+async fn revoke_all_counts_a_family_in_the_last_second_of_the_exp_leeway() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let (pid, _) = registered(&svc, "RevBoundary").await;
+    let leeway = accountsapi::ACCESS_EXP_LEEWAY.as_secs() as i64;
+
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("UPDATE accounts.refresh_tokens SET expires_at = now() - interval '1 second' WHERE player_id = $1::uuid")
+        .bind(&pid)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let (family, exp, now): (String, i64, i64) = sqlx::query_as(
+        "UPDATE accounts.token_families \
+            SET access_expires_at = date_trunc('second', now()) - $2::int8 * interval '1 second' \
+          WHERE player_id = $1::uuid \
+          RETURNING id::text, extract(epoch FROM access_expires_at)::int8, \
+                    floor(extract(epoch FROM now()))::int8",
+    )
+    .bind(&pid)
+    .bind(leeway)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!(now, exp + leeway);
+    let claims = svc.tokens.claims(&pid, accountsapi::SWAROG_AUDIENCE, TEST_CLIENT_ID, &family, exp - crate::jwt::ACCESS_TTL_SECS);
+    let token = svc.tokens.sign(&mut tx, &claims).await.unwrap();
+    let snapshot = svc.tokens.snapshot().await.unwrap();
+    assert!(Tokens::verify_against(&snapshot, &token, now).is_some(), "the boundary second's token did not verify");
+
+    svc.store.prune_expired_token_rows(&mut tx).await.unwrap();
+    let families: i64 = sqlx::query_scalar("SELECT count(*)::int8 FROM accounts.token_families WHERE player_id = $1::uuid")
+        .bind(&pid)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(families, 1, "the prune deleted a family in the last second its token verifies");
+    let revoked = svc.store.revoke_player_families_tx(&mut tx, &pid).await.unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(revoked, Some(1), "Revoke all skipped a family in the last second of the leeway");
+    cleanup_player(&pool, &pid).await;
+}
