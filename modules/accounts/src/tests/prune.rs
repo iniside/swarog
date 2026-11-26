@@ -268,3 +268,43 @@ async fn prune_deletes_a_family_only_once_nothing_in_it_grants_access() {
     kept.sort();
     assert_eq!(left, kept, "only the family with nothing live is pruned");
 }
+
+/// Inserts a player revocation whose `expires_at` is `now() + offset`, returning its id.
+async fn insert_revocation(pool: &PgPool, offset: &str) -> i64 {
+    sqlx::query_scalar(
+        "INSERT INTO accounts.token_revocations (player_id, revoked_at, expires_at) \
+         VALUES (gen_random_uuid(), now(), now() + $1::interval) RETURNING id",
+    )
+    .bind(offset)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn revocation_exists(pool: &PgPool, id: i64) -> bool {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM accounts.token_revocations WHERE id = $1)")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// `accounts-sessions-prune` deletes a revocation past its `expires_at` and keeps one
+/// that can still refuse a token.
+#[tokio::test(flavor = "multi_thread")]
+async fn prune_deletes_only_expired_revocations() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let expired = insert_revocation(&pool, "-1 second").await;
+    let live = insert_revocation(&pool, "1 hour").await;
+
+    deliver_prune(&pool, &PruneHandler { svc: svc.clone() }, PRUNE_SCHEDULE_NAME).await;
+    assert!(!revocation_exists(&pool, expired).await, "expired revocation survived prune");
+    assert!(revocation_exists(&pool, live).await, "live revocation was pruned");
+
+    sqlx::query("DELETE FROM accounts.token_revocations WHERE id = $1")
+        .bind(live)
+        .execute(&pool)
+        .await
+        .unwrap();
+}
