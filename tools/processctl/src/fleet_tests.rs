@@ -77,7 +77,9 @@ fn inherited_application_overrides_are_explicit_and_cannot_rewire_topology() {
     assert!(!accounts.env.contains_key("HTTP_PROXY"));
 
     let monolith = game_backend_monolith(&inputs(), FleetFlavor::Development, &environment);
+    assert_eq!((monolith.http_port, monolith.player_port), (8080, Some(9100)));
     assert_eq!(monolith.env.get("PORT").map(String::as_str), Some(":8080"));
+    assert_eq!(monolith.env.get("PLAYER_EDGE_ADDR").map(String::as_str), Some(":9100"));
     assert_eq!(monolith.env.get("EDGE_CA_KEY").map(String::as_str), Some("run/edge-ca.key"));
 }
 
@@ -138,7 +140,8 @@ fn accounts_signing_env_in_both_topologies() {
         let (kek, issuer) = signing_env(&monolith.env);
         let effective = (kek, Some(issuer.unwrap_or(DEFAULT_OIDC_ISSUER)));
         assert_eq!(effective, want_monolith, "monolith {flavor:?}");
-        let front = format!(":{}/accounts/oidc", monolith.http_port);
+        // The monolith's front door is the PORT the server binds.
+        let front = format!("{}/accounts/oidc", monolith.env["PORT"]);
         let issuer = want_monolith.1.unwrap();
         assert!(issuer == ISSUER || issuer.ends_with(&front), "{issuer} is not the monolith");
     }

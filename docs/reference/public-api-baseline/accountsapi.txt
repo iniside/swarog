@@ -407,6 +407,7 @@ pub fn accountsapi::sessions_rpc::describe() -> opsapi::DescribeManifest
 pub fn accountsapi::sessions_rpc::operations(alloc::rcs::arc::Arc<(dyn accountsapi::Sessions + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn accountsapi::sessions_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn accountsapi::sessions_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
+pub macro accountsapi::default_front_origin!
 pub struct accountsapi::DeleteReceipt
 pub accountsapi::DeleteReceipt::deleted_at: alloc::string::String
 pub accountsapi::DeleteReceipt::handle: alloc::string::String
@@ -592,6 +593,11 @@ impl core::marker::Unpin for accountsapi::Session
 impl core::marker::UnsafeUnpin for accountsapi::Session
 impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::Session
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::Session
+pub const accountsapi::DEFAULT_OIDC_ISSUER: &str
+pub const accountsapi::EPIC_ENV_KEYS: &[&str]
+pub const accountsapi::GOOGLE_ENV_KEYS: &[&str]
+pub const accountsapi::LOGIN_LIMIT_BURST: u32
+pub const accountsapi::LOGIN_LIMIT_PER_SEC: f64
 pub const accountsapi::MAX_DISPLAY_NAME_BYTES: usize
 pub const accountsapi::MAX_HANDLE_BYTES: usize
 pub const accountsapi::MAX_LOOKUP_IDS: usize

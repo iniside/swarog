@@ -96,7 +96,8 @@ fn weles_fleets_seal_with_the_testdb_kek_and_name_their_front_door() {
                 service.name
             );
             assert_eq!(
-                env.get("ACCOUNTS_OIDC_ISSUER").map_or(accountsapi::DEFAULT_OIDC_ISSUER, String::as_str),
+                env.get("ACCOUNTS_OIDC_ISSUER")
+                    .map_or(accountsapi::DEFAULT_OIDC_ISSUER, String::as_str),
                 issuer,
                 "{fleet:?} {}",
                 service.name

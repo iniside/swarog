@@ -1508,6 +1508,18 @@ impl Accounts {
         accounts
     }
 
+    /// The KEK migrate seals with: the one register parsed, else `kek_env`, the value of
+    /// `ACCOUNTS_SIGNING_KEK`, which must then be set.
+    fn migrate_kek(
+        &self,
+        kek_env: Option<std::ffi::OsString>,
+    ) -> anyhow::Result<signing_keys::SigningKek> {
+        match self.signing_kek.get() {
+            Some(kek) => Ok(kek.clone()),
+            None => signing_keys::required_kek(kek_env),
+        }
+    }
+
     fn svc(&self) -> Arc<Service> {
         self.svc
             .get()
@@ -1698,18 +1710,13 @@ impl Module for Accounts {
     /// Creates this module's own schema and guarantees an active signing key that opens
     /// under the KEK. Idempotent.
     async fn migrate(&self, ctx: &Context) -> anyhow::Result<()> {
+        let kek = self.migrate_kek(std::env::var_os(signing_keys::KEK_ENV))?;
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("accounts requires a DB pool"))?;
-        let kek = match self.signing_kek.get() {
-            Some(kek) => kek.clone(),
-            None => signing_keys::required_kek(std::env::var_os(signing_keys::KEK_ENV))?,
-        };
-        signing_keys::refuse_stale_signing_keys(pool, "accounts").await?;
         Ddl::new(pool)
             .sql(SCHEMA_DDL)
             .sql(OAUTH_STATES_DDL.as_str())
-            .sql(signing_keys::SIGNING_KEYS_DDL)
             // A second, DB-level constraint on `players` itself (see the claim-coverage
             // check below): `accounts.handles` decides freeness at mint time, this index
             // backs `player_by_handle`'s lookup and still refuses a duplicate pair.
@@ -1758,10 +1765,6 @@ impl Module for Accounts {
                 "accounts.oauth_states_created_idx",
                 "CREATE INDEX oauth_states_created_idx ON accounts.oauth_states(created_at)",
             )
-            .index(
-                "accounts.signing_keys_one_active_idx",
-                signing_keys::SIGNING_KEYS_ONE_ACTIVE_DDL,
-            )
             .run()
             .await?;
 
@@ -1787,7 +1790,7 @@ impl Module for Accounts {
             );
         }
         refuse_stale_oauth_states(pool, "accounts").await?;
-        signing_keys::ensure_active_key(pool, "accounts", &kek).await
+        signing_keys::migrate_signing_keys(pool, "accounts", &kek).await
     }
 
     /// Only wires up — no I/O (#8). Reads the env gates, parses and validates the

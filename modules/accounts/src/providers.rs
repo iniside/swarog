@@ -407,7 +407,7 @@ fn epic_from_vars(vars: &BTreeMap<String, String>) -> anyhow::Result<Option<Epic
 }
 
 /// The origin every provider's default redirect URI is built on: the local front.
-const DEFAULT_REDIRECT_ORIGIN: &str = "http://localhost:8080";
+const DEFAULT_REDIRECT_ORIGIN: &str = accountsapi::default_front_origin!();
 
 /// Google's browser sign-in flow. Only `sub` is used, so the scope is `openid` alone.
 pub(crate) static GOOGLE_SPEC: ProviderSpec = ProviderSpec {

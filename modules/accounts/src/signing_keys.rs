@@ -5,6 +5,7 @@ use std::ffi::OsString;
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
+use lifecycle::Ddl;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN};
 use ring::rand::{SecureRandom, SystemRandom};
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
@@ -13,8 +14,10 @@ use sha2::{Digest, Sha256};
 pub(crate) const KEK_ENV: &str = "ACCOUNTS_SIGNING_KEK";
 pub(crate) const ISSUER_ENV: &str = "ACCOUNTS_OIDC_ISSUER";
 
-pub(crate) const SIGNING_KEYS_DDL: &str = "\
-CREATE TABLE IF NOT EXISTS accounts.signing_keys (
+/// `{schema}` here and in [`SIGNING_KEYS_ONE_ACTIVE_DDL`] stands for the schema
+/// [`migrate_signing_keys`] runs on.
+const SIGNING_KEYS_DDL: &str = "\
+CREATE TABLE IF NOT EXISTS {schema}.signing_keys (
 	kid        text PRIMARY KEY,
 	alg        text NOT NULL CHECK (alg = 'ES256'),
 	sealed_key bytea NOT NULL,
@@ -24,9 +27,9 @@ CREATE TABLE IF NOT EXISTS accounts.signing_keys (
 	created_at timestamptz NOT NULL DEFAULT now()
 );";
 
-pub(crate) const SIGNING_KEYS_ONE_ACTIVE_DDL: &str =
+const SIGNING_KEYS_ONE_ACTIVE_DDL: &str =
     "CREATE UNIQUE INDEX signing_keys_one_active_idx \
-     ON accounts.signing_keys (status) WHERE status = 'active'";
+     ON {schema}.signing_keys (status) WHERE status = 'active'";
 
 /// Every column of `signing_keys` and its `information_schema` data type, by name.
 const COLUMNS: [(&str, &str); 7] = [
@@ -197,13 +200,35 @@ pub(crate) fn open(kek: &SigningKek, kid: &str, nonce: &[u8], sealed: &[u8]) -> 
     Some(plain.to_vec())
 }
 
+/// Creates `{schema}.signing_keys` and its one-active index after refusing a table of
+/// another shape, then guarantees one active key and opens every live key under `kek`.
+pub(crate) async fn migrate_signing_keys(
+    pool: &sqlx::PgPool,
+    schema: &str,
+    kek: &SigningKek,
+) -> anyhow::Result<()> {
+    refuse_stale_signing_keys(pool, schema).await?;
+    Ddl::new(pool)
+        .sql(on_schema(SIGNING_KEYS_DDL, schema))
+        .index(
+            on_schema("{schema}.signing_keys_one_active_idx", schema),
+            on_schema(SIGNING_KEYS_ONE_ACTIVE_DDL, schema),
+        )
+        .run()
+        .await?;
+    ensure_active_key(pool, schema, kek).await
+}
+
+/// `template` with `{schema}` replaced, leaked once per migrate because `Ddl` holds
+/// `&'static str`.
+fn on_schema(template: &str, schema: &str) -> &'static str {
+    Box::leak(template.replace("{schema}", schema).into_boxed_str())
+}
+
 /// Refuses a `{schema}.signing_keys` whose columns differ from [`SIGNING_KEYS_DDL`]'s:
 /// `CREATE TABLE IF NOT EXISTS` keeps the old table. Runs before the DDL, whose index
 /// would otherwise fail on a table without `status`.
-pub(crate) async fn refuse_stale_signing_keys(
-    pool: &sqlx::PgPool,
-    schema: &str,
-) -> anyhow::Result<()> {
+async fn refuse_stale_signing_keys(pool: &sqlx::PgPool, schema: &str) -> anyhow::Result<()> {
     let columns: Vec<(String, String)> = sqlx::query_as(
         "SELECT column_name::text, data_type::text FROM information_schema.columns \
          WHERE table_schema = $1 AND table_name = 'signing_keys' ORDER BY column_name",
@@ -222,8 +247,8 @@ pub(crate) async fn refuse_stale_signing_keys(
 }
 
 /// Inserts a new active ES256 key; does nothing when another boot's active row already holds
-/// the one-active index, so racing boots leave one active key.
-pub(crate) async fn insert_active_key(
+/// the one-active index.
+async fn insert_active_key(
     pool: &sqlx::PgPool,
     schema: &str,
     kek: &SigningKek,
@@ -242,33 +267,19 @@ pub(crate) async fn insert_active_key(
     Ok(())
 }
 
-/// Inserts an ES256 key when `{schema}.signing_keys` has no `active` row, then opens every
-/// `active` and `retiring` row under `kek`.
-pub(crate) async fn ensure_active_key(
+/// Opens every `active` and `retiring` row of `{schema}.signing_keys` under `kek`, failing
+/// with the remedy on the first that does not open; the number of `active` rows.
+async fn open_live_keys(
     pool: &sqlx::PgPool,
     schema: &str,
     kek: &SigningKek,
-) -> anyhow::Result<()> {
-    let active: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS (SELECT 1 FROM {schema}.signing_keys WHERE status = 'active')"
-    ))
-    .fetch_one(pool)
-    .await?;
-    if !active {
-        insert_active_key(pool, schema, kek).await?;
-    }
+) -> anyhow::Result<usize> {
     let rows: Vec<(String, Vec<u8>, Vec<u8>, String)> = sqlx::query_as(&format!(
         "SELECT kid, sealed_key, nonce, status FROM {schema}.signing_keys \
          WHERE status IN ('active', 'retiring')"
     ))
     .fetch_all(pool)
     .await?;
-    let active = rows.iter().filter(|r| r.3 == "active").count();
-    if active != 1 {
-        anyhow::bail!(
-            "accounts: {schema}.signing_keys holds {active} active keys after boot ensured one"
-        );
-    }
     let rng = SystemRandom::new();
     for (kid, sealed, nonce, _) in &rows {
         let opened = open(kek, kid, nonce, sealed).filter(|der| {
@@ -281,6 +292,26 @@ pub(crate) async fn ensure_active_key(
                  {schema}.signing_keys (invalidates issued tokens)."
             );
         }
+    }
+    Ok(rows.iter().filter(|r| r.3 == "active").count())
+}
+
+/// Inserts an ES256 key only when every live row opens under `kek` and none is active, then
+/// re-reads and opens again: a boot whose insert lost the race opens the winner's key.
+async fn ensure_active_key(
+    pool: &sqlx::PgPool,
+    schema: &str,
+    kek: &SigningKek,
+) -> anyhow::Result<()> {
+    let mut active = open_live_keys(pool, schema, kek).await?;
+    if active == 0 {
+        insert_active_key(pool, schema, kek).await?;
+        active = open_live_keys(pool, schema, kek).await?;
+    }
+    if active != 1 {
+        anyhow::bail!(
+            "accounts: {schema}.signing_keys holds {active} active keys after boot ensured one"
+        );
     }
     Ok(())
 }

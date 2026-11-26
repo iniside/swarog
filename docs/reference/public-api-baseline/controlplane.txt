@@ -227,6 +227,7 @@ pub const controlplane::order::player_header_action::ACCOUNTS_SUSPEND: i32
 pub const controlplane::order::player_header_action::NOTIFICATIONS_NOTIFY: i32
 pub mod controlplane::order::player_row_action
 pub const controlplane::order::player_row_action::ACCOUNTS_DELETE: i32
+pub const controlplane::order::player_row_action::ACCOUNTS_RESET_PASSWORD: i32
 pub const controlplane::order::player_row_action::ACCOUNTS_SUSPEND: i32
 pub const controlplane::order::player_row_action::INVENTORY: i32
 pub const controlplane::order::player_row_action::NOTIFICATIONS: i32

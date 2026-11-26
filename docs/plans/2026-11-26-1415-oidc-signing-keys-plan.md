@@ -41,6 +41,16 @@ every recommendation. The review-fix commit for Step 1 carries E1-E4; Step 2 car
 - Note on E2: the pin landed in verifyctl, which depends on testdb as a normal dependency and does not
   call `test_pool`; the drift gate reads only dev-dependencies, so no exemption is needed.
 
+## Amendments after Step 2 review (owner, 2026-11-26)
+
+Step 2 landed as f18a2452; its review fix amends:
+- E8 (amends D3). `migrate` opens every `active`/`retiring` row under the KEK before it inserts, inserts
+  only when every row opens and none is active, then re-reads and opens again. A wrong KEK over a table
+  holding only a retiring key fails without inserting a key sealed under it.
+- E9 (amends D2). One function, `signing_keys::migrate_signing_keys(pool, schema, kek)`, runs the
+  stale-shape refusal, the table DDL with the one-active index, and the key guarantee; `migrate` calls it
+  for `accounts` and the tests call it for scratch schemas.
+
 ## Problem
 
 Steps 3 and 4 of the roadmap sign tokens (`at+jwt` for the Lore audience, every `id_token`), and Lore

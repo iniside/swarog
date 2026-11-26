@@ -1,11 +1,12 @@
-//! The sealed OIDC signing keys: the KEK and issuer parses, seal/open, and the boot-time
-//! guarantee of one active key. Tests that need an empty or stale table run on a scratch
-//! schema, so the shared `accounts.signing_keys` only ever holds keys sealed with the dev KEK.
+//! The sealed OIDC signing keys: the KEK and issuer parses, seal/open, and what
+//! `migrate_signing_keys` guarantees at boot. Tests that need an empty or stale table run it
+//! on a scratch schema, so the shared `accounts.signing_keys` only ever holds keys sealed with
+//! the dev KEK.
 
 use super::*;
 use crate::signing_keys::{
-    ensure_active_key, insert_active_key, kek_from, oidc_issuer, open, refuse_stale_signing_keys, required_kek, seal,
-    thumbprint, SigningKek, KEK_ENV, SIGNING_KEYS_DDL, SIGNING_KEYS_ONE_ACTIVE_DDL,
+    kek_from, migrate_signing_keys, oidc_issuer, open, required_kek, seal, thumbprint, NewKey,
+    SigningKek,
 };
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
 use ring::signature::{EcdsaKeyPair, KeyPair as _, ECDSA_P256_SHA256_FIXED_SIGNING};
@@ -13,10 +14,6 @@ use std::ffi::OsString;
 
 fn os(value: &str) -> Option<OsString> {
     Some(value.into())
-}
-
-fn leak(text: String) -> &'static str {
-    Box::leak(text.into_boxed_str())
 }
 
 fn other_kek() -> SigningKek {
@@ -33,19 +30,10 @@ async fn scratch_schema(pool: &PgPool, label: &str) -> String {
     schema
 }
 
-/// The table and index migrate creates, on `schema` instead of `accounts`.
-async fn scratch_table(pool: &PgPool, label: &str) -> String {
+/// A scratch schema after one boot under the dev KEK: the table, its index and one active key.
+async fn booted_schema(pool: &PgPool, label: &str) -> String {
     let schema = scratch_schema(pool, label).await;
-    let qualified = format!("{schema}.");
-    Ddl::new(pool)
-        .sql(leak(SIGNING_KEYS_DDL.replace("accounts.", &qualified)))
-        .index(
-            leak(format!("{schema}.signing_keys_one_active_idx")),
-            leak(SIGNING_KEYS_ONE_ACTIVE_DDL.replace("accounts.", &qualified)),
-        )
-        .run()
-        .await
-        .unwrap();
+    migrate_signing_keys(pool, &schema, &dev_kek()).await.unwrap();
     schema
 }
 
@@ -65,6 +53,19 @@ async fn key_rows(pool: &PgPool, schema: &str) -> Vec<KeyRow> {
     .fetch_all(pool)
     .await
     .unwrap()
+}
+
+/// Asserts `refused` is the does-not-open failure naming `kid`, with its remedy.
+fn assert_open_remedy(refused: anyhow::Result<()>, schema: &str, kid: &str) {
+    let err = format!("{:#}", refused.expect_err("a key that does not open must fail boot"));
+    assert!(err.contains(&format!("signing key {kid} in {schema}.signing_keys")), "{err}");
+    assert!(
+        err.contains(&format!(
+            "Remedy: restore the previous ACCOUNTS_SIGNING_KEK, or DROP TABLE \
+             {schema}.signing_keys (invalidates issued tokens)."
+        )),
+        "{err}"
+    );
 }
 
 #[test]
@@ -153,20 +154,13 @@ fn a_sealed_key_opens_only_with_its_kek_kid_nonce_and_ciphertext() {
     assert_ne!(nonce, again, "every seal draws a fresh nonce");
 }
 
-/// Missing at migrate (register did not run) fails before any I/O, on a pool that cannot
-/// connect.
-#[tokio::test(flavor = "multi_thread")]
-async fn migrate_without_a_kek_fails_naming_the_variable_before_any_io() {
-    assert!(
-        std::env::var_os(KEK_ENV).is_none(),
-        "the accounts suite runs with {KEK_ENV} unset; tests pass it through \
-         Accounts::with_signing_kek"
-    );
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .connect_lazy("postgres://nobody@127.0.0.1:1/nowhere")
-        .unwrap();
-    let err = Accounts::new().migrate(&Context::with_db(pool)).await.unwrap_err().to_string();
+/// Without a KEK from register, migrate requires the variable's value and names it; a KEK
+/// register parsed wins over it.
+#[test]
+fn migrate_without_a_kek_fails_naming_the_variable() {
+    let err = Accounts::new().migrate_kek(None).unwrap_err().to_string();
     assert!(err.contains("ACCOUNTS_SIGNING_KEK is required"), "{err}");
+    assert!(Accounts::with_signing_kek(dev_kek()).migrate_kek(None).is_ok());
 }
 
 /// First boot inserts one active key whose JWK is the opened private key's public half and
@@ -174,10 +168,10 @@ async fn migrate_without_a_kek_fails_naming_the_variable_before_any_io() {
 #[tokio::test(flavor = "multi_thread")]
 async fn first_boot_inserts_one_active_key_and_a_second_boot_adds_none() {
     let Some(pool) = test_pool().await else { return };
-    let schema = scratch_table(&pool, "boot").await;
-    let first = ensure_active_key(&pool, &schema, &dev_kek()).await;
+    let schema = scratch_schema(&pool, "boot").await;
+    let first = migrate_signing_keys(&pool, &schema, &dev_kek()).await;
     let after_first = key_rows(&pool, &schema).await;
-    let second = ensure_active_key(&pool, &schema, &dev_kek()).await;
+    let second = migrate_signing_keys(&pool, &schema, &dev_kek()).await;
     let after_second = key_rows(&pool, &schema).await;
     drop_schema(&pool, &schema).await;
 
@@ -214,76 +208,186 @@ async fn first_boot_inserts_one_active_key_and_a_second_boot_adds_none() {
     assert_eq!(URL_SAFE_NO_PAD.encode(&point[33..]), y);
 }
 
-/// Two boots without the migrate lock (bare test migrates) both read "no active key"; the
-/// one whose insert lands second finds the winner's row and keeps it.
+/// Waits until `want` INSERTs into `{schema}.signing_keys` queue behind a held table lock.
+async fn wait_for_parked_inserts(pool: &PgPool, schema: &str, want: i64) {
+    let parked = async {
+        loop {
+            let (n,): (i64,) = sqlx::query_as(
+                "SELECT count(*) FROM pg_locks \
+                 WHERE relation = $1::regclass AND mode = 'RowExclusiveLock' AND NOT granted",
+            )
+            .bind(format!("{schema}.signing_keys"))
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            if n == want {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(60), parked)
+        .await
+        .expect("the boots never queued their INSERTs behind the held lock");
+}
+
+/// Two boots under different KEKs both read a table without an active key, and a held SHARE
+/// lock parks both INSERTs until both have read. The boot whose insert lands second inserts
+/// nothing, re-reads and fails to open the winner's key: one boot fails with the remedy and
+/// the winner's key is the only row.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_boot_that_loses_the_insert_race_keeps_the_winners_key() {
+async fn a_boot_that_loses_the_insert_race_opens_the_winners_key() {
     let Some(pool) = test_pool().await else { return };
-    let schema = scratch_table(&pool, "race").await;
-    ensure_active_key(&pool, &schema, &dev_kek()).await.unwrap();
-    let winner = key_rows(&pool, &schema).await;
-    let loser = insert_active_key(&pool, &schema, &dev_kek()).await;
-    let reopened = ensure_active_key(&pool, &schema, &dev_kek()).await;
+    let schema = booted_schema(&pool, "race").await;
+    sqlx::query(&format!("DELETE FROM {schema}.signing_keys")).execute(&pool).await.unwrap();
+    let mut gate = pool.begin().await.unwrap();
+    sqlx::query(&format!("LOCK TABLE {schema}.signing_keys IN SHARE MODE"))
+        .execute(&mut *gate)
+        .await
+        .unwrap();
+    let boot = |kek: SigningKek| {
+        let (pool, schema) = (pool.clone(), schema.clone());
+        tokio::spawn(async move { migrate_signing_keys(&pool, &schema, &kek).await })
+    };
+    let (dev, other) = (boot(dev_kek()), boot(other_kek()));
+    wait_for_parked_inserts(&pool, &schema, 2).await;
+    gate.commit().await.unwrap();
+    let outcomes = [(dev_kek(), dev.await.unwrap()), (other_kek(), other.await.unwrap())];
     let after = key_rows(&pool, &schema).await;
     drop_schema(&pool, &schema).await;
 
-    loser.unwrap();
-    reopened.unwrap();
-    assert_eq!(winner.len(), 1);
-    assert_eq!(after, winner);
+    let [(kid, status, _, sealed, nonce)] = &after[..] else {
+        panic!("the race left {} rows: {outcomes:?}", after.len())
+    };
+    assert_eq!(status, "active");
+    let (winners, losers): (Vec<_>, Vec<_>) = outcomes.into_iter().partition(|(_, o)| o.is_ok());
+    let ([(winner, _)], [(_, lost)]) = (&winners[..], &losers[..]) else {
+        panic!("want one boot to win and one to fail: {winners:?} {losers:?}")
+    };
+    assert!(open(winner, kid, nonce, sealed).is_some(), "the row is not the winner's key");
+    let err = format!("{:#}", lost.as_ref().unwrap_err());
+    assert!(err.contains(&format!("signing key {kid} in {schema}.signing_keys")), "{err}");
+    assert!(err.contains("Remedy: restore the previous ACCOUNTS_SIGNING_KEK"), "{err}");
 }
 
 /// A KEK that did not seal the active key fails boot with the remedy and writes no row.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_wrong_kek_fails_boot_with_the_remedy_and_writes_no_row() {
     let Some(pool) = test_pool().await else { return };
-    let schema = scratch_table(&pool, "wrongkek").await;
-    ensure_active_key(&pool, &schema, &dev_kek()).await.unwrap();
+    let schema = booted_schema(&pool, "wrongkek").await;
     let before = key_rows(&pool, &schema).await;
-    let refused = ensure_active_key(&pool, &schema, &other_kek()).await;
+    let refused = migrate_signing_keys(&pool, &schema, &other_kek()).await;
     let after = key_rows(&pool, &schema).await;
     drop_schema(&pool, &schema).await;
 
-    let err = refused.expect_err("a wrong KEK must fail boot").to_string();
-    assert!(
-        err.contains(&format!(
-            "Remedy: restore the previous ACCOUNTS_SIGNING_KEK, or DROP TABLE \
-             {schema}.signing_keys (invalidates issued tokens)."
-        )),
-        "{err}"
-    );
+    assert_open_remedy(refused, &schema, &before[0].0);
     assert_eq!(before, after);
 }
 
-/// A table of another shape is refused with the drop remedy before anything writes to it;
-/// a missing table and the table migrate creates pass.
+/// A table whose only key is retiring, under a KEK that did not seal it, fails boot before
+/// any insert: a new active key sealed under the wrong KEK would stop the restored KEK from
+/// booting.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_stale_signing_keys_table_is_refused_with_the_drop_remedy() {
+async fn a_wrong_kek_over_only_a_retiring_key_fails_before_inserting() {
     let Some(pool) = test_pool().await else { return };
-    ensure_schema(&pool).await;
-    let stale = scratch_schema(&pool, "stale").await;
-    let missing = refuse_stale_signing_keys(&pool, &stale).await;
+    let schema = booted_schema(&pool, "retiringonly").await;
+    sqlx::query(&format!("UPDATE {schema}.signing_keys SET status = 'retiring'"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let before = key_rows(&pool, &schema).await;
+    let refused = migrate_signing_keys(&pool, &schema, &other_kek()).await;
+    let after = key_rows(&pool, &schema).await;
+    drop_schema(&pool, &schema).await;
+
+    assert_open_remedy(refused, &schema, &before[0].0);
+    assert_eq!(before, after);
+}
+
+/// A key that decrypts under the KEK but is not PKCS#8 fails boot with the remedy.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_that_decrypts_but_is_not_pkcs8_fails_boot() {
+    let Some(pool) = test_pool().await else { return };
+    let schema = booted_schema(&pool, "corrupt").await;
+    let kid = key_rows(&pool, &schema).await.remove(0).0;
+    let (nonce, sealed) = seal(&dev_kek(), &kid, b"not pkcs8").unwrap();
+    sqlx::query(&format!("UPDATE {schema}.signing_keys SET sealed_key = $1, nonce = $2"))
+        .bind(&sealed)
+        .bind(&nonce)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let before = key_rows(&pool, &schema).await;
+    let refused = migrate_signing_keys(&pool, &schema, &dev_kek()).await;
+    let after = key_rows(&pool, &schema).await;
+    drop_schema(&pool, &schema).await;
+
+    assert_open_remedy(refused, &schema, &kid);
+    assert_eq!(before, after);
+}
+
+/// A retiring key sealed under another KEK fails boot even beside an active key that opens.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retiring_key_under_another_kek_fails_boot() {
+    let Some(pool) = test_pool().await else { return };
+    let schema = booted_schema(&pool, "staleretiring").await;
+    let stale = NewKey::generate(&other_kek()).unwrap();
     sqlx::query(&format!(
-        "CREATE TABLE {stale}.signing_keys (kid text PRIMARY KEY, private_pem text NOT NULL)"
+        "INSERT INTO {schema}.signing_keys (kid, alg, sealed_key, nonce, public_jwk, status) \
+         VALUES ($1, 'ES256', $2, $3, $4::jsonb, 'retiring')"
     ))
+    .bind(&stale.kid)
+    .bind(&stale.sealed_key)
+    .bind(&stale.nonce)
+    .bind(stale.public_jwk.to_string())
     .execute(&pool)
     .await
     .unwrap();
-    let refused = refuse_stale_signing_keys(&pool, &stale).await;
-    let (stale_rows,): (i64,) =
-        sqlx::query_as(&format!("SELECT count(*) FROM {stale}.signing_keys"))
-            .fetch_one(&pool)
+    let before = key_rows(&pool, &schema).await;
+    let refused = migrate_signing_keys(&pool, &schema, &dev_kek()).await;
+    let after = key_rows(&pool, &schema).await;
+    drop_schema(&pool, &schema).await;
+
+    assert_open_remedy(refused, &schema, &stale.kid);
+    assert_eq!(before, after);
+}
+
+/// A table of another shape, missing columns or carrying an extra one, is refused with the
+/// drop remedy before the DDL or the insert touch it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_signing_keys_table_of_another_shape_is_refused_with_the_drop_remedy() {
+    let Some(pool) = test_pool().await else { return };
+    let shapes = [
+        ("narrow", "kid text PRIMARY KEY, private_pem text NOT NULL"),
+        (
+            "wide",
+            "kid text PRIMARY KEY, alg text NOT NULL, sealed_key bytea NOT NULL, \
+             nonce bytea NOT NULL, public_jwk jsonb NOT NULL, status text NOT NULL, \
+             created_at timestamptz NOT NULL DEFAULT now(), rotated_by text",
+        ),
+    ];
+    for (label, columns) in shapes {
+        let schema = scratch_schema(&pool, label).await;
+        sqlx::query(&format!("CREATE TABLE {schema}.signing_keys ({columns})"))
+            .execute(&pool)
             .await
             .unwrap();
-    drop_schema(&pool, &stale).await;
-    let fresh = scratch_table(&pool, "fresh").await;
-    let current = refuse_stale_signing_keys(&pool, &fresh).await;
-    drop_schema(&pool, &fresh).await;
+        let refused = migrate_signing_keys(&pool, &schema, &dev_kek()).await;
+        let (rows,): (i64,) =
+            sqlx::query_as(&format!("SELECT count(*) FROM {schema}.signing_keys"))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        drop_schema(&pool, &schema).await;
 
-    missing.unwrap();
-    let err = refused.expect_err("a stale signing_keys must refuse boot").to_string();
-    assert!(err.contains(&format!("DROP TABLE {stale}.signing_keys;")), "{err}");
-    assert_eq!(stale_rows, 0);
-    current.unwrap();
-    refuse_stale_signing_keys(&pool, "accounts").await.unwrap();
+        let err = format!("{:#}", refused.expect_err("a stale signing_keys must refuse boot"));
+        assert!(
+            err.contains(&format!(
+                "has another shape than this build creates. Remedy: DROP TABLE \
+                 {schema}.signing_keys; and reboot"
+            )),
+            "{label}: {err}"
+        );
+        assert_eq!(rows, 0, "{label}");
+    }
 }

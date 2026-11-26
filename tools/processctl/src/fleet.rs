@@ -1081,14 +1081,15 @@ pub fn game_backend_monolith(
     flavor: FleetFlavor,
     environment: &EnvironmentSnapshot,
 ) -> ServiceSpec {
+    let (http_port, player_port) = (8080, 9100);
     let mut env = environment.runtime_environment();
     for (key, value) in [
-        ("PORT", ":8080".into()),
+        ("PORT", format!(":{http_port}")),
         ("DATABASE_URL", inputs.database_url.clone()),
         // One process, all modules + both planes — a larger pool than a split peer, and
         // the same value the const budget assertion above charges for the monolith.
         ("DATABASE_POOL_MAX_CONNECTIONS", MONOLITH_POOL_MAX.to_string()),
-        ("PLAYER_EDGE_ADDR", ":9100".into()),
+        ("PLAYER_EDGE_ADDR", format!(":{player_port}")),
         ("EDGE_CA_CERT", inputs.edge_ca_cert.display().to_string()),
         ("EDGE_CA_KEY", inputs.edge_ca_key.display().to_string()),
         ("APIKEYS_DEV_SEED", "1".into()),
@@ -1133,8 +1134,8 @@ pub fn game_backend_monolith(
         env.insert("MAIL_FROM".into(), PROOF_MAIL_FROM.into());
     }
     ServiceSpec {
-        name: "monolith", executable_package: "server", http_port: 8080,
-        edge_port: None, player_port: Some(9100), dependencies: vec![], env,
+        name: "monolith", executable_package: "server", http_port,
+        edge_port: None, player_port: Some(player_port), dependencies: vec![], env,
         overrideable_env,
         // One process hosts every module + both planes + the scheduler's fire
         // connection. Fits PG_SESSION_BUDGET by the const assertion in this module.
