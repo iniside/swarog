@@ -135,7 +135,8 @@ Callers and generated surfaces:
 - Callers that mint (grep, a lower bound):
   - splitproof: main.rs `register_login` :6481, `register_capture` :6513, `create_guest` :6700,
     `federated_status` :6679, inline :4295/:4312/:7030; accounts_admin_checks.rs:55-59;
-    accounts_browser_checks.rs:145;
+    accounts_browser_checks.rs:145; Epic starts (run-time only) main.rs:4447 and
+    accounts_browser_checks.rs:68 `EPIC_START`;
   - demoseed: lib.rs:734-744, scenarios.rs:165-273, client_tests.rs:192-229;
   - webui: demos/webui/src/index.html:130, :139 (:105 is refresh, which takes no client);
   - C#: clients/csharp/Program.cs:137.
@@ -322,9 +323,11 @@ compile outside accounts until Step 3.
 (a) The callers pass `accountsapi::DEV_GAME_CLIENT_ID` (or `"dev-game"` outside Rust):
 - tools/demoseed (lib.rs:734-744, scenarios.rs:165-273, client_tests.rs:192-229);
 - tools/splitproof, compile-level only (the mint helpers and inline sites in Facts); the proof logic is
-  Step 8's;
+  Step 8's. The Epic start callers compile without `client_id` and fail only at run time, so they are
+  named here: main.rs:4447 ([EP1]) and accounts_browser_checks.rs `EPIC_START` :68 (used by [BG3] :373,
+  [BR2]/[BR3] :470) take `?client_id=dev-game` (added in review of Step 2);
 - any mint call in tools/loadgen (grep);
-- demos/webui/src/index.html :130, :139, and the Epic start link if it has one;
+- demos/webui/src/index.html: done in Step 2 part 2 (9051e4b9), nothing left;
 - clients/csharp/Program.cs:137.
 Then regenerate:
 - clients/csharp/Generated and the csharp-client-gen goldens (the 52/28 pins hold; re-bless the manifest
