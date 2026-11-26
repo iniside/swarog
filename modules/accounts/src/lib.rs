@@ -517,7 +517,8 @@ impl Service {
         } else {
             String::new()
         };
-        let token = self.sign_access(conn, &p.id, client_id, &family_id).await?;
+        let (_, iat) = self.store.mint_access_tx(conn, &family_id).await.map_err(internal)?;
+        let token = self.sign_access(conn, &p.id, client_id, &family_id, iat).await?;
         let stamped = self
             .store
             .stamp_identity_used_tx(conn, provider, subject, &p.id, secret_hash)
@@ -534,16 +535,17 @@ impl Service {
         })
     }
 
-    /// Signs an access token of family `family_id` for `player_id` and `client_id`, issued now,
-    /// reading a stale signing key on `conn`, the caller's transaction.
+    /// Signs an access token of family `family_id` for `player_id` and `client_id`, issued at
+    /// `iat` ([`store::Store::mint_access_tx`]), reading a stale signing key on `conn`, the
+    /// caller's transaction.
     async fn sign_access(
         &self,
         conn: &mut PgConnection,
         player_id: &str,
         client_id: &str,
         family_id: &str,
+        iat: i64,
     ) -> Result<String, Error> {
-        let iat = jwt::Tokens::unix_now();
         let claims = self.tokens.claims(player_id, accountsapi::SWAROG_AUDIENCE, client_id, family_id, iat);
         self.tokens.sign(conn, &claims).await.map_err(|e| internal(format!("{e:#}")))
     }
@@ -1105,12 +1107,12 @@ impl Service {
         family_id: &str,
         refresh_token: String,
     ) -> Result<accountsapi::Session, Error> {
-        let client_id = self
+        let (client_id, iat) = self
             .store
-            .touch_family_tx(conn, family_id)
+            .mint_access_tx(conn, family_id)
             .await
             .map_err(internal)?;
-        let token = self.sign_access(conn, player_id, &client_id, family_id).await?;
+        let token = self.sign_access(conn, player_id, &client_id, family_id, iat).await?;
         Ok(accountsapi::Session {
             player_id: player_id.to_string(),
             token,

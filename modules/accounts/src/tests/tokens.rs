@@ -330,3 +330,156 @@ async fn a_mint_and_a_refresh_read_a_stale_signing_key_on_their_own_connection()
     let next = svc.refresh(sess.refresh_token.clone()).await.unwrap();
     assert!(svc.tokens.verify_access(&next.token).await.unwrap().is_some(), "the refreshed token did not verify");
 }
+
+/// Writes a live cut-off for player `player` or client `client` stamped `ahead` seconds past the
+/// database clock (a revoke stamped while the app clock lags it), and answers it rounded up
+/// to the second, as every verifier compares it.
+async fn cut_off(pool: &PgPool, player: Option<&str>, client: Option<&str>, ahead: f64) -> i64 {
+    sqlx::query_scalar(
+        "INSERT INTO accounts.token_revocations (player_id, client_id, revoked_at, expires_at) \
+         VALUES ($1::uuid, $2, now() + make_interval(secs => $3), now() + interval '1 hour') \
+         RETURNING ceil(extract(epoch FROM revoked_at))::int8",
+    )
+    .bind(player)
+    .bind(client)
+    .bind(ahead)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// Asserts that a login and a refresh after a cut-off `cut` mint tokens that verify, and that
+/// tokens of `sub` and `client_id` issued at or before it stay refused.
+async fn assert_minted_past(svc: &Service, cut: i64, sub: &str, client_id: &str, email: &str) {
+    let login = svc.login(email.to_string(), "pw".into(), client_id.to_string()).await.unwrap();
+    let refreshed = svc.refresh(login.refresh_token.clone()).await.unwrap();
+    for (what, token) in [("login", &login.token), ("refresh", &refreshed.token)] {
+        let claims = svc.tokens.verify_access(token).await.unwrap();
+        let claims = claims.unwrap_or_else(|| panic!("the {what} after the cut-off minted a refused token"));
+        assert!(claims.iat > cut, "the {what} token's iat is not past the cut-off");
+        assert_eq!(claims.exp, claims.iat + crate::jwt::ACCESS_TTL_SECS);
+    }
+    let access_expiry: i64 = sqlx::query_scalar(
+        "SELECT extract(epoch FROM f.access_expires_at)::int8 FROM accounts.token_families f \
+           JOIN accounts.refresh_tokens t ON t.family_id = f.id WHERE t.token = $1",
+    )
+    .bind(&refreshed.refresh_token)
+    .fetch_one(&svc.store.pool)
+    .await
+    .unwrap();
+    let refreshed_claims = svc.tokens.verify_access(&refreshed.token).await.unwrap().unwrap();
+    assert_eq!(access_expiry, refreshed_claims.exp, "the family's access expiry is not its token's exp");
+
+    let mut conn = svc.store.pool.acquire().await.unwrap();
+    for iat in [cut - 100, cut] {
+        let sid = random_uuid(&svc.store.pool).await;
+        let claims = svc.tokens.claims(sub, accountsapi::SWAROG_AUDIENCE, client_id, &sid, iat);
+        let before = svc.tokens.sign(&mut conn, &claims).await.unwrap();
+        assert_eq!(svc.tokens.verify_access(&before).await.unwrap(), None, "a token issued at {iat} verified");
+    }
+}
+
+/// A login and a refresh right after a player revocation stamped ahead of the app clock
+/// mint a token that verifies: its `iat` is raised past the rounded-up cut-off, while a
+/// token issued at or before the cut-off stays refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mint_after_a_player_cut_off_verifies_and_one_before_it_stays_refused() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let email = format!("cut-player-{}@test.local", suffix());
+    let pid = svc.register(email.clone(), "pw".into(), "CutPlayer".into(), test_client()).await.unwrap().player_id;
+    let cut = cut_off(&pool, Some(&pid), None, 5.0).await;
+    assert_minted_past(&svc, cut, &pid, TEST_CLIENT_ID, &email).await;
+    cleanup_player(&pool, &pid).await;
+}
+
+/// The same for a client cut-off: a login and a refresh through that client mint a token
+/// that verifies, and a token of the client issued at or before the cut-off stays refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mint_after_a_client_cut_off_verifies_and_one_before_it_stays_refused() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let client = insert_client(&pool, &accountsapi::grant_types::ALL[..]).await;
+    let email = format!("cut-client-{}@test.local", suffix());
+    let pid = svc.register(email.clone(), "pw".into(), "CutClient".into(), client.clone()).await.unwrap().player_id;
+    let cut = cut_off(&pool, None, Some(&client), 5.0).await;
+    assert_minted_past(&svc, cut, &pid, &client, &email).await;
+    cleanup_player(&pool, &pid).await;
+    delete_client(&pool, &client).await;
+}
+
+/// A second player revocation in the same second as the first still refuses a token minted
+/// between them: that token's `iat` is one second past the first cut-off, so the second is
+/// stamped at least one second past the first.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_player_revocation_refuses_a_token_minted_past_the_first() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let email = format!("cut-twice-{}@test.local", suffix());
+    let pid = svc.register(email.clone(), "pw".into(), "CutTwice".into(), test_client()).await.unwrap().player_id;
+    cut_off(&pool, Some(&pid), None, 5.0).await;
+    let between = svc.login(email, "pw".into(), test_client()).await.unwrap();
+    assert!(svc.tokens.verify_access(&between.token).await.unwrap().is_some());
+
+    let mut tx = pool.begin().await.unwrap();
+    assert!(svc.store.revoke_player_families_tx(&mut tx, &pid).await.unwrap().is_some());
+    tx.commit().await.unwrap();
+    assert_eq!(
+        svc.tokens.verify_access(&between.token).await.unwrap(),
+        None,
+        "a token minted past the first cut-off survived the second"
+    );
+    cleanup_player(&pool, &pid).await;
+}
+
+/// Leaves player `player_id` one family whose refresh token has expired and whose access
+/// token expired `ago` ago.
+async fn expire_tokens(pool: &PgPool, player_id: &str, ago: &str) {
+    sqlx::query("UPDATE accounts.refresh_tokens SET expires_at = now() - interval '1 second' WHERE player_id = $1::uuid")
+        .bind(player_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE accounts.token_families SET access_expires_at = now() - $2::interval WHERE player_id = $1::uuid")
+        .bind(player_id)
+        .bind(ago)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// A family whose access token expired inside `ACCESS_EXP_LEEWAY` still verifies, so the
+/// prune keeps it and Revoke all counts it and writes the player row; past the leeway it
+/// counts nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn revoke_all_counts_a_family_whose_token_is_inside_the_exp_leeway() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let (pid, _) = registered(&svc, "RevLeeway").await;
+    expire_tokens(&pool, &pid, "10 seconds").await;
+
+    let mut prune = pool.begin().await.unwrap();
+    svc.store.prune_expired_token_rows(&mut prune).await.unwrap();
+    prune.commit().await.unwrap();
+    let families: i64 = sqlx::query_scalar("SELECT count(*)::int8 FROM accounts.token_families WHERE player_id = $1::uuid")
+        .bind(&pid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(families, 1, "the prune deleted a family whose access token still verifies");
+
+    let mut tx = pool.begin().await.unwrap();
+    let revoked = svc.store.revoke_player_families_tx(&mut tx, &pid).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(revoked, Some(1), "Revoke all skipped a family inside the leeway");
+    assert_eq!(revocations(&pool, "player_id", &pid).await, 1);
+    cleanup_player(&pool, &pid).await;
+
+    let (past, _) = registered(&svc, "RevPastLeeway").await;
+    expire_tokens(&pool, &past, "1 minute").await;
+    let mut tx = pool.begin().await.unwrap();
+    let revoked = svc.store.revoke_player_families_tx(&mut tx, &past).await.unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(revoked, Some(0), "a family past the leeway still counted");
+    cleanup_player(&pool, &past).await;
+}

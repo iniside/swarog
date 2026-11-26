@@ -2,6 +2,18 @@
 
 Last updated: 2026-11-26
 
+- [x] **A login within a second of a revocation gets a dead token** (2026-11-26, one-token-mechanism step 6)
+  The player and client cut-offs are rounded up to whole seconds (fail closed, D4), and `verify_against`
+  refuses `iat <= revoked_at_unix` (modules/accounts/src/jwt.rs). A login after a password reset or
+  Revoke all, in the same second as the rounded-up cut-off, got an access token refused for its whole
+  15-minute life. Fixed: `Store::mint_access_tx` stamps `iat` from the database clock, raised one second
+  past every live player and client cut-off, and a later revocation of the same subject is stamped at least
+  one second past the previous one, so a token minted between two revocations stays refused.
+- [x] **Admin Revoke all writes no player row for a token inside the leeway** (2026-11-26, one-token-mechanism step 6)
+  `revoke_player_families_tx` (modules/accounts/src/store.rs) rolled back on `Some(0)` because
+  `STALE_FAMILY` and `granting_families` treated `access_expires_at <= now()` as dead with no leeway.
+  Fixed: both read `access_verifies!`, which adds `ACCESS_EXP_LEEWAY`, so Revoke all counts the family
+  and the prune keeps it while its access token can still verify.
 - [x] **The browser callback's non-browser-intent 500 has no test** (2026-11-26, accounts-browser-fixes step 5)
   `browser_router` answers 500 for a state row with a non-browser intent
   (modules/accounts/src/oauth_flow.rs:332-333); no test reaches that arm.

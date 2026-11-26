@@ -78,17 +78,3 @@ _None._
 - [ ] **EPIC_START hard-codes dev-game**
   `tools/splitproof/src/accounts_browser_checks.rs:68` writes `dev-game` literally while every
   other site uses `accountsapi::DEV_GAME_CLIENT_ID`.
-
-### Known limits (one-token-mechanism step 4)
-
-Owner (2026-11-26): decide both after the implementation steps, before the plan's test steps (Step 8).
-
-- [ ] **A login within a second of a revocation gets a dead token**
-  The player and client cut-offs are rounded up to whole seconds (fail closed, D4), and `verify_against`
-  refuses `iat <= revoked_at_unix` (modules/accounts/src/jwt.rs). A login after a password reset or
-  Revoke all, in the same second as the rounded-up cut-off, gets an access token that is refused for its
-  whole 15-minute life: the client sees 401 right after logging in.
-- [ ] **Admin Revoke all writes no player row for a token inside the leeway**
-  `revoke_player_families_tx` (modules/accounts/src/store.rs) rolls back on `Some(0)` because
-  `STALE_FAMILY` and `granting_families` treat `access_expires_at <= now()` as dead with no leeway.
-  An access token still within `ACCESS_EXP_LEEWAY` (30 s) of its expiry keeps verifying after Revoke all.

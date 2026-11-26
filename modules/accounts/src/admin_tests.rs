@@ -265,12 +265,13 @@ async fn nav_counter_draws_the_player_count_with_separators() {
 
 const EXPIRE_REFRESH: &str = "UPDATE accounts.refresh_tokens SET expires_at = now() - interval '1 second' \
                                WHERE family_id = $1::uuid";
+/// Past `exp` plus `ACCESS_EXP_LEEWAY`, so the family's access token no longer verifies.
 const EXPIRE_ACCESS: &str = "UPDATE accounts.token_families \
-                                SET access_expires_at = now() - interval '1 second' WHERE id = $1::uuid";
+                                SET access_expires_at = now() - interval '1 minute' WHERE id = $1::uuid";
 const EXPIRE_PLAYER_REFRESH: &str = "UPDATE accounts.refresh_tokens \
                                         SET expires_at = now() - interval '1 second' WHERE player_id = $1::uuid";
 const EXPIRE_PLAYER_ACCESS: &str = "UPDATE accounts.token_families \
-                                       SET access_expires_at = now() - interval '1 second' \
+                                       SET access_expires_at = now() - interval '1 minute' \
                                      WHERE player_id = $1::uuid";
 
 #[tokio::test]

@@ -360,28 +360,54 @@ const PRUNED_FAMILY_CHILDREN: [&str; 1] = ["accounts.refresh_tokens"];
 /// A child row (alias `c`) the prune deletes: an expired one, consumed or not.
 const EXPIRED_CHILD: &str = "c.expires_at <= now()";
 
+/// [`accountsapi::ACCESS_EXP_LEEWAY`] in whole seconds, as a literal `concat!` can splice into
+/// SQL; the assert below keeps it equal to the contract's constant.
+macro_rules! access_exp_leeway_secs {
+    () => {
+        30
+    };
+}
+const _: () = assert!(access_exp_leeway_secs!() == accountsapi::ACCESS_EXP_LEEWAY.as_secs());
+
+/// SQL that holds while the newest access token of a family whose `access_expires_at` is
+/// `$col` can still verify: every verifier accepts a token until its `exp` plus
+/// [`accountsapi::ACCESS_EXP_LEEWAY`]. Revoke all and the prune read this one predicate, so a
+/// family is neither skipped by the one nor deleted by the other while its token verifies.
+macro_rules! access_verifies {
+    ($col:literal) => {
+        concat!($col, " > now() - interval '", access_exp_leeway_secs!(), " seconds'")
+    };
+}
+
 /// A family (alias `f`) that no longer grants access ([`granting_families`]): its newest
-/// access token has expired and it holds no unexpired refresh token.
-const STALE_FAMILY: &str = "f.access_expires_at <= now() \
-     AND NOT EXISTS (SELECT 1 FROM accounts.refresh_tokens t \
-                      WHERE t.family_id = f.id AND t.expires_at > now())";
+/// access token can no longer verify and it holds no unexpired refresh token.
+const STALE_FAMILY: &str = concat!(
+    "NOT (",
+    access_verifies!("f.access_expires_at"),
+    ") AND NOT EXISTS (SELECT 1 FROM accounts.refresh_tokens t \
+                        WHERE t.family_id = f.id AND t.expires_at > now())"
+);
 
 /// The token families of player `$1` that still grant access, as one statement
 /// selecting `$select` per family and ending in `$tail`. A family grants access while its
-/// newest access token is unexpired or it holds an unexpired refresh token; per family,
+/// newest access token can still verify ([`access_verifies`]) or it holds an unexpired
+/// refresh token; per family,
 /// `since` is when its rows were minted and `expires_at` when they expire. The Sessions panel
 /// and Revoke all both read this one predicate, so the panel lists what the modal counts.
 macro_rules! granting_families {
     ($select:literal, $tail:literal) => {
         concat!(
             "SELECT ", $select, " FROM (\
-               SELECT family_id, issued_at AS since, expires_at FROM accounts.refresh_tokens \
+               SELECT family_id, issued_at AS since, expires_at, expires_at > now() AS live \
+                 FROM accounts.refresh_tokens \
                 WHERE player_id = $1::uuid \
                UNION ALL \
-               SELECT id, created_at, access_expires_at FROM accounts.token_families \
+               SELECT id, created_at, access_expires_at, ",
+            access_verifies!("access_expires_at"),
+            " FROM accounts.token_families \
                 WHERE player_id = $1::uuid\
              ) AS family_rows \
-             GROUP BY family_id HAVING bool_or(expires_at > now()) ",
+             GROUP BY family_id HAVING bool_or(live) ",
             $tail,
         )
     };
@@ -868,8 +894,9 @@ impl Store {
         Ok(done.rows_affected() == 1)
     }
 
-    /// Starts a NEW token family of `player_id` for `client_id` on the caller's tx, with the
-    /// expiry of the access token minted with it, and answers the id Postgres mints for it.
+    /// Starts a NEW token family of `player_id` for `client_id` on the caller's tx, with an
+    /// access expiry [`Store::mint_access_tx`] then moves to its first token's `exp`, and
+    /// answers the id Postgres mints for it.
     pub async fn insert_family_tx(
         &self,
         conn: &mut PgConnection,
@@ -888,19 +915,40 @@ impl Store {
         .await
     }
 
-    /// Moves family `family_id`'s `access_expires_at` to the expiry of an access token
-    /// minted now, on the caller's tx, and answers the family's client. A vanished family
-    /// surfaces as `RowNotFound`.
-    pub async fn touch_family_tx(
+    /// Stamps the access token family `family_id` mints next, on the caller's tx: answers the
+    /// family's client and the token's `iat` (Unix seconds), and moves the family's
+    /// `access_expires_at` to that token's `exp`. A vanished family surfaces as `RowNotFound`.
+    ///
+    /// `iat` is the database clock in whole seconds, raised past every live player and
+    /// client cut-off of the family ([`Revocation`]): verifiers refuse `iat <= revoked_at`
+    /// rounded up, so a token minted after a revocation must carry a later second even when
+    /// the revocation was stamped in the same second or ahead of the clock. The caller has
+    /// already locked the player row FOR KEY SHARE (and on a login the client row), so this
+    /// statement sees every revocation committed before its mint could proceed, and a
+    /// revocation still waiting on those locks stamps itself after this mint commits.
+    pub async fn mint_access_tx(
         &self,
         conn: &mut PgConnection,
         family_id: &str,
-    ) -> Result<String, sqlx::Error> {
-        sqlx::query_scalar(
-            "UPDATE accounts.token_families \
-                SET access_expires_at = now() + make_interval(mins => $2) \
-              WHERE id = $1::uuid \
-              RETURNING client_id",
+    ) -> Result<(String, i64), sqlx::Error> {
+        sqlx::query_as(
+            "WITH mint AS ( \
+               SELECT f.id, greatest( \
+                        floor(extract(epoch FROM clock_timestamp())), \
+                        (SELECT ceil(extract(epoch FROM max(r.revoked_at))) + 1 \
+                           FROM accounts.token_revocations r \
+                          WHERE r.player_id = f.player_id AND r.expires_at > now()), \
+                        (SELECT ceil(extract(epoch FROM max(r.revoked_at))) + 1 \
+                           FROM accounts.token_revocations r \
+                          WHERE r.client_id = f.client_id AND r.expires_at > now()) \
+                      )::int8 AS iat \
+                 FROM accounts.token_families f WHERE f.id = $1::uuid \
+             ) \
+             UPDATE accounts.token_families f \
+                SET access_expires_at = to_timestamp(mint.iat) + make_interval(mins => $2) \
+               FROM mint \
+              WHERE f.id = mint.id \
+              RETURNING f.client_id, mint.iat",
         )
         .bind(family_id)
         .bind(ACCESS_TTL_MINUTES)
@@ -1053,7 +1101,10 @@ impl Store {
 
     /// Writes one `token_revocations` row on the caller's tx. `revoked_at` is
     /// `clock_timestamp()`, read after the locks the caller's revoke holds, so every mint
-    /// that committed before them has `iat <= revoked_at`.
+    /// that committed before them has `iat <= revoked_at` rounded up to the second (the
+    /// verifiers' rule); and at least one second past the
+    /// subject's latest live cut-off, because a mint after that cut-off carries an `iat` one
+    /// second past it ([`Store::mint_access_tx`]) and must fall under this one.
     pub(crate) async fn insert_revocation_tx(
         &self,
         conn: &mut PgConnection,
@@ -1068,7 +1119,13 @@ impl Store {
             "INSERT INTO accounts.token_revocations \
                     (family_id, player_id, client_id, revoked_at, expires_at) \
              SELECT $1::uuid, $2::uuid, $3, t, t + $4::bigint * interval '1 second' \
-               FROM (SELECT clock_timestamp() AS t) stamp",
+               FROM (SELECT greatest( \
+                              clock_timestamp(), \
+                              (SELECT max(r.revoked_at) + interval '1 second' \
+                                 FROM accounts.token_revocations r \
+                                WHERE (r.player_id = $2::uuid OR r.client_id = $3) \
+                                  AND r.expires_at > now()) \
+                            ) AS t) stamp",
         )
         .bind(family)
         .bind(player)
@@ -1197,8 +1254,8 @@ impl Store {
     }
 
     /// The token families of a player that still grant access ([`granting_families`]), in
-    /// ascending id: those whose newest access token is unexpired or that hold an unexpired
-    /// refresh token. A family past both expiries grants nothing; the prune sweeps remove
+    /// ascending id: those whose newest access token can still verify or that hold an
+    /// unexpired refresh token. A family past both grants nothing; the prune sweeps remove
     /// its rows.
     pub async fn revocable_families_tx(
         &self,
@@ -1513,7 +1570,7 @@ impl Store {
                 "family_id::text, \
                  to_char(min(since) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), \
                  (EXTRACT(EPOCH FROM min(since)) * 1000000)::int8, \
-                 floor(EXTRACT(EPOCH FROM (max(expires_at) - now())))::int8, \
+                 greatest(0, floor(EXTRACT(EPOCH FROM (max(expires_at) - now()))))::int8, \
                  (SELECT c.display_name FROM accounts.token_families f \
                     JOIN accounts.oidc_clients c ON c.client_id = f.client_id \
                    WHERE f.id = family_rows.family_id), \
