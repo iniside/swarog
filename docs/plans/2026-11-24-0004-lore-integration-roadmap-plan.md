@@ -128,7 +128,7 @@ Sources:
 |---|---|---|---|
 | OIDC issuer | `accounts/src/oidc.rs` | Verifies external IdPs' id_tokens, the opposite role | Not extended. A new `issuer` area inside `accounts` may share JWK types only |
 | OIDC issuer | a new `oidc` module | Would need the users, sessions and refresh families that `accounts` owns, over the wire, for every grant | Rejected. The issuer lives in `accounts`, which owns the identities and refresh families (reuse-detection and family kill already exist, `accounts/src/lib.rs:961-1019`) |
-| Swarog-API tokens for the portal | the existing opaque sessions | Already verified by the gateway | **Kept.** The token endpoint returns the opaque session for audience = Swarog, so the gateway stays unchanged. Only tokens whose audience is the Lore host are ES256 JWTs (loreserver verifies JWTs, `jwt.rs:315-389`) |
+| Swarog-API tokens for the portal | the player access tokens | Already verified by the gateway | **Kept.** The token endpoint returns the ES256 `at+jwt` access token the login ops mint for audience = Swarog, so the gateway stays unchanged. Lore-audience tokens are ES256 JWTs too (loreserver verifies JWTs, `jwt.rs:315-389`) |
 | Auth-code / device state | `accounts.oauth_states` (Epic) | Client-side Epic state, replica-safe via `DELETE … RETURNING` | Pattern copied into new issuer tables; the Epic table is not reused |
 | client_credentials secrets | `apikeys` | Keys for kinds of client, with a gateway method allow-list | Not used. Lore service accounts need `is_service_account` and Lore actions. Clients live in an `accounts` table; only the digest-and-one-time-reveal pattern is copied |
 | Per-repo grants | apikeys roles; `controlplane::Role` | Gateway method allow-lists; operator ordering for the admin panel | Not used. Grants live in the new `authz` module (owner decision) |
@@ -198,7 +198,7 @@ split proof checks its endpoints through gateway-svc.
   `authorize`, `token` (`authorization_code`, `refresh_token`) and `revoke`.
 - (b) The portal (Step 12) and the Lore CLI's token refresh need them.
 - (c) The audience decides the format:
-  - Swarog audience → the existing opaque session plus refresh family;
+  - Swarog audience → the ES256 `at+jwt` access token the login ops mint, plus refresh family;
   - Lore audience → an ES256 `at+jwt` with `sub` = user id,
     `preferred_username` = handle. The audience and `root_domains` belong to
     the client registration in `accounts` (`oidc_clients.audience`). The Lore

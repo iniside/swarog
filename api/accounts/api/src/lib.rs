@@ -397,18 +397,18 @@ pub trait Auth: Send + Sync {
     async fn begin_delete(&self, identity: Identity) -> Result<DeleteTicket, Error>;
 
     /// Erases the CALLING player: the ticket is consumed, its handle is reserved
-    /// permanently (it can never be minted again), a receipt is written, the player row
-    /// is deleted — cascading its identities, sessions and refresh tokens — and
-    /// `player.deleted` is appended, ALL in one transaction. An unknown ticket, an
-    /// expired one, and one belonging to another player are the same `NotFound` (404),
+    /// permanently (it can never be minted again), a receipt is written, a player revocation
+    /// is written and its token families deleted, the player row is deleted — cascading its
+    /// identities — and `player.deleted` is appended, ALL in one transaction. An unknown
+    /// ticket, an expired one, and one belonging to another player are the same `NotFound` (404),
     /// never `Forbidden` — a 403 would confirm the ticket exists.
     ///
     /// `#[retry_safe]` covers exactly one replay: the gateway→accounts **internal-edge**
     /// replay after a reconnect (`opsapi::RetryMode::OnceAfterReconnect`), which the
     /// receipt answers with the original success instead of re-executing. It does NOT
-    /// cover a client re-POST — the session died with the player, so the gateway's
-    /// verifier answers 401 before the request reaches this method. A client learns the
-    /// outcome from the first response or not at all. 200.
+    /// cover a client re-POST: once the gateway's next `token_state` pull carries the player
+    /// revocation, its verifier answers 401 before the request reaches this method. A client
+    /// learns the outcome from the first response or not at all. 200.
     #[http(verb = "POST", path = "/accounts/delete", auth = "player", success = 200)]
     #[retry_safe]
     async fn delete_account(&self, identity: Identity, ticket: String) -> Result<DeleteReceipt, Error>;

@@ -343,7 +343,7 @@ replaced by data:
   manifest merge as today.
 - Adding a module then requires **zero gateway changes**.
 
-The gateway's own typed capability deps (`accountsapi::Sessions`,
+The gateway's own typed capability deps (`accountsapi::TokenState`,
 `apikeysapi::Keys`) stay compiled in — they are its sync deps, not routing.
 
 **Research this before writing it:** whether every existing `OpBinding`

@@ -106,11 +106,12 @@ wire-only op) answers `NotFound` "unknown operation".
 **Admission, per invoke.** Each invoke is admitted with the bearer and API key
 the connection bound with, through the same `handle_player` path as player-QUIC:
 the API key's **policy** is checked for that method, then — for an
-`auth = "player"` op — one `Sessions` lookup validates the bearer, then the op is
-dispatched Local or Remote. A session revoked after the bind is therefore
-refused on the very next player-auth invoke, without waiting for the re-verify
-tick; an op with no auth requirement (e.g. `leaderboard`, the accounts
-register/login ops) does no session lookup. An absent `payload` is sent as `{}`;
+`auth = "player"` op — the gateway's verifier checks the bearer JWT against its
+`accounts.token_state` snapshot, then the op is dispatched Local or Remote. A
+token revoked after the bind is therefore refused on the first player-auth
+invoke after the gateway's next pull (every 5 s), without waiting for the
+re-verify tick; an op with no auth requirement (e.g. `leaderboard`, the accounts
+register/login ops) does no bearer check. An absent `payload` is sent as `{}`;
 a `payload` that is not valid JSON makes the frame malformed and closes
 `bad_frame`.
 
@@ -247,10 +248,12 @@ says "something changed."
 
 A live connection's bind-time bearer is re-checked on every
 `PUSH_REVERIFY_INTERVAL_MS` tick (default 60s). An expired token and a revoked
-session are indistinguishable to this check, so the close is `session_expired`
-and marked **retryable** — the client is expected to refresh its credential
-and reconnect (re-binding, since connection identity and group membership do
-not survive a reconnect anyway). A verifier that cannot answer at all
+token are indistinguishable to this check, so the close is `session_expired`
+and marked **retryable**. The bind-time bearer is a 15-minute access token, so
+every socket closes `session_expired` on the first tick after that token's
+expiry plus the 30 s verifier leeway — the client is expected to refresh its
+credential and reconnect (re-binding, since connection identity and group
+membership do not survive a reconnect anyway). A verifier that cannot answer at all
 (`unavailable`) keeps the connection running rather than closing it, up to
 `PUSH_MAX_STALE_MS` (default 900s / 15 minutes) since the last successful
 check — an accounts outage must not log every player out at once.
@@ -314,8 +317,8 @@ fuzz target, `routecheck` coverage of the fixed route) are tracked in
 
 Split-proof drives `/push` in both topologies: `[PH7]`-`[PH11]` (invoke and
 lanes), `[PH12]` (five invokes owned by five modules pipelined on one socket and
-correlated by id), `[PH13]` (a session revoked by account self-delete under a
-live socket answers the next invoke `Unauthorized`). Split only: `[PH14]` (with
+correlated by id), `[PH13]` (a token revoked by account self-delete under a
+live socket answers an invoke `Unauthorized` within the pull bound). Split only: `[PH14]` (with
 `characters-svc` dead, an invoke answers an `Unavailable` result from the remote
 pool and the socket keeps serving) and `[PH15]` (gateway-svc drops a backplane
 batch whose `seq` is below its producer's high-water mark).

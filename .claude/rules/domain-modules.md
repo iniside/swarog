@@ -17,11 +17,17 @@ Per-module mechanics live in each `modules/<name>/src/lib.rs` header and the
   known-but-unconfigured one is 503. Provider name constants are the contract's
   (`accountsevents::providers`), re-exported by the impl. Refresh reuse outside the
   30s grace window kills that family only, never the player's other devices. A guest
-  gaining its first non-guest identity emits durable `player.promoted`. The gateway's
-  session verifier resolves `accountsapi::Sessions` — a process hosting a gateway
-  without the accounts capability FAILS STARTUP unless `GATEWAY_DEV_VERIFIER=1` (dev
-  verifier, loud warn); `GATEWAY_DEV_VERIFIER` is explicit-only (default OFF); the
-  split proof never sets it. The hosted browser login lives under `/accounts/oidc`
+  gaining its first non-guest identity emits durable `player.promoted`. Access tokens
+  are 15-minute ES256 `at+jwt` JWTs (`accountsapi::ACCESS_TTL_MINUTES`). The gateway
+  verifies them locally against a snapshot of `accounts.token_state`
+  (`accountsapi::TokenState`: signing keys plus family, player and client
+  revocations), pulled every `accountsapi::TOKEN_STATE_PULL_INTERVAL` (5 s); with no
+  snapshot pulled in the last 60 s every bearer is unavailable (503) and the `/readyz`
+  `token-state` check is red. A process hosting a gateway without that capability
+  FAILS STARTUP unless `GATEWAY_DEV_VERIFIER=1` (dev verifier, loud warn);
+  `GATEWAY_DEV_VERIFIER` is explicit-only (default OFF); the split proof never sets
+  it. `ACCOUNTS_DEV_SEED` (explicit-only, default OFF) inserts the `dev-game` client
+  when absent. The hosted browser login lives under `/accounts/oidc`
   (served by accounts); its cookies are `Secure` unless `ACCOUNTS_COOKIE_SECURE` is
   `0`/`false`/`off` (dev/proof opt-out, loud warn), and password self-registration
   stays behind `ACCOUNTS_OPEN_REGISTRATION` (default OFF). accounts is the OIDC issuer
@@ -30,16 +36,18 @@ Per-module mechanics live in each `modules/<name>/src/lib.rs` header and the
   (unset, malformed, or a KEK that cannot open a stored key fails startup). `wallet` grants starter
   currency on `player.promoted` (and non-guest `player.registered`) when configured.
   Self-delete: `begin` mints/upserts a confirmation ticket (a repeat returns the same
-  live one); `delete` consumes it and in one tx revokes sessions, reserves the handle
+  live one); `delete` consumes it and in one tx writes a player revocation and deletes
+  the player's token families, reserves the handle
   PERMANENTLY (closing impersonation-by-recycling), writes a permanent receipt,
   deletes the player row and emits durable `player.deleted` (`MinRetention{90d}`). An
   unknown/expired/foreign ticket is `NotFound`, never `Forbidden`. `#[retry_safe]` on
   `delete_account` covers only the gateway→accounts internal-edge replay (the receipt
-  answers it); a client re-POST is a 401 by construction. Seven modules
+  answers it); a client re-POST is a 401 only once the gateway's next `token_state` pull
+  carries the player revocation. Seven modules
   (`characters`, `inventory`, `friends`, `groups`, `notifications`, `wallet`,
   `storage`) subscribe to `player.deleted`, tombstone the player in a per-module
   `purged_players` table and drain it via a five-minute `player-purge` sweep (`party`
-  purges in the delivery tx without a tombstone). Tracker row and open gaps:
+  purges in the delivery tx and keeps a permanent tombstone). Tracker row and open gaps:
   `docs/roadmap/feature-tracker.md` (`accounts` self-delete),
   `docs/todo/account-deletion.md`, `docs/todo/accounts.md`.
 - **characters / inventory** — the modularity reference case: plain-id relations,
@@ -152,7 +160,8 @@ Per-module mechanics live in each `modules/<name>/src/lib.rs` header and the
   because `notifications`' handler runs inside the delivery transaction with no
   accounts stub available. Presence is session-derived `online_until` (RFC3339,
   empty = no live session), a timestamp rather than an `online` bool, since a quit
-  player reads a future value for up to an hour; socket presence did not ship
+  player reads a future value for up to 15 minutes (the access-token TTL); socket
+  presence did not ship
   (gateway has no DB, presence is per-process RAM, the offline transition runs in a
   `Drop` that cannot `await`, no fan-in primitive). Open gaps: `docs/todo/friends.md`.
 - **groups** — `MAX_MEMBERS` is enforced under a per-group `pg_advisory_xact_lock`,
@@ -179,8 +188,10 @@ Per-module mechanics live in each `modules/<name>/src/lib.rs` header and the
   when `revision >= hw`, then `hw = revision` (`hw` resets per connection). Pushes
   (`party.state`, `party.invite`) are best-effort via `ctx.push()`, so in the split
   `party-svc` holds a `remote::PushSender` to gateway-svc; a purge removal is not
-  pushed. `party.player-deleted.v1` applies the leave rule in the delivery tx; there
-  is no tombstone table. No durable topics, no admin page. Known gaps: the Parties
+  pushed. `party.player-deleted.v1` applies the leave rule in the delivery tx and
+  plants a permanent `party.purged_players` tombstone; `create` and `accept` check it
+  under a per-player advisory lock and answer `NotFound` for a purged player. No
+  durable topics, no admin page. Known gaps: the Parties
   row of `docs/roadmap/feature-tracker.md`.
 - **gateway** — Local vs Remote is decided purely by slot presence; peer addresses
   are injected by `cmd/*` via `remote::Stub` → `opsapi::PEER_SLOT` contributions and

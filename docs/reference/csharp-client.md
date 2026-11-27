@@ -118,7 +118,7 @@ pretty JSON for debugging/golden tests without touching the C# output.
   <errors>`, plus the chain statuses when the chain failed.
 
 **The `dev-<pid>` token shortcut is NOT available to this client.** That path only
-activates in `DevSessionVerifier` when a process's gateway has no `accounts.sessions`
+activates in `DevSessionVerifier` when a process's gateway has no `accounts.token_state`
 capability wired — but every gateway-hosting process in this repo (including
 `cmd/gateway-svc`) hard-codes the accounts stub as mandatory, so the capability is
 always present and `dev-` tokens are always rejected. Instead, get a real bearer the
@@ -177,7 +177,8 @@ Two independent `verifyctl` stages are deliberately split by runtime dependency:
   (the preceding blocking workspace build produces the `server` binary; the stage
   does not run a nested Cargo build, sets `PORT=:8099` and
   `PLAYER_EDGE_ADDR=:9100`, uses an ephemeral CA with
-  `--insecure`, `APIKEYS_DEV_SEED=1` so the two well-known dev keys exist), and runs
+  `--insecure`, `APIKEYS_DEV_SEED=1` so the two well-known dev keys exist and
+  `ACCOUNTS_DEV_SEED=1` so the `dev-game` client exists), and runs
   six named scenarios through `gbclient`, all carrying `--api-key dev-key-client`
   except where noted: a raw `leaderboard.topScores` probe (auth=none, C1),
   `characters.create` with no token (C2, expect exit 1 + `Unauthorized`),
