@@ -231,6 +231,41 @@ async fn replay_inside_grace_returns_the_recorded_successor_and_kills_nothing() 
     cleanup_player(&pool, &pid).await;
 }
 
+/// A client's audience and root domains and the player's handle ride its first, refreshed
+/// and grace-replay tokens, and `verify_access`, pinned to the Swarog audience, refuses all
+/// three.
+#[tokio::test]
+async fn a_client_audience_rides_the_first_refreshed_and_grace_replay_tokens() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let grants = [accountsapi::grant_types::PASSWORD, accountsapi::grant_types::REFRESH_TOKEN];
+    let audience = "https://lore.test/api";
+    let domains = vec!["lore.test".to_string(), "wiki.lore.test".to_string()];
+    let client = insert_client_for(&pool, &grants, audience, &domains).await;
+    let email = format!("lore-{}@test.local", suffix());
+    let sess = svc.register(email, "pw".into(), "Lorekeeper".into(), client.clone()).await.unwrap();
+    let rotated = svc.refresh(sess.refresh_token.clone()).await.unwrap();
+    set_used_at_offset(&pool, &sess.refresh_token, -5.0).await;
+    let replay = svc.refresh(sess.refresh_token.clone()).await.unwrap();
+    let handle = handle_of(&svc, &sess.player_id).await;
+    let tokens = [("first", &sess.token), ("refreshed", &rotated.token), ("grace replay", &replay.token)];
+    let mut verified = Vec::new();
+    for (_, token) in tokens {
+        verified.push(svc.tokens.verify_access(token).await.unwrap());
+    }
+    cleanup_player(&pool, &sess.player_id).await;
+    delete_client(&pool, &client).await;
+
+    assert_eq!(replay.refresh_token, rotated.refresh_token, "the second refresh was not a grace replay");
+    for (which, token) in tokens {
+        let claims = unverified_claims(token);
+        assert_eq!(claims["aud"], audience, "{which}");
+        assert_eq!(claims["root_domains"], serde_json::json!(domains), "{which}");
+        assert_eq!(claims["preferred_username"], handle.as_str(), "{which}");
+    }
+    assert_eq!(verified, [None, None, None], "verify_access accepted a token of another audience");
+}
+
 /// A replay inside the grace window is refused once the family's client no longer lists
 /// `refresh_token`, and mints nothing.
 #[tokio::test]

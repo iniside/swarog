@@ -124,6 +124,21 @@ const SUMMARY_SELECT: &str = "SELECT p.id::text, p.display_name, p.discriminator
        FROM accounts.players p \
        LEFT JOIN accounts.token_families f ON f.player_id = p.id AND f.access_expires_at > now() ";
 
+/// `(client_id, iat, audience, root_domains, display_name, discriminator)` of one mint.
+type MintRow = (String, i64, String, Vec<String>, String, String);
+
+/// What [`Store::mint_access_tx`] stamped for one access token, with the claims read in the
+/// same statement: the family's client and that client's audience and root domains, and the
+/// family player's handle.
+pub(crate) struct MintedAccess {
+    pub(crate) client_id: String,
+    /// Unix seconds.
+    pub(crate) iat: i64,
+    pub(crate) audience: String,
+    pub(crate) root_domains: Vec<String>,
+    pub(crate) handle: String,
+}
+
 /// The ONE rendering of a `"Name#1234"` handle.
 pub(crate) fn render_handle(display_name: &str, discriminator: &str) -> String {
     format!("{display_name}#{discriminator}")
@@ -922,9 +937,9 @@ impl Store {
         .await
     }
 
-    /// Stamps the access token family `family_id` mints next, on the caller's tx: answers the
-    /// family's client and the token's `iat` (Unix seconds), and moves the family's
-    /// `access_expires_at` to that token's `exp`. A vanished family surfaces as `RowNotFound`.
+    /// Stamps the access token family `family_id` mints next, on the caller's tx: answers its
+    /// [`MintedAccess`], and moves the family's `access_expires_at` to that token's `exp`. A
+    /// vanished family surfaces as `RowNotFound`.
     ///
     /// `iat` is the database clock in whole seconds, raised past every live player and
     /// client cut-off of the family ([`Revocation`]): verifiers refuse `iat <= revoked_at`
@@ -937,10 +952,10 @@ impl Store {
         &self,
         conn: &mut PgConnection,
         family_id: &str,
-    ) -> Result<(String, i64), sqlx::Error> {
-        sqlx::query_as(
+    ) -> Result<MintedAccess, sqlx::Error> {
+        let (client_id, iat, audience, root_domains, display_name, discriminator): MintRow = sqlx::query_as(
             "WITH mint AS ( \
-               SELECT f.id, greatest( \
+               SELECT f.id, c.audience, c.root_domains, p.display_name, p.discriminator, greatest( \
                         floor(extract(epoch FROM clock_timestamp())), \
                         (SELECT ceil(extract(epoch FROM max(r.revoked_at))) + 1 \
                            FROM accounts.token_revocations r \
@@ -949,18 +964,24 @@ impl Store {
                            FROM accounts.token_revocations r \
                           WHERE r.client_id = f.client_id AND r.expires_at > now()) \
                       )::int8 AS iat \
-                 FROM accounts.token_families f WHERE f.id = $1::uuid \
+                 FROM accounts.token_families f \
+                 JOIN accounts.oidc_clients c ON c.client_id = f.client_id \
+                 JOIN accounts.players p ON p.id = f.player_id \
+                WHERE f.id = $1::uuid \
              ) \
              UPDATE accounts.token_families f \
                 SET access_expires_at = to_timestamp(mint.iat) + make_interval(mins => $2) \
                FROM mint \
               WHERE f.id = mint.id \
-              RETURNING f.client_id, mint.iat",
+              RETURNING f.client_id, mint.iat, mint.audience, mint.root_domains, \
+                        mint.display_name, mint.discriminator",
         )
         .bind(family_id)
         .bind(ACCESS_TTL_MINUTES)
         .fetch_one(&mut *conn)
-        .await
+        .await?;
+        let handle = render_handle(&display_name, &discriminator);
+        Ok(MintedAccess { client_id, iat, audience, root_domains, handle })
     }
 
     /// Inserts the first refresh token of family `family_id` on the caller's tx: the only

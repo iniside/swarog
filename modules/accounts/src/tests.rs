@@ -735,18 +735,36 @@ pub(crate) fn login_intent() -> Intent {
 
 /// Inserts a client of its own holding exactly `grants`; [`delete_client`] removes it.
 pub(crate) async fn insert_client(pool: &PgPool, grants: &[&str]) -> String {
+    insert_client_for(pool, grants, accountsapi::SWAROG_AUDIENCE, &[]).await
+}
+
+/// A public client of `audience` and `root_domains` listing `grants`.
+pub(crate) async fn insert_client_for(pool: &PgPool, grants: &[&str], audience: &str, root_domains: &[String]) -> String {
     let client_id = format!("t-{}", suffix());
     sqlx::query(
-        "INSERT INTO accounts.oidc_clients (client_id, display_name, grant_types, audience) \
-         VALUES ($1, 'accounts test client', $2, $3)",
+        "INSERT INTO accounts.oidc_clients (client_id, display_name, grant_types, audience, root_domains) \
+         VALUES ($1, 'accounts test client', $2, $3, $4)",
     )
     .bind(&client_id)
     .bind(grants)
-    .bind(accountsapi::SWAROG_AUDIENCE)
+    .bind(audience)
+    .bind(root_domains)
     .execute(pool)
     .await
     .unwrap();
     client_id
+}
+
+/// The claims of a JWT as JSON, read without verifying it.
+pub(crate) fn unverified_claims(token: &str) -> serde_json::Value {
+    let payload = token.split('.').nth(1).unwrap();
+    serde_json::from_slice(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap()
+}
+
+/// The `"Name#1234"` handle of `player_id`.
+pub(crate) async fn handle_of(svc: &Service, player_id: &str) -> String {
+    let mut conn = svc.store.pool.acquire().await.unwrap();
+    svc.store.handle_of_tx(&mut conn, player_id).await.unwrap().unwrap()
 }
 
 pub(crate) async fn set_client_grants(pool: &PgPool, client_id: &str, grants: &[&str]) {

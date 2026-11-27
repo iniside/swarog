@@ -530,23 +530,7 @@ impl Service {
         else {
             return Err(invalid_client());
         };
-        let family_id = self
-            .store
-            .insert_family_tx(conn, &p.id, client_id)
-            .await
-            .map_err(internal)?;
-        let refresh_token = if grants.refresh_token {
-            let refresh_token = store::new_token();
-            self.store
-                .insert_refresh_root_tx(conn, &refresh_token, &p.id, &family_id)
-                .await
-                .map_err(internal)?;
-            refresh_token
-        } else {
-            String::new()
-        };
-        let (_, iat) = self.store.mint_access_tx(conn, &family_id).await.map_err(internal)?;
-        let token = self.sign_access(conn, &p.id, client_id, &family_id, iat).await?;
+        let session = self.mint_session_tx(conn, &p.id, client_id, grants).await?;
         let stamped = self
             .store
             .stamp_identity_used_tx(conn, provider, subject, &p.id, secret_hash)
@@ -555,26 +539,50 @@ impl Service {
         if !stamped {
             return Err(stamp_refused(secret_hash));
         }
+        Ok(session)
+    }
+
+    /// The mint every login calls after its grant check: a new token family for `player_id`
+    /// and `client_id`, its refresh root when `grants` lists `refresh_token`, and its first
+    /// access token, on the caller's transaction. The caller's grant check holds the client
+    /// row FOR KEY SHARE; the family insert takes the player row FOR KEY SHARE through its FK.
+    async fn mint_session_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        client_id: &str,
+        grants: clients::MintGrants,
+    ) -> Result<accountsapi::Session, Error> {
+        let family_id = self
+            .store
+            .insert_family_tx(conn, player_id, client_id)
+            .await
+            .map_err(internal)?;
+        let refresh_token = if grants.refresh_token {
+            let refresh_token = store::new_token();
+            self.store
+                .insert_refresh_root_tx(conn, &refresh_token, player_id, &family_id)
+                .await
+                .map_err(internal)?;
+            refresh_token
+        } else {
+            String::new()
+        };
+        let token = self.sign_access(conn, player_id, &family_id).await?;
         Ok(accountsapi::Session {
-            player_id: p.id.clone(),
+            player_id: player_id.to_string(),
             token,
             refresh_token,
             access_expires_in_secs: store::access_expires_in_secs(),
         })
     }
 
-    /// Signs an access token of family `family_id` for `player_id` and `client_id`, issued at
-    /// `iat` ([`store::Store::mint_access_tx`]), reading a stale signing key on `conn`, the
-    /// caller's transaction.
-    async fn sign_access(
-        &self,
-        conn: &mut PgConnection,
-        player_id: &str,
-        client_id: &str,
-        family_id: &str,
-        iat: i64,
-    ) -> Result<String, Error> {
-        let claims = self.tokens.claims(player_id, accountsapi::SWAROG_AUDIENCE, client_id, family_id, iat);
+    /// Mints and signs the next access token of family `family_id` for `player_id`
+    /// ([`store::Store::mint_access_tx`]), reading the client's audience and root domains,
+    /// the player's handle and a stale signing key on `conn`, the caller's transaction.
+    async fn sign_access(&self, conn: &mut PgConnection, player_id: &str, family_id: &str) -> Result<String, Error> {
+        let minted = self.store.mint_access_tx(conn, family_id).await.map_err(internal)?;
+        let claims = self.tokens.claims(player_id, family_id, &minted);
         self.tokens.sign(conn, &claims).await.map_err(|e| internal(format!("{e:#}")))
     }
 
@@ -1135,12 +1143,7 @@ impl Service {
         family_id: &str,
         refresh_token: String,
     ) -> Result<accountsapi::Session, Error> {
-        let (client_id, iat) = self
-            .store
-            .mint_access_tx(conn, family_id)
-            .await
-            .map_err(internal)?;
-        let token = self.sign_access(conn, player_id, &client_id, family_id, iat).await?;
+        let token = self.sign_access(conn, player_id, family_id).await?;
         Ok(accountsapi::Session {
             player_id: player_id.to_string(),
             token,

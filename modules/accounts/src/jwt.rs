@@ -13,13 +13,16 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, PgPool};
 
 use crate::signing_keys::{self, Clock, SigningKek, SigningKeys, KEK_ENV};
+use crate::store::MintedAccess;
 
 /// How long the signer uses the active key it read before reading it again.
 pub(crate) const ACTIVE_KEY_CACHE_TTL: Duration = Duration::from_secs(60);
 
 pub(crate) const ACCESS_TTL_SECS: i64 = ACCESS_TTL_MINUTES as i64 * 60;
 
-/// The claims of one access token. `sid` is the token family's id.
+/// The claims of one access token. `sid` is the token family's id, `aud` its client's
+/// audience, `preferred_username` the player's handle; `root_domains` is present only when
+/// the client lists some.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct AccessClaims {
     pub(crate) iss: String,
@@ -30,17 +33,9 @@ pub(crate) struct AccessClaims {
     pub(crate) iat: i64,
     pub(crate) exp: i64,
     pub(crate) jti: String,
-}
-
-/// The longest token a client can be issued: [`AccessClaims`] plus the player's handle and
-/// the client's root domains.
-#[derive(Serialize)]
-struct LongestClaims<'a> {
-    #[serde(flatten)]
-    base: AccessClaims,
-    preferred_username: String,
-    #[serde(skip_serializing_if = "<[String]>::is_empty")]
-    root_domains: &'a [String],
+    pub(crate) preferred_username: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) root_domains: Vec<String>,
 }
 
 /// `(family_id, player_id, client_id, revoked_at_unix)` of one revoked subject.
@@ -97,17 +92,19 @@ impl Tokens {
         self.keys.clone()
     }
 
-    /// The claims of a token of family `sid` issued at `iat` (Unix seconds).
-    pub(crate) fn claims(&self, sub: &str, aud: &str, client_id: &str, sid: &str, iat: i64) -> AccessClaims {
+    /// The claims of the token `minted` stamped in family `sid` for player `sub`.
+    pub(crate) fn claims(&self, sub: &str, sid: &str, minted: &MintedAccess) -> AccessClaims {
         AccessClaims {
             iss: self.issuer.clone(),
             sub: sub.to_string(),
-            aud: aud.to_string(),
-            client_id: client_id.to_string(),
+            aud: minted.audience.clone(),
+            client_id: minted.client_id.clone(),
             sid: sid.to_string(),
-            iat,
-            exp: iat.saturating_add(ACCESS_TTL_SECS),
+            iat: minted.iat,
+            exp: minted.iat.saturating_add(ACCESS_TTL_SECS),
             jti: crate::store::new_token(),
+            preferred_username: minted.handle.clone(),
+            root_domains: minted.root_domains.clone(),
         }
     }
 
@@ -162,15 +159,16 @@ impl Tokens {
         root_domains: &[String],
     ) -> anyhow::Result<usize> {
         let uuid = "ffffffff-ffff-ffff-ffff-ffffffffffff";
-        let client_id = "x".repeat(MAX_CLIENT_ID_BYTES);
-        let longest = LongestClaims {
-            base: self.claims(uuid, audience, &client_id, uuid, i64::MAX - ACCESS_TTL_SECS),
+        let minted = MintedAccess {
+            client_id: "x".repeat(MAX_CLIENT_ID_BYTES),
+            iat: i64::MAX - ACCESS_TTL_SECS,
+            audience: audience.to_string(),
+            root_domains: root_domains.to_vec(),
             // serde_json escapes U+0001 in six bytes, its widest escape (serde_json 1.0.150
             // src/ser.rs:2142-2150).
-            preferred_username: "\u{1}".repeat(MAX_HANDLE_BYTES),
-            root_domains,
+            handle: "\u{1}".repeat(MAX_HANDLE_BYTES),
         };
-        Ok(self.sign(conn, &longest).await?.len())
+        Ok(self.sign(conn, &self.claims(uuid, uuid, &minted)).await?.len())
     }
 
     /// Fails when a token of this issuer for a [`SWAROG_AUDIENCE`] client with no root domains

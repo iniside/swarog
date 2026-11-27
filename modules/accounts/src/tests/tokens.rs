@@ -3,7 +3,19 @@
 
 use super::*;
 use crate::jwt::Tokens;
+use crate::store::MintedAccess;
 use accountsapi::TokenState as _;
+
+/// What a mint for a Swarog-audience client `client_id` stamps at `iat`.
+fn swarog_mint(client_id: &str, iat: i64) -> MintedAccess {
+    MintedAccess {
+        client_id: client_id.to_string(),
+        iat,
+        audience: accountsapi::SWAROG_AUDIENCE.to_string(),
+        root_domains: Vec::new(),
+        handle: "Tester#0001".to_string(),
+    }
+}
 
 async fn random_uuid(pool: &PgPool) -> String {
     sqlx::query_scalar("SELECT gen_random_uuid()::text").fetch_one(pool).await.unwrap()
@@ -47,11 +59,11 @@ async fn a_signed_token_round_trips_and_one_past_exp_and_leeway_is_refused() {
     let now = Tokens::unix_now();
     let mut conn = pool.acquire().await.unwrap();
 
-    let fresh = tokens.claims(&sub, accountsapi::SWAROG_AUDIENCE, TEST_CLIENT_ID, &sid, now);
+    let fresh = tokens.claims(&sub, &sid, &swarog_mint(TEST_CLIENT_ID, now));
     let token = tokens.sign(&mut conn, &fresh).await.unwrap();
     assert_eq!(tokens.verify_access(&token).await.unwrap(), Some(fresh.clone()));
 
-    let stale = tokens.claims(&sub, accountsapi::SWAROG_AUDIENCE, TEST_CLIENT_ID, &sid, now - 3600);
+    let stale = tokens.claims(&sub, &sid, &swarog_mint(TEST_CLIENT_ID, now - 3600));
     let expired = tokens.sign(&mut conn, &stale).await.unwrap();
     assert_eq!(tokens.verify_access(&expired).await.unwrap(), None, "a token an hour old verified");
 
@@ -64,6 +76,28 @@ async fn a_signed_token_round_trips_and_one_past_exp_and_leeway_is_refused() {
     let last = if tampered.ends_with('A') { "B" } else { "A" };
     tampered.replace_range(tampered.len() - 1.., last);
     assert_eq!(Tokens::verify_against(&snapshot, &tampered, now), None, "a bad signature verified");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_swarog_clients_token_gains_only_the_players_handle() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let sess = svc
+        .register(format!("swarog-{}@test.local", suffix()), "pw".into(), "Swarog".into(), test_client())
+        .await
+        .unwrap();
+    let handle = handle_of(&svc, &sess.player_id).await;
+    let verified = svc.tokens.verify_access(&sess.token).await.unwrap();
+    cleanup_player(&pool, &sess.player_id).await;
+
+    let claims = unverified_claims(&sess.token);
+    let mut names: Vec<&str> = claims.as_object().unwrap().keys().map(String::as_str).collect();
+    names.sort_unstable();
+    let want = ["aud", "client_id", "exp", "iat", "iss", "jti", "preferred_username", "sid", "sub"];
+    assert_eq!(names, want);
+    assert_eq!(claims["aud"], accountsapi::SWAROG_AUDIENCE);
+    assert_eq!(claims["preferred_username"], handle.as_str());
+    assert_eq!(verified.map(|c| c.preferred_username), Some(handle));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -258,14 +292,14 @@ async fn token_state_serves_the_keys_and_the_live_revocations() {
     let sid = random_uuid(&pool).await;
     let mut conn = pool.acquire().await.unwrap();
     for (sub, client_id, cut) in [(&player, TEST_CLIENT_ID, base + 1), (&sid, client.as_str(), base)] {
-        let at_cut = tokens.claims(sub, accountsapi::SWAROG_AUDIENCE, client_id, &sid, cut);
+        let at_cut = tokens.claims(sub, &sid, &swarog_mint(client_id, cut));
         let refused = tokens.sign(&mut conn, &at_cut).await.unwrap();
         assert_eq!(Tokens::verify_against(&state, &refused, cut), None, "iat == revoked_at verified");
-        let after = tokens.claims(sub, accountsapi::SWAROG_AUDIENCE, client_id, &sid, cut + 1);
+        let after = tokens.claims(sub, &sid, &swarog_mint(client_id, cut + 1));
         let accepted = tokens.sign(&mut conn, &after).await.unwrap();
         assert_eq!(Tokens::verify_against(&state, &accepted, cut + 1), Some(after), "iat > revoked_at refused");
     }
-    let in_family = tokens.claims(&sid, accountsapi::SWAROG_AUDIENCE, TEST_CLIENT_ID, &family, base + 10);
+    let in_family = tokens.claims(&sid, &family, &swarog_mint(TEST_CLIENT_ID, base + 10));
     let revoked_family = tokens.sign(&mut conn, &in_family).await.unwrap();
     assert_eq!(Tokens::verify_against(&state, &revoked_family, base + 10), None, "a revoked family verified");
 
@@ -373,7 +407,7 @@ async fn assert_minted_past(svc: &Service, cut: i64, sub: &str, client_id: &str,
     let mut conn = svc.store.pool.acquire().await.unwrap();
     for iat in [cut - 100, cut] {
         let sid = random_uuid(&svc.store.pool).await;
-        let claims = svc.tokens.claims(sub, accountsapi::SWAROG_AUDIENCE, client_id, &sid, iat);
+        let claims = svc.tokens.claims(sub, &sid, &swarog_mint(client_id, iat));
         let before = svc.tokens.sign(&mut conn, &claims).await.unwrap();
         assert_eq!(svc.tokens.verify_access(&before).await.unwrap(), None, "a token issued at {iat} verified");
     }
@@ -557,7 +591,7 @@ async fn revoke_all_counts_a_family_in_the_last_second_of_the_exp_leeway() {
     .await
     .unwrap();
     assert_eq!(now, exp + leeway);
-    let claims = svc.tokens.claims(&pid, accountsapi::SWAROG_AUDIENCE, TEST_CLIENT_ID, &family, exp - crate::jwt::ACCESS_TTL_SECS);
+    let claims = svc.tokens.claims(&pid, &family, &swarog_mint(TEST_CLIENT_ID, exp - crate::jwt::ACCESS_TTL_SECS));
     let token = svc.tokens.sign(&mut tx, &claims).await.unwrap();
     let snapshot = svc.tokens.snapshot().await.unwrap();
     assert!(Tokens::verify_against(&snapshot, &token, now).is_some(), "the boundary second's token did not verify");

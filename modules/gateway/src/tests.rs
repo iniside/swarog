@@ -304,6 +304,7 @@ fn access_claims(sub: &str, client_id: &str, sid: &str, iat: i64) -> serde_json:
         "iat": iat,
         "exp": iat + 900,
         "jti": "jti-1",
+        "preferred_username": "Player#0001",
     })
 }
 
@@ -444,10 +445,14 @@ async fn jwt_verifier_refuses_a_wrong_aud_iss_kid_or_signature() {
 
     let mut wrong_aud = good.clone();
     wrong_aud["aud"] = "another-api".into();
+    let mut client_aud = good.clone();
+    client_aud["aud"] = "https://lore.test/api".into();
+    client_aud["root_domains"] = serde_json::json!(["lore.test"]);
     let mut wrong_iss = good.clone();
     wrong_iss["iss"] = "https://elsewhere.test".into();
     let refused = [
         ("wrong aud", mint(&key, &wrong_aud)),
+        ("a client's own aud with root_domains", mint(&key, &client_aud)),
         ("wrong iss", mint(&key, &wrong_iss)),
         ("unknown kid", mint_with_kid(&key, "k2", &good)),
         ("bad signature", mint(&forger, &good)),
