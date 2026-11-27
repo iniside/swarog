@@ -21,7 +21,7 @@ use sqlx::PgConnection;
 
 use super::Web;
 use crate::clients::TokenClient;
-use crate::codes::RedeemedCode;
+use crate::codes::RedeemedGrant;
 use crate::secret::{ct_eq, digest};
 use crate::{client_id_within_cap, internal, RefreshPresenter, Service};
 
@@ -303,14 +303,15 @@ async fn refuse_unredeemable(svc: &Service, code: &str) -> TokenError {
     }
 }
 
-/// Mints the tokens of a redeemed code in one transaction, under the family id its
-/// redemption chose, with an id_token when the granted scope has `openid`.
-pub(crate) async fn mint_code(
+/// Mints the tokens of a redeemed authorization code or device code in one transaction, under
+/// the family id its redemption chose, with an id_token when the granted scope has `openid`.
+pub(crate) async fn mint_code<'a>(
     svc: &Service,
-    code: &RedeemedCode,
+    grant: impl Into<RedeemedGrant<'a>>,
 ) -> Result<(accountsapi::Session, Option<String>), Error> {
+    let grant = grant.into();
     let mut tx = svc.store.pool.begin().await.map_err(internal)?;
-    match mint_code_tx(svc, &mut tx, code).await {
+    match mint_code_tx(svc, &mut tx, &grant).await {
         Ok(minted) => {
             tx.commit().await.map_err(internal)?;
             Ok(minted)
@@ -324,44 +325,45 @@ pub(crate) async fn mint_code(
 
 /// Lock order: the code family's advisory lock (which a replay's revocation takes first
 /// too), then the client row and the player row FOR KEY SHARE, the order of every login.
-/// After the player's key share it re-reads the code's row, which a reset or Revoke all that
-/// held the player first has deleted, so no code redeemed before one mints after it.
+/// The client must list the grant's name. After the player's key share it re-reads the
+/// grant's row in its own table, which a reset or Revoke all that held the player first has
+/// deleted, so no grant redeemed before one mints after it.
 async fn mint_code_tx(
     svc: &Service,
     conn: &mut PgConnection,
-    code: &RedeemedCode,
+    code: &RedeemedGrant<'_>,
 ) -> Result<(accountsapi::Session, Option<String>), Error> {
     let invalid_grant = || Error::unauthorized("invalid grant");
-    svc.store.lock_code_family_tx(conn, &code.family_id).await.map_err(internal)?;
-    if svc.store.family_revoked_tx(conn, &code.family_id).await.map_err(internal)? {
+    svc.store.lock_code_family_tx(conn, code.family_id).await.map_err(internal)?;
+    if svc.store.family_revoked_tx(conn, code.family_id).await.map_err(internal)? {
         return Err(invalid_grant());
     }
     let Some(grants) = svc
         .store
-        .client_allows_tx(conn, &code.client_id, Some(AUTHORIZATION_CODE))
+        .client_allows_tx(conn, code.client_id, Some(code.grant))
         .await
         .map_err(internal)?
     else {
         return Err(invalid_grant());
     };
-    if !svc.store.key_share_player_tx(conn, &code.player_id).await.map_err(internal)? {
+    if !svc.store.key_share_player_tx(conn, code.player_id).await.map_err(internal)? {
         return Err(invalid_grant());
     }
-    if !svc.store.redeemed_code_kept_tx(conn, &code.player_id, &code.family_id).await.map_err(internal)? {
+    if !svc.store.redeemed_grant_kept_tx(conn, code).await.map_err(internal)? {
         return Err(invalid_grant());
     }
     let (session, minted) = svc
-        .mint_session_tx(conn, &code.player_id, &code.client_id, grants, Some(&code.family_id))
+        .mint_session_tx(conn, code.player_id, code.client_id, grants, Some(code.family_id))
         .await?;
     if !code.scope.split(' ').any(|s| s == OPENID) {
         return Ok((session, None));
     }
     let claims = svc.tokens.id_claims(
-        &code.player_id,
-        &code.client_id,
+        code.player_id,
+        code.client_id,
         minted.iat,
         code.auth_time,
-        code.nonce.as_deref(),
+        code.nonce,
         &minted.handle,
     );
     let id_token = svc.tokens.sign_id(conn, &claims).await.map_err(|e| internal(format!("{e:#}")))?;

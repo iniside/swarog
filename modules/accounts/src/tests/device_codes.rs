@@ -4,7 +4,7 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
-use accountsapi::grant_types::DEVICE_CODE;
+use accountsapi::grant_types::{AUTHORIZATION_CODE, DEVICE_CODE, REFRESH_TOKEN};
 use sqlx::PgConnection;
 
 use super::hosted_login::registered;
@@ -15,16 +15,22 @@ use crate::device_codes::{
     SLOW_DOWN_STEP_SECS,
 };
 use crate::web;
+use crate::web::token::mint_code;
 
 /// A public client holding the device grant.
 async fn device_client(pool: &PgPool) -> String {
+    client_of(pool, &[DEVICE_CODE]).await
+}
+
+/// A public client holding `grants`.
+async fn client_of(pool: &PgPool, grants: &[&str]) -> String {
     let client_id = format!("t-{}", suffix());
     sqlx::query(
         "INSERT INTO accounts.oidc_clients (client_id, display_name, grant_types, audience, scopes) \
          VALUES ($1, 'device test client', $2, $3, $4)",
     )
     .bind(&client_id)
-    .bind(&[DEVICE_CODE][..])
+    .bind(grants)
     .bind(accountsapi::SWAROG_AUDIENCE)
     .bind(&["openid", "profile"][..])
     .execute(pool)
@@ -339,5 +345,92 @@ async fn the_prune_keeps_the_replay_window_and_skips_locked_rows() {
     assert_eq!(rows_of(&mut conn, &code.device_code).await, 0, "an unlocked expired row kept");
 
     drop(conn);
+    delete_client(&pool, &client_id).await;
+}
+
+/// A code of `client_id` approved by `pid` under `scope` and redeemed by a poll.
+async fn redeemed(svc: &Service, client_id: &str, pid: &str, scope: &str) -> crate::device_codes::RedeemedDevice {
+    let code = issue(svc, client_id).await;
+    let mut conn = svc.store.pool.acquire().await.unwrap();
+    backdate(&mut conn, &code.device_code, &format!("scope = '{scope}'")).await;
+    assert!(svc.store.approve_device_code(&code.user_code, &session(svc, pid).await).await.unwrap());
+    on_time(&svc.store.pool, &code.device_code).await;
+    match poll(svc, &code.device_code, client_id).await {
+        DevicePoll::Redeemed(redeemed) => redeemed,
+        other => panic!("an approved code answered {}", name(&other)),
+    }
+}
+
+async fn families_of(pool: &PgPool, family_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM accounts.token_families WHERE id = $1::uuid")
+        .bind(family_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// A redeemed device code mints what a code exchange does, under its redemption's family: a
+/// refresh token only when the client holds that grant and an id_token only for `openid`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_redeemed_device_code_mints_under_its_family() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let refreshing = client_of(&pool, &[DEVICE_CODE, REFRESH_TOKEN]).await;
+    let client_id = device_client(&pool).await;
+    let (_, pid) = registered(&svc, "device-mint").await;
+
+    let grant = redeemed(&svc, &refreshing, &pid, "openid").await;
+    let (session, id_token) = mint_code(&svc, &grant).await.expect("a device code with the grant mints");
+    assert_eq!(session.player_id, pid);
+    assert!(!session.refresh_token.is_empty(), "no refresh token for a client holding the grant");
+    assert!(id_token.is_some(), "no id_token for openid");
+    assert_eq!(families_of(&pool, &grant.family_id).await, 1, "not minted under the redemption's family");
+
+    let grant = redeemed(&svc, &client_id, &pid, "").await;
+    let (session, id_token) = mint_code(&svc, &grant).await.expect("a device code with the grant mints");
+    assert!(session.refresh_token.is_empty(), "a refresh token for a client without the grant");
+    assert!(id_token.is_none(), "an id_token without openid");
+
+    cleanup_player(&pool, &pid).await;
+    delete_client(&pool, &refreshing).await;
+    delete_client(&pool, &client_id).await;
+}
+
+/// A device code mints only for a client listing the device grant: holding
+/// `authorization_code` instead is `invalid_grant`, with no family.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_mint_needs_the_device_grant() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let client_id = client_of(&pool, &[AUTHORIZATION_CODE, REFRESH_TOKEN]).await;
+    let (_, pid) = registered(&svc, "device-no-grant").await;
+
+    let grant = redeemed(&svc, &client_id, &pid, "openid").await;
+    let minted = mint_code(&svc, &grant).await;
+    assert_eq!(minted.unwrap_err().status, opsapi::Status::Unauthorized, "a mint without the device grant");
+    assert_eq!(families_of(&pool, &grant.family_id).await, 0);
+
+    cleanup_player(&pool, &pid).await;
+    delete_client(&pool, &client_id).await;
+}
+
+/// The mint re-reads the redeemed device code's row after the player's key share: a code a
+/// reset deleted between the redemption and the mint is `invalid_grant`, with no family.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_code_deleted_before_the_mint_prevents_it() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let client_id = device_client(&pool).await;
+    let (_, pid) = registered(&svc, "device-kept").await;
+
+    let grant = redeemed(&svc, &client_id, &pid, "openid").await;
+    let mut tx = pool.begin().await.unwrap();
+    assert_eq!(svc.store.delete_player_device_codes_tx(&mut tx, &pid).await.unwrap(), 1);
+    tx.commit().await.unwrap();
+    let minted = mint_code(&svc, &grant).await;
+    assert_eq!(minted.unwrap_err().status, opsapi::Status::Unauthorized, "the mint after the delete");
+    assert_eq!(families_of(&pool, &grant.family_id).await, 0, "a family minted after the delete");
+
+    cleanup_player(&pool, &pid).await;
     delete_client(&pool, &client_id).await;
 }

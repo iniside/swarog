@@ -1,9 +1,11 @@
 //! `accounts.oidc_codes`: the authorization codes `/accounts/oidc/authorize` issues and
 //! `/accounts/oidc/token` redeems.
 
+use accountsapi::grant_types::{AUTHORIZATION_CODE, DEVICE_CODE};
 use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
 
+use crate::device_codes::RedeemedDevice;
 use crate::store::{is_foreign_key_violation, Revocation, Store};
 
 /// How long an issued code can be redeemed.
@@ -32,6 +34,58 @@ pub(crate) struct RedeemedCode {
     /// Unix seconds of the browser sign-in the code was issued under.
     pub(crate) auth_time: i64,
     pub(crate) family_id: String,
+}
+
+/// The table a redeemed grant's row lives in, which the mint re-reads after the player's key
+/// share: a reset or Revoke all deletes the player's rows of both under the player row lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeptIn {
+    OidcCodes,
+    DeviceCodes,
+}
+
+/// What a redeemed authorization code or device code mints: the grant name the client must
+/// list, the table its kept check re-reads, and the claims of the tokens.
+pub(crate) struct RedeemedGrant<'a> {
+    pub(crate) grant: &'static str,
+    pub(crate) kept_in: KeptIn,
+    pub(crate) client_id: &'a str,
+    pub(crate) player_id: &'a str,
+    pub(crate) scope: &'a str,
+    pub(crate) nonce: Option<&'a str>,
+    /// Unix seconds of the browser sign-in the grant was issued or approved under.
+    pub(crate) auth_time: i64,
+    pub(crate) family_id: &'a str,
+}
+
+impl<'a> From<&'a RedeemedCode> for RedeemedGrant<'a> {
+    fn from(code: &'a RedeemedCode) -> Self {
+        RedeemedGrant {
+            grant: AUTHORIZATION_CODE,
+            kept_in: KeptIn::OidcCodes,
+            client_id: &code.client_id,
+            player_id: &code.player_id,
+            scope: &code.scope,
+            nonce: code.nonce.as_deref(),
+            auth_time: code.auth_time,
+            family_id: &code.family_id,
+        }
+    }
+}
+
+impl<'a> From<&'a RedeemedDevice> for RedeemedGrant<'a> {
+    fn from(device: &'a RedeemedDevice) -> Self {
+        RedeemedGrant {
+            grant: DEVICE_CODE,
+            kept_in: KeptIn::DeviceCodes,
+            client_id: &device.client_id,
+            player_id: &device.player_id,
+            scope: &device.scope,
+            nonce: None,
+            auth_time: device.auth_time,
+            family_id: &device.family_id,
+        }
+    }
 }
 
 fn code_digest(code: &str) -> Vec<u8> {
@@ -227,6 +281,19 @@ impl Store {
         .bind(family_id)
         .fetch_one(&mut *conn)
         .await
+    }
+
+    /// Whether the row `grant` was redeemed from is still kept, on the caller's transaction;
+    /// read after [`Store::key_share_player_tx`] as [`Store::redeemed_code_kept_tx`] is.
+    pub(crate) async fn redeemed_grant_kept_tx(
+        &self,
+        conn: &mut PgConnection,
+        grant: &RedeemedGrant<'_>,
+    ) -> sqlx::Result<bool> {
+        match grant.kept_in {
+            KeptIn::OidcCodes => self.redeemed_code_kept_tx(conn, grant.player_id, grant.family_id).await,
+            KeptIn::DeviceCodes => self.redeemed_device_kept_tx(conn, grant.player_id, grant.family_id).await,
+        }
     }
 
     /// Deletes every code of a player on the caller's transaction, answering how many.
