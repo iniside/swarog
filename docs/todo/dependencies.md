@@ -8,13 +8,14 @@ _None._
 
 ## Open
 
-- [ ] **New RustSec advisories fail the audit stage**
-  `cargo audit` reports 8 vulnerabilities and 1 warning:
-  - cookie 0.18.1, RUSTSEC-2026-0594 (fix: >=0.18.3);
-  - lettre 0.11.23, RUSTSEC-2026-0560 to -0565 (fix: >=0.11.24);
-  - url 2.5.8, RUSTSEC-2026-0592 (fix: >=2.5.9);
-  - chrono 0.4.45, RUSTSEC-2026-0543, unmaintained, no fixed upgrade (warning only).
-  Source: verifyctl run verify-1795776086-65428-62521403, 2026-11-27.
+### Known limits (verify-reds-fix step 4)
+
+- [ ] **The advisory bump also moved seven crates to older windows-sys**
+  `cargo update` in 5e953f2f re-resolved errno, nu-ansi-term, quinn-udp, rustix, rustls-platform-verifier and
+  tempfile from windows-sys 0.61.2 to 0.59.0, and winapi-util to 0.48.0. Each is inside the crate's declared range
+  and all those versions were already in the lock, so the build is unchanged; it is churn outside the three
+  crates the step bumped. Decide whether to move them back to 0.61.2 or leave it.
+  Source: core-reviewer of 5e953f2f (2026-11-27).
 
 ### Known limits (security-quick-wins step 1b)
 
