@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use accountsapi::grant_types::{AUTHORIZATION_CODE, REFRESH_TOKEN};
+use accountsapi::grant_types::{AUTHORIZATION_CODE, DEVICE_CODE, REFRESH_TOKEN};
 use accountsapi::scopes::OPENID;
 use axum::body::Bytes;
 use axum::extract::State;
@@ -226,7 +226,7 @@ async fn grant(svc: &Service, headers: &HeaderMap, form: &HashMap<String, String
     match grant_type.as_str() {
         AUTHORIZATION_CODE if listed(AUTHORIZATION_CODE) => code_grant(svc, &client, form).await,
         REFRESH_TOKEN if listed(REFRESH_TOKEN) => refresh_grant(svc, &client, form).await,
-        AUTHORIZATION_CODE | REFRESH_TOKEN => Err(TokenError::UnauthorizedClient),
+        AUTHORIZATION_CODE | REFRESH_TOKEN | DEVICE_CODE => Err(TokenError::UnauthorizedClient),
         _ => Err(TokenError::UnsupportedGrantType),
     }
 }

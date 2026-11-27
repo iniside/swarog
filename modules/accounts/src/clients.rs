@@ -30,6 +30,11 @@ pub(crate) const DEFAULT_GRANTS: [&str; 3] = [PASSWORD, GUEST, REFRESH_TOKEN];
 /// The only grants a confidential client may hold.
 pub(crate) const CONFIDENTIAL_GRANTS: [&str; 2] = [AUTHORIZATION_CODE, REFRESH_TOKEN];
 
+/// The bounds of a client's device code lifetime, and the lifetime a client is created with.
+pub(crate) const MIN_DEVICE_CODE_TTL_SECS: i32 = 2 * 60;
+pub(crate) const MAX_DEVICE_CODE_TTL_SECS: i32 = 30 * 60;
+pub(crate) const DEFAULT_DEVICE_CODE_TTL_SECS: i32 = 10 * 60;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ClientRow {
     pub(crate) client_id: String,
@@ -41,14 +46,26 @@ pub(crate) struct ClientRow {
     pub(crate) scopes: Vec<String>,
     /// The client stores a secret digest.
     pub(crate) confidential: bool,
+    pub(crate) device_code_ttl_secs: i32,
     pub(crate) created: String,
 }
 
-type ClientTuple = (String, String, Vec<String>, String, Vec<String>, Vec<String>, Vec<String>, bool, String);
+type ClientTuple =
+    (String, String, Vec<String>, String, Vec<String>, Vec<String>, Vec<String>, bool, i32, String);
 
 fn client_row(row: ClientTuple) -> ClientRow {
-    let (client_id, display_name, grant_types, audience, redirect_uris, root_domains, scopes, confidential, created) =
-        row;
+    let (
+        client_id,
+        display_name,
+        grant_types,
+        audience,
+        redirect_uris,
+        root_domains,
+        scopes,
+        confidential,
+        device_code_ttl_secs,
+        created,
+    ) = row;
     ClientRow {
         client_id,
         display_name,
@@ -58,12 +75,14 @@ fn client_row(row: ClientTuple) -> ClientRow {
         root_domains,
         scopes,
         confidential,
+        device_code_ttl_secs,
         created,
     }
 }
 
 const CLIENT_COLUMNS: &str = "client_id, display_name, grant_types, audience, redirect_uris, root_domains, \
-     scopes, secret_digest IS NOT NULL, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI')";
+     scopes, secret_digest IS NOT NULL, device_code_ttl_secs, \
+     to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI')";
 
 /// A client the portal creates; `secret_digest` is `None` for a public client.
 pub(crate) struct NewClient<'a> {
@@ -74,6 +93,7 @@ pub(crate) struct NewClient<'a> {
     pub(crate) root_domains: &'a [String],
     pub(crate) scopes: &'a [String],
     pub(crate) secret_digest: Option<&'a str>,
+    pub(crate) device_code_ttl_secs: i32,
 }
 
 /// `true` only for an explicitly truthy value (`1`/`true`/`on`, case-insensitive).
@@ -257,8 +277,9 @@ impl Store {
         let client_id = new_client_id();
         sqlx::query(
             "INSERT INTO accounts.oidc_clients \
-               (client_id, display_name, grant_types, audience, redirect_uris, root_domains, scopes, secret_digest) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+               (client_id, display_name, grant_types, audience, redirect_uris, root_domains, scopes, secret_digest, \
+                device_code_ttl_secs) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(&client_id)
         .bind(new.display_name)
@@ -268,9 +289,20 @@ impl Store {
         .bind(new.root_domains)
         .bind(new.scopes)
         .bind(new.secret_digest)
+        .bind(new.device_code_ttl_secs)
         .execute(&self.pool)
         .await?;
         Ok(client_id)
+    }
+
+    /// Sets the device code lifetime of `client_id`; `false` when no such client exists.
+    pub(crate) async fn set_device_code_ttl(&self, client_id: &str, secs: i32) -> sqlx::Result<bool> {
+        let done = sqlx::query("UPDATE accounts.oidc_clients SET device_code_ttl_secs = $2 WHERE client_id = $1")
+            .bind(client_id)
+            .bind(secs)
+            .execute(&self.pool)
+            .await?;
+        Ok(done.rows_affected() == 1)
     }
 
     /// What a mint for `client_id` may issue: `None` unless it names a client listing

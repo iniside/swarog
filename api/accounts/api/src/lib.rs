@@ -107,8 +107,10 @@ pub mod grant_types {
     pub const AUTHORIZATION_CODE: &str = "authorization_code";
     /// Refresh-token rotation.
     pub const REFRESH_TOKEN: &str = "refresh_token";
+    /// The OAuth device authorization grant (RFC 8628), for a public client only.
+    pub const DEVICE_CODE: &str = "urn:ietf:params:oauth:grant-type:device_code";
     /// Every grant type, in the order a client stores and the portal offers them.
-    pub const ALL: [&str; 4] = [PASSWORD, GUEST, AUTHORIZATION_CODE, REFRESH_TOKEN];
+    pub const ALL: [&str; 5] = [PASSWORD, GUEST, AUTHORIZATION_CODE, REFRESH_TOKEN, DEVICE_CODE];
 }
 
 /// The OIDC scopes a client may list and an authorization request may ask for.

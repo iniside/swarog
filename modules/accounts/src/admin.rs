@@ -2,7 +2,7 @@
 //! (header, facts, the Profile & identities tab), the player search, the active-players
 //! tile, the nav counter, the operator session revocations, the operator's Create
 //! account and Reset password, which reveal a generated password once, and the OIDC clients
-//! page with its Create client and Delete client.
+//! page with its Create client, Device code lifetime and Delete client.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -23,8 +23,9 @@ use opsapi::Error;
 
 use crate::clients::{
     canonical_grants, canonical_scopes, listed_lines, redirect_uri_refusal, root_domain_refusal, ClientRow,
-    NewClient, CONFIDENTIAL_GRANTS, DEFAULT_GRANTS, MAX_AUDIENCE_BYTES, MAX_CLIENT_NAME_BYTES, MAX_REDIRECT_URIS,
-    MAX_ROOT_DOMAINS,
+    NewClient, CONFIDENTIAL_GRANTS, DEFAULT_DEVICE_CODE_TTL_SECS, DEFAULT_GRANTS, MAX_AUDIENCE_BYTES,
+    MAX_CLIENT_NAME_BYTES, MAX_DEVICE_CODE_TTL_SECS, MAX_REDIRECT_URIS, MAX_ROOT_DOMAINS,
+    MIN_DEVICE_CODE_TTL_SECS,
 };
 use crate::secret;
 
@@ -61,6 +62,7 @@ pub(crate) const CREATE_ACCOUNT: &str = "create-account";
 pub(crate) const RESET_PASSWORD: &str = "reset-password";
 pub(crate) const CREATE_CLIENT: &str = "create-client";
 pub(crate) const DELETE_CLIENT: &str = "delete-client";
+pub(crate) const SET_DEVICE_CODE_TTL: &str = "device-code-ttl";
 
 /// The OIDC clients page, its table and the client entity its rows bind.
 pub(crate) const CLIENTS_PAGE: &str = "clients";
@@ -74,6 +76,7 @@ pub(crate) const FIELD_AUDIENCE: &str = "audience";
 pub(crate) const FIELD_REDIRECT_URIS: &str = "redirect_uris";
 pub(crate) const FIELD_ROOT_DOMAINS: &str = "root_domains";
 pub(crate) const FIELD_SCOPES: &str = "scopes";
+pub(crate) const FIELD_DEVICE_CODE_TTL: &str = "device_code_ttl";
 
 /// Create account's form fields.
 pub(crate) const FIELD_EMAIL: &str = "email";
@@ -317,9 +320,66 @@ fn optional_field(key: &str, label: &str, kind: FieldKind, help: &str, placehold
     }
 }
 
+/// `secs` as a Duration field value: whole minutes in `m`, else seconds in `s`.
+fn lifetime(secs: i32) -> String {
+    if secs % 60 == 0 { format!("{}m", secs / 60) } else { format!("{secs}s") }
+}
+
+/// The seconds of a Duration field value when they are within the device code lifetime bounds.
+fn parse_device_code_ttl(raw: &str) -> Result<i32, String> {
+    decode_field(&FieldKind::Duration, raw).map_err(|e| e.reason)?;
+    let (digits, unit) = raw.split_at(raw.len() - 1);
+    let scale: i64 = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3_600,
+        _ => 86_400,
+    };
+    let secs = digits.parse::<i64>().ok().and_then(|n| n.checked_mul(scale));
+    match secs.and_then(|s| i32::try_from(s).ok()) {
+        Some(s) if (MIN_DEVICE_CODE_TTL_SECS..=MAX_DEVICE_CODE_TTL_SECS).contains(&s) => Ok(s),
+        _ => Err(format!(
+            "must be from {} to {}",
+            lifetime(MIN_DEVICE_CODE_TTL_SECS),
+            lifetime(MAX_DEVICE_CODE_TTL_SECS)
+        )),
+    }
+}
+
+fn device_code_ttl_help() -> String {
+    format!(
+        "How long a device code lives, from {} to {}.",
+        lifetime(MIN_DEVICE_CODE_TTL_SECS),
+        lifetime(MAX_DEVICE_CODE_TTL_SECS)
+    )
+}
+
+/// The Device code lifetime form; `prepare` titles it with the client and fills its lifetime.
+pub(crate) fn device_code_ttl_form(title: String, current: Option<i32>) -> FormSpec {
+    let help = device_code_ttl_help();
+    let placeholder = lifetime(DEFAULT_DEVICE_CODE_TTL_SECS);
+    let field = Field {
+        kind: FieldKind::Duration,
+        default: current.map(lifetime),
+        ..form_field(FIELD_DEVICE_CODE_TTL, "Device code lifetime", &help, &placeholder, true)
+    };
+    FormSpec {
+        fields: vec![field],
+        hidden: BTreeMap::new(),
+        submit_label: "Save".to_string(),
+        note: None,
+        revision: None,
+        title: Some(title),
+        modes: Vec::new(),
+        reason: ReasonReq::None,
+        reason_label: None,
+        reason_hint: None,
+    }
+}
+
 /// Create client's form: the display name, public or confidential, the grant types with
-/// [`DEFAULT_GRANTS`] picked, the audience, redirect URIs, root domains and scopes; the id is
-/// generated.
+/// [`DEFAULT_GRANTS`] picked, the audience, redirect URIs, root domains, scopes and the device
+/// code lifetime; the id is generated.
 pub(crate) fn create_client_form() -> FormSpec {
     let kind = grants_kind();
     let defaults = FieldValue::Multi(DEFAULT_GRANTS.map(String::from).to_vec());
@@ -369,6 +429,13 @@ pub(crate) fn create_client_form() -> FormSpec {
                 None,
             ),
             optional_field(FIELD_SCOPES, "Scopes", scopes_kind(), "The scopes it may ask for.", None),
+            optional_field(
+                FIELD_DEVICE_CODE_TTL,
+                "Device code lifetime",
+                FieldKind::Duration,
+                &format!("{} Empty means {}.", device_code_ttl_help(), lifetime(DEFAULT_DEVICE_CODE_TTL_SECS)),
+                Some(lifetime(DEFAULT_DEVICE_CODE_TTL_SECS).as_str()),
+            ),
         ],
         hidden: BTreeMap::new(),
         submit_label: "Create client".to_string(),
@@ -804,6 +871,19 @@ fn manifest() -> Manifest {
                 )
             },
             ActionDecl {
+                icon: "clock".to_string(),
+                order: 5,
+                prepare: true,
+                ..implemented(
+                    SET_DEVICE_CODE_TTL,
+                    ActionPoint::RowAction(CLIENT_KIND.to_string()),
+                    "Device code lifetime…",
+                    false,
+                    plain,
+                    Then::Form(device_code_ttl_form("Device code lifetime".to_string(), None)),
+                )
+            },
+            ActionDecl {
                 icon: "trash".to_string(),
                 ..implemented(
                     DELETE_CLIENT,
@@ -1215,6 +1295,13 @@ impl AccountsAdmin {
             Ok(picked) => canonical_scopes(&picked),
             Err(reason) => return Ok(field_error(FIELD_SCOPES, reason)),
         };
+        let device_code_ttl_secs = match req.input.get(FIELD_DEVICE_CODE_TTL).map(|t| t.trim()) {
+            None | Some("") => DEFAULT_DEVICE_CODE_TTL_SECS,
+            Some(raw) => match parse_device_code_ttl(raw) {
+                Ok(secs) => secs,
+                Err(reason) => return Ok(field_error(FIELD_DEVICE_CODE_TTL, reason)),
+            },
+        };
         let mut conn = self.svc.store.pool.acquire().await.map_err(internal)?;
         let longest = self
             .svc
@@ -1240,6 +1327,7 @@ impl AccountsAdmin {
             root_domains: &root_domains,
             scopes: &scopes,
             secret_digest: digest.as_deref(),
+            device_code_ttl_secs,
         };
         let client_id = self.svc.store.insert_client(&new).await.map_err(internal)?;
         let message = format!("Client created — {client_id}");
@@ -1257,6 +1345,32 @@ impl AccountsAdmin {
             }),
             redirect: None,
         })
+    }
+
+    /// Device code lifetime: sets the bound client's lifetime when it is within the bounds.
+    async fn set_device_code_ttl(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let id = bound_client(req.entity.as_ref())?;
+        let raw = req.input.get(FIELD_DEVICE_CODE_TTL).map(|t| t.trim()).unwrap_or_default();
+        if raw.is_empty() {
+            return Ok(field_error(FIELD_DEVICE_CODE_TTL, "required"));
+        }
+        let secs = match parse_device_code_ttl(raw) {
+            Ok(secs) => secs,
+            Err(reason) => return Ok(field_error(FIELD_DEVICE_CODE_TTL, reason)),
+        };
+        if self.svc.store.set_device_code_ttl(id, secs).await.map_err(internal)? {
+            Ok(done(&format!("Device code lifetime set to {}", lifetime(secs))))
+        } else {
+            Err(no_client(id))
+        }
+    }
+
+    /// The Device code lifetime form, naming the client and filled with its lifetime.
+    async fn prepare_device_code_ttl(&self, req: &PrepareCall) -> Result<Then, Error> {
+        let id = bound_client(req.entity.as_ref())?;
+        let row = self.svc.store.client(id).await.map_err(internal)?.ok_or_else(|| no_client(id))?;
+        let title = format!("Device code lifetime of {}", row.display_name);
+        Ok(Then::Form(device_code_ttl_form(title, Some(row.device_code_ttl_secs))))
     }
 
     async fn delete_client(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
@@ -1440,6 +1554,7 @@ impl Provider for AccountsAdmin {
             RESET_PASSWORD => self.reset_password(&req).await,
             CREATE_CLIENT => self.create_client(&req).await,
             DELETE_CLIENT => self.delete_client(&req).await,
+            SET_DEVICE_CODE_TTL => self.set_device_code_ttl(&req).await,
             SUSPEND | DELETE_ACCOUNT | SUSPEND_HEADER => {
                 Err(Error::forbidden("not implemented yet"))
             }
@@ -1453,6 +1568,7 @@ impl Provider for AccountsAdmin {
             CREATE_ACCOUNT => Ok(Then::Form(create_form())),
             RESET_PASSWORD => self.prepare_reset_password(&req).await,
             DELETE_CLIENT => self.prepare_delete_client(&req).await,
+            SET_DEVICE_CODE_TTL => self.prepare_device_code_ttl(&req).await,
             other => Err(Error::not_found(format!("{MODULE} prepares no action {other:?}"))),
         }
     }

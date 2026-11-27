@@ -376,8 +376,9 @@ pub fn accountsapi::directory_rpc::operations(alloc::rcs::arc::Arc<(dyn accounts
 pub fn accountsapi::directory_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn accountsapi::directory_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
 pub mod accountsapi::grant_types
-pub const accountsapi::grant_types::ALL: [&str; 4]
+pub const accountsapi::grant_types::ALL: [&str; 5]
 pub const accountsapi::grant_types::AUTHORIZATION_CODE: &str
+pub const accountsapi::grant_types::DEVICE_CODE: &str
 pub const accountsapi::grant_types::GUEST: &str
 pub const accountsapi::grant_types::PASSWORD: &str
 pub const accountsapi::grant_types::REFRESH_TOKEN: &str

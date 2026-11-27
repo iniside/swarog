@@ -14,9 +14,9 @@ use testdb::test_pool;
 
 use super::{
     fake_ip, mask, session_rows, thousands, AccountsAdmin, CREATE_ACCOUNT,
-    CREATE_CLIENT, DELETE_CLIENT, FIELD_AUDIENCE, FIELD_CONFIDENTIAL, FIELD_DISPLAY_NAME, FIELD_EMAIL,
-    FIELD_GRANTS, FIELD_REDIRECT_URIS, FIELD_ROOT_DOMAINS, MAX_NEEDLE_BYTES,
-    PAGE_SIZE, RESET_PASSWORD, REVOKE_ALL, REVOKE_SESSION, SESSIONS_SHOWN,
+    CREATE_CLIENT, DELETE_CLIENT, FIELD_AUDIENCE, FIELD_CONFIDENTIAL, FIELD_DEVICE_CODE_TTL, FIELD_DISPLAY_NAME,
+    FIELD_EMAIL, FIELD_GRANTS, FIELD_REDIRECT_URIS, FIELD_ROOT_DOMAINS, MAX_NEEDLE_BYTES,
+    PAGE_SIZE, RESET_PASSWORD, REVOKE_ALL, REVOKE_SESSION, SESSIONS_SHOWN, SET_DEVICE_CODE_TTL,
 };
 use crate::store::FamilyRow;
 use crate::web::session::BrowserSessionRow;
@@ -376,6 +376,7 @@ fn manifest_declares_only_the_actions_the_portal_can_refuse() {
             "create-client",
             "delete-account",
             "delete-client",
+            "device-code-ttl",
             "reset-password",
             "revoke-all",
             "revoke-session",
@@ -397,6 +398,9 @@ fn manifest_declares_only_the_actions_the_portal_can_refuse() {
     assert!(matches!(all.then, Then::Confirm(_)));
     let one = action(REVOKE_SESSION);
     assert!(one.implemented && !one.prepare && matches!(one.then, Then::Invoke));
+    let ttl = action(SET_DEVICE_CODE_TTL);
+    assert!(ttl.implemented && ttl.prepare && !ttl.danger && matches!(ttl.then, Then::Form(_)));
+    assert!(matches!(ttl.point, controlplane::ActionPoint::RowAction(ref k) if k == "oidc_client"));
 }
 
 #[tokio::test]
@@ -1280,6 +1284,7 @@ async fn create_client_stores_a_swarog_client_and_delete_removes_it_once() {
     assert_eq!(row.audience, accountsapi::SWAROG_AUDIENCE);
     assert_eq!(row.grant_types, ["password", "refresh_token"], "grants in grant_types::ALL order");
     assert!(!row.confidential, "a create not marked confidential is public");
+    assert_eq!(row.device_code_ttl_secs, 600, "a create without a lifetime stores 10 minutes");
     assert_eq!(secret_digest_of(&pool, &id).await, None, "a public client stores no secret digest");
 
     let deleted = admin.invoke(delete_client_call(&id)).await.unwrap();
@@ -1331,7 +1336,7 @@ fn longest_root_domain(lead: char) -> String {
 }
 
 #[tokio::test]
-async fn create_client_refuses_a_bad_redirect_an_overlong_audience_and_a_confidential_login_grant() {
+async fn create_client_refuses_each_bad_field_with_a_field_error_and_stores_nothing() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let admin = AccountsAdmin::new(svc);
@@ -1369,6 +1374,30 @@ async fn create_client_refuses_a_bad_redirect_an_overlong_audience_and_a_confide
             "only authorization_code and refresh_token",
         ),
         (
+            create_client_call(
+                &name(),
+                Some(r#"["refresh_token","urn:ietf:params:oauth:grant-type:device_code"]"#),
+                &[(FIELD_CONFIDENTIAL, "true")],
+            ),
+            FIELD_GRANTS,
+            "only authorization_code and refresh_token",
+        ),
+        (
+            create_client_call(&name(), password, &[(FIELD_DEVICE_CODE_TTL, "119s")]),
+            FIELD_DEVICE_CODE_TTL,
+            "from 2m to 30m",
+        ),
+        (
+            create_client_call(&name(), password, &[(FIELD_DEVICE_CODE_TTL, "31m")]),
+            FIELD_DEVICE_CODE_TTL,
+            "from 2m to 30m",
+        ),
+        (
+            create_client_call(&name(), password, &[(FIELD_DEVICE_CODE_TTL, "10")]),
+            FIELD_DEVICE_CODE_TTL,
+            "digits followed by",
+        ),
+        (
             create_client_call(&name(), password, &[(FIELD_ROOT_DOMAINS, domains.as_str())]),
             FIELD_ROOT_DOMAINS,
             "a verifier accepts",
@@ -1390,6 +1419,89 @@ async fn create_client_refuses_a_bad_redirect_an_overlong_audience_and_a_confide
                 .unwrap();
         assert_eq!(stored, 0, "a refused create stores no client: {key}");
     }
+}
+
+/// A create that picks a lifetime stores it; the Device code lifetime row action opens filled
+/// with it, stores a lifetime at either bound, and refuses one outside them, a blank one, an
+/// unbound call and a missing client.
+#[tokio::test]
+async fn device_code_lifetime_is_picked_on_create_and_changed_by_the_row_action() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let admin = AccountsAdmin::new(svc);
+    let name = format!("device-client-{}", suffix());
+    let grants = Some(r#"["refresh_token","urn:ietf:params:oauth:grant-type:device_code"]"#);
+    let created = admin.invoke(create_client_call(&name, grants, &[(FIELD_DEVICE_CODE_TTL, "15m")])).await.unwrap();
+    let InvokeOutcome::Ok { message, reveal: None, .. } = created else {
+        panic!("a public create answers a message: {created:?}");
+    };
+    let id = message.strip_prefix("Client created — ").expect("the message names the id").to_string();
+    let row = admin.svc.store.client(&id).await.unwrap().unwrap();
+    assert_eq!(row.grant_types, ["refresh_token", accountsapi::grant_types::DEVICE_CODE]);
+    assert_eq!(row.device_code_ttl_secs, 900, "the picked lifetime is stored");
+
+    let bound = Some(EntityRef { kind: "oidc_client".to_string(), id: id.clone() });
+    let prepare = PrepareCall { entity: bound.clone(), ..prepare_call(SET_DEVICE_CODE_TTL, None) };
+    let Then::Form(form) = admin.prepare(prepare).await.unwrap() else {
+        panic!("the row action opens a form");
+    };
+    assert_eq!(form.title.as_deref(), Some(format!("Device code lifetime of {name}").as_str()));
+    assert_eq!(form.fields.len(), 1);
+    assert_eq!((form.fields[0].key.as_str(), form.fields[0].default.as_deref()), (FIELD_DEVICE_CODE_TTL, Some("15m")));
+
+    let set = |raw: &str, entity: Option<EntityRef>| InvokeCall {
+        entity,
+        input: BTreeMap::from([(FIELD_DEVICE_CODE_TTL.to_string(), raw.to_string())]),
+        ..revoke(SET_DEVICE_CODE_TTL, None, None)
+    };
+    let stored = || async { admin.svc.store.client(&id).await.unwrap().unwrap().device_code_ttl_secs };
+    for (raw, secs, shown) in [("120s", 120, "2m"), ("30m", 1800, "30m"), ("1h", 1800, "")] {
+        let outcome = admin.invoke(set(raw, bound.clone())).await.unwrap();
+        if shown.is_empty() {
+            let InvokeOutcome::FieldErrors(errors) = &outcome else { panic!("{raw} is refused: {outcome:?}") };
+            assert!(errors[FIELD_DEVICE_CODE_TTL].contains("from 2m to 30m"), "{errors:?}");
+        } else {
+            let InvokeOutcome::Ok { message, .. } = &outcome else { panic!("{raw} is stored: {outcome:?}") };
+            assert_eq!(message, &format!("Device code lifetime set to {shown}"));
+        }
+        assert_eq!(stored().await, secs, "{raw}");
+    }
+    for raw in ["119s", "31m", "", "99999999999999999999d"] {
+        let outcome = admin.invoke(set(raw, bound.clone())).await.unwrap();
+        let InvokeOutcome::FieldErrors(errors) = &outcome else { panic!("{raw:?} is refused: {outcome:?}") };
+        assert_eq!(errors.keys().collect::<Vec<_>>(), [FIELD_DEVICE_CODE_TTL], "{raw:?}");
+        assert_eq!(stored().await, 1800, "a refused {raw:?} changes nothing");
+    }
+    assert_eq!(admin.invoke(set("5m", None)).await.unwrap_err().status, Status::Invalid, "no client bound");
+    let missing = Some(EntityRef { kind: "oidc_client".to_string(), id: "c_no_such_client".to_string() });
+    assert_eq!(admin.invoke(set("5m", missing)).await.unwrap_err().status, Status::NotFound);
+
+    delete_client(&pool, &id).await;
+}
+
+/// The table's CHECK holds the same bounds as the portal: a lifetime one second outside
+/// either bound is refused, one at each bound stored.
+#[tokio::test]
+async fn the_clients_table_refuses_a_device_code_lifetime_outside_the_bounds() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, _svc) = wired(&pool).await;
+    let id = insert_client(&pool, &["password"]).await;
+    let set = |secs: i32| {
+        sqlx::query("UPDATE accounts.oidc_clients SET device_code_ttl_secs = $2 WHERE client_id = $1")
+            .bind(&id)
+            .bind(secs)
+            .execute(&pool)
+    };
+    use crate::clients::{MAX_DEVICE_CODE_TTL_SECS as MAX, MIN_DEVICE_CODE_TTL_SECS as MIN};
+    for secs in [MIN - 1, MAX + 1] {
+        let err = set(secs).await.expect_err("out of bounds");
+        let code = err.as_database_error().and_then(|e| e.code()).map(|c| c.to_string());
+        assert_eq!(code.as_deref(), Some("23514"), "{secs}: a check violation, {err}");
+    }
+    for secs in [MIN, MAX] {
+        set(secs).await.unwrap();
+    }
+    delete_client(&pool, &id).await;
 }
 
 async fn client_families(pool: &PgPool, client_id: &str) -> i64 {

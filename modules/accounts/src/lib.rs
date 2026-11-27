@@ -171,7 +171,9 @@ const SIGNING_KEYS_SCHEMA: &str = "accounts";
 /// This module's OWN schema and tables, nothing else — full logical isolation (#10).
 /// Idempotent; `migrate` adds the indexes. The identities/sessions FKs are INTERNAL to
 /// the accounts schema (allowed; the ban is on cross-module FKs).
-const SCHEMA_DDL: &str = r#"
+static SCHEMA_DDL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        r#"
 CREATE SCHEMA IF NOT EXISTS accounts;
 
 CREATE TABLE IF NOT EXISTS accounts.players (
@@ -244,11 +246,13 @@ CREATE TABLE IF NOT EXISTS accounts.oidc_clients (
 	display_name text        NOT NULL CHECK (display_name <> ''),
 	grant_types   text[]      NOT NULL CHECK (cardinality(grant_types) > 0),
 	audience      text        NOT NULL,
-	redirect_uris text[]      NOT NULL DEFAULT '{}',
-	root_domains  text[]      NOT NULL DEFAULT '{}',
-	scopes        text[]      NOT NULL DEFAULT '{}',
+	redirect_uris text[]      NOT NULL DEFAULT '{{}}',
+	root_domains  text[]      NOT NULL DEFAULT '{{}}',
+	scopes        text[]      NOT NULL DEFAULT '{{}}',
 	-- NULL for a public client.
 	secret_digest text,
+	device_code_ttl_secs integer NOT NULL DEFAULT {DEFAULT_DEVICE_TTL}
+		CHECK (device_code_ttl_secs BETWEEN {MIN_DEVICE_TTL} AND {MAX_DEVICE_TTL}),
 	created_at    timestamptz NOT NULL DEFAULT now()
 );
 
@@ -309,7 +313,12 @@ CREATE TABLE IF NOT EXISTS accounts.oidc_codes (
 	family_id      uuid,
 	CHECK ((redeemed_at IS NULL) = (family_id IS NULL))
 );
-"#;
+"#,
+        DEFAULT_DEVICE_TTL = clients::DEFAULT_DEVICE_CODE_TTL_SECS,
+        MIN_DEVICE_TTL = clients::MIN_DEVICE_CODE_TTL_SECS,
+        MAX_DEVICE_TTL = clients::MAX_DEVICE_CODE_TTL_SECS,
+    )
+});
 
 /// The web-OAuth in-flight redemption store, shared by every provider's flow. Shared, NOT
 /// process memory, so a provider's callback can LB-route to ANY replica: new_state INSERTs
@@ -398,7 +407,7 @@ async fn refuse_unfamilied_tokens(pool: &sqlx::PgPool, schema: &str) -> anyhow::
 /// Refuses a `{schema}.oidc_clients` without a column the client code reads:
 /// `CREATE TABLE IF NOT EXISTS` keeps an older table.
 async fn refuse_stale_clients(pool: &sqlx::PgPool, schema: &str) -> anyhow::Result<()> {
-    for column in ["redirect_uris", "root_domains", "scopes", "secret_digest"] {
+    for column in ["redirect_uris", "root_domains", "scopes", "secret_digest", "device_code_ttl_secs"] {
         let present: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM information_schema.columns \
              WHERE table_schema = $1 AND table_name = 'oidc_clients' AND column_name = $2",
@@ -1842,7 +1851,7 @@ impl Accounts {
             .ok_or_else(|| anyhow::anyhow!("accounts requires a DB pool"))?;
         refuse_stale_codes(pool, "accounts").await?;
         Ddl::new(pool)
-            .sql(SCHEMA_DDL)
+            .sql(SCHEMA_DDL.as_str())
             .sql(OAUTH_STATES_DDL.as_str())
             // A second, DB-level constraint on `players` itself (see the claim-coverage
             // check below): `accounts.handles` decides freeness at mint time, this index

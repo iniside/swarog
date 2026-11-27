@@ -328,6 +328,7 @@ async fn boot_refusal_fires_on_a_clients_table_missing_a_column() {
         ("root_domains", "text[]"),
         ("scopes", "text[]"),
         ("secret_digest", "text"),
+        ("device_code_ttl_secs", "integer"),
     ];
     let table = |without: Option<&str>| {
         let kept: String = columns

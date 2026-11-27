@@ -1,7 +1,7 @@
 //! `POST /accounts/oidc/token` against the live database. A child of `tests` so it reuses that
 //! module's live-DB harness.
 
-use accountsapi::grant_types::{AUTHORIZATION_CODE, REFRESH_TOKEN};
+use accountsapi::grant_types::{AUTHORIZATION_CODE, DEVICE_CODE, REFRESH_TOKEN};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 
@@ -407,6 +407,8 @@ async fn unknown_and_unlisted_grants_and_malformed_bodies_are_refused() {
     assert_error(post(&base, &form, None).await, 400, "unsupported_grant_type", "password").await;
     let form = [("grant_type", REFRESH_TOKEN), ("refresh_token", "x"), ("client_id", client_id.as_str())];
     assert_error(post(&base, &form, None).await, 400, "unauthorized_client", "unlisted refresh").await;
+    let form = [("grant_type", DEVICE_CODE), ("device_code", "x"), ("client_id", client_id.as_str())];
+    assert_error(post(&base, &form, None).await, 400, "unauthorized_client", "unlisted device code").await;
     let form = [("grant_type", AUTHORIZATION_CODE), ("grant_type", AUTHORIZATION_CODE), ("client_id", client_id.as_str())];
     assert_error(post(&base, &form, None).await, 400, "invalid_request", "repeated parameter").await;
     let resp = client()
