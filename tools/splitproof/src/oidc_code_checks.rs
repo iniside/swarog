@@ -43,6 +43,23 @@
 //! - [OC0] / [OC0m] report only a fault no check records: a transport error, a failed database read,
 //!   or a fixture the later checks need (a client, the browser session, a code) that a recorded check
 //!   already showed missing.
+//!
+//! Break runs (each a full splitproof run, then reverted; 2026-11-27, step 6; green run
+//! splitproof-44368, every [OC] and [SK] check green):
+//! - The `redirect_uris` guard dropped from the client lookup (`modules/accounts/src/web/authorize.rs`)
+//!   and the `redirect_uri` compare dropped from the code grant (`modules/accounts/src/web/token.rs`),
+//!   run splitproof-48484: OC3, OC4, OC3m and OC4m the only new reds (`code=303` to the unregistered
+//!   URI with a code minted; `code=200` with an access token), the rest green.
+//! - The S256 compare of the code grant made `false &&` (`token.rs`), run splitproof-54184: OC5 and
+//!   OC5m the only new reds (`code=200 access_token=true`), the rest green.
+//! - The `RefreshPresenter::Client` arm of `refresh_allowed_tx` made `true ||`
+//!   (`modules/accounts/src/lib.rs`), run splitproof-65028: OC6 and OC6m the only new reds
+//!   (`code=200`, the token consumed); OC7 and OC7m green.
+//! - The `RefreshPresenter::OpPath` arm made `true ||` (`lib.rs`), run splitproof-66856: OC8, OC9,
+//!   OC8m and OC9m red (`op_path=200` with the token consumed; then the reuse revokes C's family,
+//!   `family_rows=0 family_revocations=1`), and OC10, OC11, OC10m and OC11m red after them, because
+//!   their Swarog-audience control is C's bearer, which that revocation killed (`control_me=401`,
+//!   `other_me=401`; the Lore token is still 401). OC1-OC7 green.
 
 use std::time::Instant;
 

@@ -55,7 +55,7 @@ const RESPAWN_BUDGET: Duration = Duration::from_secs(15);
 /// The one [SK4] name for a split pass that never reached the restart; the cause is in the detail.
 const SK4_NOT_RUN: &str = "[SK4] not run: no served kid to compare";
 
-/// [SK1]-[SK4] through gateway-svc, the fleet's ownership lent so accounts-svc can be respawned.
+/// [SK1]-[SK5] through gateway-svc, the fleet's ownership lent so accounts-svc can be respawned.
 pub(super) async fn split(ctx: &Ctx, pool: &PgPool, fleet: &mut Vec<Running>, p: &mut Proof) {
     println!("\n[splitproof] === [SK] OIDC discovery and JWKS through gateway-svc ===");
     let g = format!("http://127.0.0.1:{}", ctx.http_port("gateway-svc"));
@@ -76,14 +76,14 @@ pub(super) async fn split(ctx: &Ctx, pool: &PgPool, fleet: &mut Vec<Running>, p:
     }
 }
 
-/// [SK1m]-[SK3m] on the monolith front `m`.
+/// [SK1m]-[SK3m] and [SK5m] on the monolith front `m`.
 pub(super) async fn monolith(ctx: &Ctx, pool: &PgPool, p: &mut Proof, m: &str) {
     if let Err(e) = served_key(ctx, pool, p, m, processctl::PROOF_ACCOUNTS_ISSUER_MONOLITH, "m").await {
         p.check("[SK0m] OIDC discovery and JWKS pass completes", false, format!("{e:#}"));
     }
 }
 
-/// [SK1]-[SK3] on `front`: the served `kid` once [SK3] passes, `None` when [SK3] recorded the failure,
+/// [SK1]-[SK3] and [SK5] on `front`: the served `kid` once [SK3] passes, `None` when [SK3] recorded the failure,
 /// and `Err` only for a fault no check records: a transport error or an unreadable body on the
 /// discovery GET, or a failed read or parse of `accounts.signing_keys`.
 async fn served_key(

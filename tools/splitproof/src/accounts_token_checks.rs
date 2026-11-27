@@ -127,7 +127,8 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
     );
 
     // [TK3] Create client through the portal: the generated id is named in the toast and held
-    // by accounts, and a login through it mints a bearer /accounts/me accepts.
+    // by accounts, and a login through it mints a bearer /accounts/me accepts. It holds every grant,
+    // and `authorization_code` needs a registered redirect URI, which this op-path login never uses.
     let display = format!("Tk {nonce}");
     let (page_code, page) = fetch(admin, &format!("{front}{CLIENTS_PAGE}")).await?;
     let Some(create_url) = attr_values(&page, "hx-get").into_iter().find(|u| u.starts_with("/admin/_action/accounts/create-client")) else {
@@ -136,6 +137,7 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
     let form = open(admin, front, &create_url).await?;
     let mut fields = vec![("display_name".to_string(), display.clone())];
     fields.extend(accountsapi::grant_types::ALL.iter().map(|g| ("grant_types".to_string(), g.to_string())));
+    fields.push(("redirect_uris".to_string(), "http://127.0.0.1:9/tk/callback".to_string()));
     let created = post(admin, front, "create-client", &form, fields).await?;
     let client_id = created.1.rsplit(' ').next().unwrap_or_default().to_string();
     let held: Option<String> = sqlx::query_scalar("SELECT client_id FROM accounts.oidc_clients WHERE display_name = $1")
