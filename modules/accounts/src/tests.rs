@@ -8,6 +8,7 @@ mod client_grants;
 mod delete;
 mod device;
 mod device_codes;
+mod device_pages;
 mod directory;
 mod epic_browser;
 mod google_browser;

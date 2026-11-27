@@ -154,10 +154,26 @@ async fn an_issued_pair_carries_the_clients_lifetime_and_is_found_by_its_typed_u
     let typed = issued.user_code.to_ascii_lowercase().replace('-', " ");
     let pending = svc.store.pending_device_code(&typed).await.unwrap().expect("found by its typed code");
     assert_eq!(pending.client_id, client_id);
-    assert_eq!(pending.scope, "openid");
     assert_eq!(pending.requested_ip, "203.0.113.7");
     assert_eq!(pending.user_agent.as_deref(), Some("lore/0.14"));
-    assert_eq!(pending.expires_at - pending.created_at, issued.expires_in);
+    let scope: String = sqlx::query_scalar(
+        "SELECT scope FROM accounts.device_codes WHERE device_code_digest = sha256(convert_to($1, 'UTF8'))",
+    )
+    .bind(&issued.device_code)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(scope, "openid");
+    sqlx::query(
+        "UPDATE accounts.device_codes SET created_at = now() - interval '125.5 seconds' \
+          WHERE device_code_digest = sha256(convert_to($1, 'UTF8'))",
+    )
+    .bind(&issued.device_code)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let pending = svc.store.pending_device_code(&typed).await.unwrap().expect("still pending");
+    assert_eq!(pending.age_secs, 125, "the age is whole seconds since issue on the database clock");
 
     let long_ua = "é".repeat(MAX_USER_AGENT_BYTES);
     let new = NewDeviceCode {

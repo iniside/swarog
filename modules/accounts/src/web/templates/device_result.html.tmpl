@@ -1,0 +1,17 @@
+{%- extends "device_base.html" -%}
+{%- block card %}
+{%- if approved %}
+<div class="state compact">
+<div class="state-icon" style="color: var(--ok)"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 12l3 3 5-6"></path></svg></div>
+<div class="state-title">{{ device or "Your device" }} is connected</div>
+<div class="state-detail">Return to your device. {{ client }} is signed in as {{ user }}.</div>
+<div class="row"><button class="btn" type="button" disabled title="Not implemented yet">View devices</button></div>
+</div>
+{%- else %}
+<div class="state compact err">
+<div class="state-icon"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M9 9l6 6M15 9l-6 6"></path></svg></div>
+<div class="state-title">Device not connected</div>
+<div class="state-detail">You denied code <span class="mono">{{ code }}</span>. The device shows the login as refused. Start the sign-in on the device again to get a new code.</div>
+</div>
+{%- endif %}
+{%- endblock %}

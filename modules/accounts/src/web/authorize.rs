@@ -138,7 +138,7 @@ fn check<'a>(req: &'a AuthRequest, client: &ClientRow) -> Result<Checked<'a>, &'
 }
 
 /// Percent-encodes every byte but the RFC 3986 unreserved ones.
-fn encode(value: &str) -> String {
+pub(super) fn encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for b in value.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {

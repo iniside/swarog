@@ -3,7 +3,8 @@
 //! web OAuth is configured, the signed-in landing page and logout. A successful sign-in mints a browser session (`session.rs`), never a
 //! player bearer. The OIDC authorization endpoint (`authorize.rs`) issues codes to a signed-in browser,
 //! the token endpoint (`token.rs`) exchanges them and the revocation endpoint (`revoke.rs`) ends a client's tokens.
-//! The device authorization endpoint (`device.rs`) issues the code pairs a device polls `/token` with.
+//! The device authorization endpoint (`device.rs`) issues the code pairs a device polls `/token` with, and
+//! its approval pages let a signed-in browser approve or deny one.
 
 pub(crate) mod authorize;
 pub(crate) mod device;
@@ -48,6 +49,10 @@ const BASE_TMPL: &str = include_str!("templates/base.html.tmpl");
 const LOGIN_TMPL: &str = include_str!("templates/login.html.tmpl");
 const LANDING_TMPL: &str = include_str!("templates/landing.html.tmpl");
 const ERROR_TMPL: &str = include_str!("templates/error.html.tmpl");
+const DEVICE_BASE_TMPL: &str = include_str!("templates/device_base.html.tmpl");
+const DEVICE_ENTER_TMPL: &str = include_str!("templates/device_enter.html.tmpl");
+const DEVICE_CONFIRM_TMPL: &str = include_str!("templates/device_confirm.html.tmpl");
+const DEVICE_RESULT_TMPL: &str = include_str!("templates/device_result.html.tmpl");
 
 /// The one `Secure` rule for every accounts cookie: ON unless `ACCOUNTS_COOKIE_SECURE` is
 /// explicitly falsy (`0`/`false`/`off`, case-insensitive).
@@ -127,6 +132,10 @@ impl Web {
             ("login.html", LOGIN_TMPL),
             ("landing.html", LANDING_TMPL),
             ("error.html", ERROR_TMPL),
+            ("device_base.html", DEVICE_BASE_TMPL),
+            ("device_enter.html", DEVICE_ENTER_TMPL),
+            ("device_confirm.html", DEVICE_CONFIRM_TMPL),
+            ("device_result.html", DEVICE_RESULT_TMPL),
         ] {
             env.add_template(name, source)?;
         }
@@ -271,6 +280,9 @@ pub(crate) fn router(web: Arc<Web>) -> Router {
             device::DEVICE_AUTHORIZATION,
             post(device::device_authorization).layer(DefaultBodyLimit::max(device::MAX_DEVICE_BODY_BYTES)),
         )
+        .route(device::DEVICE, get(device::device_page))
+        .route(device::DEVICE_APPROVE, post(device::approve))
+        .route(device::DEVICE_DENY, post(device::deny))
         .route(revoke::REVOKE, post(revoke::revoke).layer(DefaultBodyLimit::max(revoke::MAX_REVOKE_BODY_BYTES)))
         .route("/accounts/oidc/epic", post(epic_start))
         .route("/accounts/oidc/google", post(google_start))

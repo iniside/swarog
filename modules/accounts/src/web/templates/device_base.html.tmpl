@@ -1,0 +1,17 @@
+{#- The device approval screens, from UILayout/portal/device-approval.html. -#}
+{%- extends "base.html" -%}
+{%- block title %}Connect a device{% endblock -%}
+{%- block head %}
+<style>
+.auth-card { width: 100%; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 28px; display: flex; flex-direction: column; gap: 18px; box-sizing: border-box; }
+.auth-card h1 { font-size: 17px; margin: 0 0 6px; }
+.code-in { display: flex; gap: 8px; align-items: center; }
+.code-in .input { width: 44px; height: 44px; text-align: center; font-family: var(--font-mono); font-size: 18px; padding: 0; }
+</style>
+{%- endblock -%}
+{%- block width %}420px{% endblock -%}
+{%- block content %}
+<div class="auth-card">
+{%- block card %}{% endblock %}
+</div>
+{%- endblock %}

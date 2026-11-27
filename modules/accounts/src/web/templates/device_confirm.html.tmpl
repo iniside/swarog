@@ -1,0 +1,30 @@
+{%- extends "device_base.html" -%}
+{%- block card %}
+<div class="modal-icon warn" style="position: static"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8M12 16v4"></path></svg></div>
+<div>
+<h1>Allow {{ client }} on {{ device or "an unnamed device" }} to act as {{ user }}?</h1>
+<div class="muted" style="font-size: 13px">{{ client }} will be able to act as you in every service that accepts your account.</div>
+</div>
+<div class="impact">
+<div><b>Code</b><span class="mono">{{ code }}</span></div>
+{%- if device %}
+<div><b>Device</b><span class="mono">{{ device }}</span> (reported by the device)</div>
+{%- else %}
+<div><b>Device</b>—</div>
+{%- endif %}
+<div><b>Requested from</b><span class="mono">{{ ip }}</span> · {{ age }}</div>
+<div><b>Session lasts</b>{{ lasts }}</div>
+</div>
+<div class="row" style="justify-content: flex-end; gap: 8px">
+<form method="post" action="/accounts/oidc/device/deny">
+<input type="hidden" name="user_code" value="{{ code }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button class="btn" type="submit">Deny</button>
+</form>
+<form method="post" action="/accounts/oidc/device/approve">
+<input type="hidden" name="user_code" value="{{ code }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<button class="btn primary" type="submit">Allow device</button>
+</form>
+</div>
+{%- endblock %}

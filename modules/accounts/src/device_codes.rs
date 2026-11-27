@@ -26,7 +26,6 @@ pub(crate) const MAX_REQUESTED_IP_BYTES: usize = 64;
 /// Inserts tried before a run of digest collisions is answered as an error.
 const MAX_INSERT_TRIES: usize = 5;
 /// The longest raw `user_code` input that is normalised at all.
-#[cfg_attr(not(test), expect(dead_code, reason = "the device approval pages are its callers"))]
 const MAX_USER_CODE_INPUT_BYTES: usize = 64;
 
 /// What `/device_authorization` binds a new code pair to.
@@ -48,16 +47,12 @@ pub(crate) struct IssuedDeviceCode {
 }
 
 /// A pending, unexpired code as the approval page shows it.
-#[cfg_attr(not(test), expect(dead_code, reason = "the device approval pages are its callers"))]
 pub(crate) struct PendingDevice {
     pub(crate) client_id: String,
-    pub(crate) scope: String,
     pub(crate) requested_ip: String,
     pub(crate) user_agent: Option<String>,
-    /// Unix seconds of the code's issue.
-    pub(crate) created_at: i64,
-    /// Unix seconds of the code's expiry.
-    pub(crate) expires_at: i64,
+    /// Whole seconds since the code's issue, read from the database clock.
+    pub(crate) age_secs: i64,
 }
 
 /// An approved code a poll redeemed, with the id of the token family it mints.
@@ -134,7 +129,6 @@ fn new_user_code() -> String {
 
 /// The stored form of a typed `user_code`: upper-cased, without `-` and spaces; `None` when
 /// the rest is not [`USER_CODE_LEN`] characters of [`USER_CODE_ALPHABET`].
-#[cfg_attr(not(test), expect(dead_code, reason = "the device approval pages are its callers"))]
 pub(crate) fn normalize_user_code(input: &str) -> Option<String> {
     if input.len() > MAX_USER_CODE_INPUT_BYTES {
         return None;
@@ -206,26 +200,22 @@ impl Store {
     }
 
     /// The pending, unexpired code a typed `user_code` names; `None` for any other.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the device approval pages are its callers"))]
     pub(crate) async fn pending_device_code(&self, user_code: &str) -> sqlx::Result<Option<PendingDevice>> {
         let Some(code) = normalize_user_code(user_code) else { return Ok(None) };
-        type Row = (String, String, String, Option<String>, i64, i64);
+        type Row = (String, String, Option<String>, i64);
         let row: Option<Row> = sqlx::query_as(
-            "SELECT client_id, scope, requested_ip, user_agent, \
-                    floor(EXTRACT(EPOCH FROM created_at))::int8, floor(EXTRACT(EPOCH FROM expires_at))::int8 \
+            "SELECT client_id, requested_ip, user_agent, floor(EXTRACT(EPOCH FROM now() - created_at))::int8 \
                FROM accounts.device_codes \
               WHERE user_code_digest = $1 AND status = 'pending' AND expires_at > now()",
         )
         .bind(digest(&code))
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|(client_id, scope, requested_ip, user_agent, created_at, expires_at)| PendingDevice {
+        Ok(row.map(|(client_id, requested_ip, user_agent, age_secs)| PendingDevice {
             client_id,
-            scope,
             requested_ip,
             user_agent,
-            created_at,
-            expires_at,
+            age_secs,
         }))
     }
 
@@ -235,7 +225,6 @@ impl Store {
     /// `false` for any other code, or when the session is gone or its player or the session
     /// was deleted before the update, which its foreign-key checks refuse as
     /// [`Store::insert_oidc_code`]'s insert does.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the device approval pages are its callers"))]
     pub(crate) async fn approve_device_code(&self, user_code: &str, session_digest: &[u8]) -> sqlx::Result<bool> {
         let Some(code) = normalize_user_code(user_code) else { return Ok(false) };
         let res = sqlx::query(
@@ -258,7 +247,6 @@ impl Store {
     }
 
     /// Denies the pending, unexpired code a typed `user_code` names; `false` for any other.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the device approval pages are its callers"))]
     pub(crate) async fn deny_device_code(&self, user_code: &str) -> sqlx::Result<bool> {
         let Some(code) = normalize_user_code(user_code) else { return Ok(false) };
         let res = sqlx::query(
