@@ -58,11 +58,11 @@ impl Store {
 
     /// Issues `code` under the live browser session whose token hashes to `session_digest`:
     /// to that session's player, with its sign-in time as `auth_time`, bound to the session
-    /// by a cascading foreign key. `false` when that session is gone, or its player, the
-    /// client or the session itself was deleted before the insert. The insert reads the
-    /// session without a lock; its foreign-key check on the session row is what refuses a
-    /// session a racing reset, Revoke all or logout deleted, and what makes that delete wait
-    /// for, then cascade to, a code inserted first.
+    /// by a foreign key that a session delete sets NULL. `false` when that session is gone,
+    /// or its player, the client or the session itself was deleted before the insert. The
+    /// insert reads the session without a lock; its foreign-key check on the session row is
+    /// what refuses a session a racing reset, Revoke all or logout deleted, and what makes
+    /// that delete wait for, then unbind, a code inserted first.
     pub(crate) async fn insert_oidc_code(
         &self,
         code: &str,
@@ -93,9 +93,16 @@ impl Store {
         }
     }
 
-    /// Consumes `code` when it is unredeemed and was issued less than [`CODE_TTL_SECS`] ago,
-    /// stamping a fresh family id on its row; any other code is `None`. The caller commits
-    /// it before the mint, so this row lock is never held across the player lock.
+    /// Consumes `code` when it is unredeemed, was issued less than [`CODE_TTL_SECS`] ago and
+    /// its browser session is still live, stamping a fresh family id on its row; any other
+    /// code is `None`. The caller commits it before the mint, so this row lock is never held
+    /// across the player lock.
+    ///
+    /// A session delete sets the row's `session_digest` NULL instead of deleting it, so an
+    /// unredeemed code of an ended session answers like an unknown code, while a redeemed row
+    /// stays, `redeemed_at` set, for replay detection whatever its `session_digest`. A
+    /// redemption racing the session delete either commits first, or waits on the row lock
+    /// and then finds `session_digest` NULL.
     #[cfg_attr(not(test), expect(dead_code, reason = "the /token endpoint is its only redeemer"))]
     pub(crate) async fn redeem_oidc_code<'e, E: sqlx::PgExecutor<'e>>(
         &self,
@@ -108,7 +115,7 @@ impl Store {
         type Row = (String, String, String, String, String, Option<String>, i64, String);
         let row: Option<Row> = sqlx::query_as(
             "UPDATE accounts.oidc_codes SET redeemed_at = now(), family_id = gen_random_uuid() \
-              WHERE code_digest = $1 AND redeemed_at IS NULL \
+              WHERE code_digest = $1 AND redeemed_at IS NULL AND session_digest IS NOT NULL \
                 AND created_at > now() - make_interval(secs => $2) \
              RETURNING client_id, player_id::text, redirect_uri, code_challenge, scope, nonce, \
                        floor(EXTRACT(EPOCH FROM auth_time))::int8, family_id::text",

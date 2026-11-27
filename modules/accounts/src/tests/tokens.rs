@@ -182,6 +182,28 @@ async fn an_id_token_is_typ_jwt_and_refused_by_the_access_verifiers() {
     }
 }
 
+/// Valid access claims signed as typ [`crate::jwt::ID_TOKEN_TYP`] are refused by both access
+/// verifiers, which accept the same claims signed as an access token: the typ check alone
+/// keeps an id_token from passing as an access token.
+#[tokio::test(flavor = "multi_thread")]
+async fn access_claims_signed_as_an_id_token_are_refused_on_typ_alone() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let tokens = &svc.tokens;
+    let (sub, sid) = (random_uuid(&pool).await, random_uuid(&pool).await);
+    let now = Tokens::unix_now();
+    let mut conn = pool.acquire().await.unwrap();
+
+    let claims = tokens.claims(&sub, &sid, &swarog_mint(TEST_CLIENT_ID, now));
+    let access = tokens.sign(&mut conn, &claims).await.unwrap();
+    let id_typed = tokens.sign_typed(&mut conn, crate::jwt::ID_TOKEN_TYP, &claims).await.unwrap();
+    let snapshot = tokens.snapshot().await.unwrap();
+    assert_eq!(tokens.verify_access(&access).await.unwrap(), Some(claims.clone()));
+    assert_eq!(Tokens::verify_against(&snapshot, &access, now), Some(claims.clone()));
+    assert_eq!(tokens.verify_access(&id_typed).await.unwrap(), None, "verify_access took typ JWT");
+    assert_eq!(Tokens::verify_against(&snapshot, &id_typed, now), None, "verify_against took typ JWT");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_refresh_replayed_outside_grace_writes_one_family_revocation() {
     let Some(pool) = test_pool().await else { return };

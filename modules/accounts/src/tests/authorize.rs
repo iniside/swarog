@@ -93,11 +93,16 @@ fn new_code(client_id: &str) -> NewCode<'_> {
 
 /// A code issued to `pid` for `client_id` under a fresh browser session.
 async fn issue(svc: &Service, client_id: &str, pid: &str) -> String {
+    issue_bound(svc, client_id, pid).await.0
+}
+
+/// [`issue`], also answering the digest of the browser session the code is bound to.
+async fn issue_bound(svc: &Service, client_id: &str, pid: &str) -> (String, Vec<u8>) {
     let session = svc.store.create_browser_session(pid).await.unwrap().unwrap();
     let code = store::new_token();
     let digest = web::session::digest(&session.token);
     assert!(svc.store.insert_oidc_code(&code, &digest, &new_code(client_id)).await.unwrap());
-    code
+    (code, digest)
 }
 
 /// Moves `code`'s issue time to `secs` before the caller's transaction's `now()`.
@@ -119,6 +124,18 @@ async fn code_rows(conn: &mut PgConnection, code: &str) -> i64 {
         .fetch_one(&mut *conn)
         .await
         .unwrap()
+}
+
+/// Whether `code`'s row is redeemed and whether its session is unbound; `None` for no row.
+async fn code_state(pool: &PgPool, code: &str) -> Option<(bool, bool)> {
+    sqlx::query_as(
+        "SELECT redeemed_at IS NOT NULL, session_digest IS NULL FROM accounts.oidc_codes \
+          WHERE code_digest = sha256(convert_to($1, 'UTF8'))",
+    )
+    .bind(code)
+    .fetch_optional(pool)
+    .await
+    .unwrap()
 }
 
 async fn codes_of(pool: &PgPool, pid: &str) -> i64 {
@@ -389,9 +406,10 @@ async fn a_password_reset_and_revoke_all_delete_the_players_codes() {
     delete_client(&pool, &client_id).await;
 }
 
-/// Ending a browser session (a logout) ends the unredeemed code issued under it.
+/// Ending a browser session (a logout) ends the unredeemed code issued under it, which then
+/// answers like an unknown code, and keeps a code redeemed under it for replay detection.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_logout_removes_the_sessions_unredeemed_code() {
+async fn a_logout_ends_the_sessions_unredeemed_code_and_keeps_a_redeemed_one() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let client_id = code_client(&pool, &[AUTHORIZATION_CODE], &[CALLBACK]).await;
@@ -399,12 +417,19 @@ async fn a_logout_removes_the_sessions_unredeemed_code() {
 
     let session = svc.store.create_browser_session(&pid).await.unwrap().unwrap();
     let digest = web::session::digest(&session.token);
-    let code = store::new_token();
-    assert!(svc.store.insert_oidc_code(&code, &digest, &new_code(&client_id)).await.unwrap());
+    let (unredeemed, redeemed) = (store::new_token(), store::new_token());
+    for code in [&unredeemed, &redeemed] {
+        assert!(svc.store.insert_oidc_code(code, &digest, &new_code(&client_id)).await.unwrap());
+    }
+    assert!(svc.store.redeem_oidc_code(&pool, &redeemed).await.unwrap().is_some());
     let mut conn = pool.acquire().await.unwrap();
     assert!(svc.store.delete_browser_session_digest_tx(&mut conn, &digest).await.unwrap());
-    assert_eq!(code_rows(&mut conn, &code).await, 0, "a logout left the session's code");
     drop(conn);
+    assert!(
+        svc.store.redeem_oidc_code(&pool, &unredeemed).await.unwrap().is_none(),
+        "a code redeemed after its session's logout"
+    );
+    assert_eq!(code_state(&pool, &redeemed).await, Some((true, true)), "the logout dropped the redeemed code");
 
     cleanup_player(&pool, &pid).await;
     delete_client(&pool, &client_id).await;
@@ -433,8 +458,8 @@ async fn a_code_insert_checks_the_player_before_the_session() {
 
 /// Both orders of a reset's session delete and a code insert under that session. Insert
 /// behind the reset: it waits on the reset's player lock, then finds the session gone and
-/// answers signed out, leaving no code. Insert first: the session delete cascades to the
-/// code before the reset's own code delete runs.
+/// answers signed out, leaving no code. Insert first: the session delete only unbinds the
+/// code, and the reset's own code delete removes it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_reset_racing_a_code_insert_leaves_no_code() {
     let Some(pool) = test_pool().await else { return };
@@ -462,31 +487,79 @@ async fn a_reset_racing_a_code_insert_leaves_no_code() {
     let code = issue(&svc, &client_id, &pid).await;
     let mut reset = pool.begin().await.unwrap();
     assert!(svc.store.lock_player_row_tx(&mut reset, &pid).await.unwrap());
-    assert!(svc.store.delete_player_browser_sessions_tx(&mut reset, &pid).await.unwrap() > 0);
-    assert_eq!(code_rows(&mut reset, &code).await, 0, "the session delete left its code");
+    assert!(svc.store.kill_player_families_tx(&mut reset, &pid).await.unwrap().is_some());
+    assert_eq!(code_rows(&mut reset, &code).await, 0, "the reset left the code");
     reset.commit().await.unwrap();
     cleanup_player(&pool, &pid).await;
 
     delete_client(&pool, &client_id).await;
 }
 
-/// Migrate refuses an `oidc_codes` without `session_digest`, naming the drop remedy; the
-/// booted table passes.
+/// Both orders of a redemption and a delete of the code's browser session, each waiting on
+/// the other's lock on the code row. Delete first: the redemption then finds the session
+/// unbound and redeems nothing. Redemption first: the delete then unbinds the redeemed row,
+/// which stays for replay detection.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_delete_racing_a_redemption_redeems_first_or_not_at_all() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let client_id = code_client(&pool, &[AUTHORIZATION_CODE], &[CALLBACK]).await;
+    let (_, pid) = registered(&svc, "session-race").await;
+
+    let (code, digest) = issue_bound(&svc, &client_id, &pid).await;
+    let mut logout = pool.begin().await.unwrap();
+    let logout_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *logout).await.unwrap();
+    assert!(svc.store.delete_browser_session_digest_tx(&mut logout, &digest).await.unwrap());
+    let redeem = tokio::spawn({
+        let (svc, code) = (svc.clone(), code.clone());
+        async move { svc.store.redeem_oidc_code(&svc.store.pool, &code).await }
+    });
+    assert!(blocked_query(&pool, logout_pid).await.is_some(), "the redemption never waited on the session delete");
+    logout.commit().await.unwrap();
+    assert!(redeem.await.unwrap().unwrap().is_none(), "a code redeemed behind its session's delete");
+    assert_eq!(code_state(&pool, &code).await, Some((false, true)));
+
+    let (code, digest) = issue_bound(&svc, &client_id, &pid).await;
+    let mut redeemer = pool.begin().await.unwrap();
+    let redeemer_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *redeemer).await.unwrap();
+    assert!(svc.store.redeem_oidc_code(&mut *redeemer, &code).await.unwrap().is_some());
+    let logout = tokio::spawn({
+        let svc = svc.clone();
+        async move {
+            let mut tx = svc.store.pool.begin().await.unwrap();
+            let deleted = svc.store.delete_browser_session_digest_tx(&mut tx, &digest).await.unwrap();
+            tx.commit().await.unwrap();
+            deleted
+        }
+    });
+    assert!(blocked_query(&pool, redeemer_pid).await.is_some(), "the session delete never waited on the redemption");
+    redeemer.commit().await.unwrap();
+    assert!(logout.await.unwrap());
+    assert_eq!(code_state(&pool, &code).await, Some((true, true)), "the session delete dropped the redeemed code");
+
+    cleanup_player(&pool, &pid).await;
+    delete_client(&pool, &client_id).await;
+}
+
+/// The stale-codes check refuses an `oidc_codes` without `session_digest`, naming the drop
+/// remedy, and passes an absent table (migrate runs it before the DDL creates one) and the
+/// booted table. `tests/stale_codes_boot.rs` boots such a table through migrate itself.
 #[tokio::test]
 async fn boot_refusal_fires_on_a_codes_table_without_a_session_digest() {
     let Some(pool) = test_pool().await else { return };
     ensure_schema(&pool).await;
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let schema = format!("accounts_stalecodes_{}_{nanos}", std::process::id());
-    for sql in [
-        format!("CREATE SCHEMA {schema}"),
-        format!("CREATE TABLE {schema}.oidc_codes (code_digest bytea PRIMARY KEY)"),
-    ] {
-        sqlx::query(&sql).execute(&pool).await.unwrap();
-    }
+    sqlx::query(&format!("CREATE SCHEMA {schema}")).execute(&pool).await.unwrap();
+    let absent = crate::refuse_stale_codes(&pool, &schema).await;
+    sqlx::query(&format!("CREATE TABLE {schema}.oidc_codes (code_digest bytea PRIMARY KEY)"))
+        .execute(&pool)
+        .await
+        .unwrap();
     let refused = crate::refuse_stale_codes(&pool, &schema).await;
     sqlx::query(&format!("DROP SCHEMA {schema} CASCADE")).execute(&pool).await.unwrap();
 
+    absent.expect("an absent codes table must pass");
     let err = refused.expect_err("a codes table without session_digest must refuse boot").to_string();
     assert!(err.contains(&format!("{schema}.oidc_codes has no session_digest column")), "{err}");
     assert!(err.contains(&format!("DROP SCHEMA {schema} CASCADE;")), "{err}");

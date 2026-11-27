@@ -138,7 +138,7 @@ impl Tokens {
     /// Signs `claims` as `typ` with the active key. A cache refresh reads the key on `conn`,
     /// never on a second pool connection: a mint signing inside its transaction passes that
     /// transaction's connection, so it cannot wait on the pool while holding one of its own.
-    async fn sign_typed<C: Serialize>(
+    pub(crate) async fn sign_typed<C: Serialize>(
         &self,
         conn: &mut PgConnection,
         typ: &str,

@@ -1256,6 +1256,8 @@ impl Store {
             .execute(&mut *conn)
             .await?;
         let browsers = self.delete_player_browser_sessions_tx(conn, player_id).await?;
+        // The session delete only sets the codes' session_digest NULL (a redeemed row stays
+        // for replay detection): this delete is what removes the player's codes.
         self.delete_player_oidc_codes_tx(conn, player_id).await?;
         Ok(Some(families.rows_affected() + browsers))
     }
@@ -1333,6 +1335,8 @@ impl Store {
             self.delete_family_tx(conn, family).await?;
         }
         let browsers = self.delete_player_browser_sessions_tx(conn, player_id).await?;
+        // The session delete only sets the codes' session_digest NULL (a redeemed row stays
+        // for replay detection): this delete is what removes the player's codes.
         self.delete_player_oidc_codes_tx(conn, player_id).await?;
         Ok(Some(families.len() + browsers as usize))
     }
