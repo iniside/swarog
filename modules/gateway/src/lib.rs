@@ -481,6 +481,9 @@ impl Module for Gateway {
             None => {
                 let resolved = verifier::resolve_verifier(ctx)?;
                 if let Some(jwt) = resolved.pull {
+                    // Red while the pull loop has no fresh snapshot, so /readyz shows what
+                    // would otherwise only be 503s on requests. Not for the dev verifier.
+                    ctx.contribute(httpmw::READINESS_SLOT, jwt.readiness_check());
                     let _ = self.jwt_verifier.set(jwt);
                 }
                 resolved.verifier

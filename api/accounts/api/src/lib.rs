@@ -75,6 +75,11 @@ pub const MAX_CLIENT_ID_BYTES: usize = 64;
 /// with its configured issuer and the longest claims would be larger.
 pub const MAX_ACCESS_TOKEN_BYTES: usize = 1024;
 
+/// The JOSE `typ` of an access token (RFC 9068): the accounts verifier and the gateway's
+/// both refuse a token whose header says anything else, so another JWT signed by the same
+/// key is never taken for an access token.
+pub const ACCESS_TOKEN_TYP: &str = "at+jwt";
+
 /// An access token's lifetime: `exp - iat`.
 pub const ACCESS_TTL_MINUTES: u64 = 15;
 

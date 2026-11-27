@@ -461,6 +461,75 @@ async fn jwt_verifier_refuses_a_wrong_aud_iss_kid_or_signature() {
 }
 
 #[tokio::test]
+async fn jwt_verifier_refuses_a_token_whose_typ_is_not_at_jwt() {
+    let key = test_key("k1");
+    let (verifier, _clocks) = loaded_verifier(token_snapshot(&[&key])).await;
+    let claims = access_claims("p1", "c1", "fam-1", NOW);
+    let with_typ = |typ: Option<&str>| {
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+        header.kid = Some("k1".into());
+        header.typ = typ.map(Into::into);
+        jsonwebtoken::encode(&header, &claims, &key.encoding).unwrap()
+    };
+    assert_eq!(
+        verifier.verify(&with_typ(Some(accountsapi::ACCESS_TOKEN_TYP))).await.unwrap().as_deref(),
+        Some("p1")
+    );
+    for (case, typ) in [("an id token", Some("JWT")), ("no typ", None)] {
+        let denial = verify_bearer(&verifier, Some(&with_typ(typ)), AuthReq::Player)
+            .await
+            .expect_err(case);
+        assert_eq!(denial_status(&denial), StatusCode::UNAUTHORIZED, "{case}");
+    }
+}
+
+#[tokio::test]
+async fn token_state_readiness_fails_before_a_pull_and_once_the_snapshot_is_stale() {
+    let key = test_key("k1");
+    let source = FakeTokenState::new(Some(token_snapshot(&[&key])));
+    let clocks = FakeClocks::new();
+    let verifier = Arc::new(JwtVerifier::with_clocks(source, clocks.clone()));
+    let check = verifier.readiness_check();
+    assert_eq!(check.name(), "token-state");
+    assert!(check.run().await.is_err(), "no pull yet");
+
+    verifier.refresh_once().await;
+    assert!(check.run().await.is_ok(), "a fresh snapshot");
+    clocks.advance(verifier::SNAPSHOT_MAX_AGE);
+    assert!(check.run().await.is_ok(), "exactly at the max age is still fresh");
+    clocks.advance(Duration::from_secs(1));
+    assert!(check.run().await.is_err(), "a stale snapshot");
+    assert!(verifier.verify("x").await.is_err(), "verify is unavailable at the same moment");
+
+    verifier.refresh_once().await;
+    assert!(check.run().await.is_ok(), "a new pull recovers");
+}
+
+#[tokio::test]
+async fn gateway_init_contributes_the_token_state_check_only_for_the_jwt_verifier() {
+    let ctx = Context::new();
+    ctx.registry().provide::<dyn accountsapi::TokenState>(
+        registry::key("accounts", "token_state"),
+        FakeTokenState::new(None),
+    );
+    let gw = Gateway::new().with_key_verifier(demo_keys());
+    gw.init(&ctx).expect("init resolves the JwtVerifier");
+    let names: Vec<String> = ctx
+        .slots()
+        .contributions(httpmw::READINESS_SLOT)
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
+    assert_eq!(names, ["token-state"]);
+
+    let injected = Context::new();
+    let gw = Gateway::with_verifier(Arc::new(DevSessionVerifier::new()))
+        .with_key_verifier(demo_keys());
+    gw.init(&injected).expect("init with an injected verifier");
+    assert!(injected.slots().contributions(httpmw::READINESS_SLOT).is_empty());
+}
+
+#[tokio::test]
 async fn jwt_verifier_accepts_exp_within_the_leeway_only() {
     let key = test_key("k1");
     let (verifier, _clocks) = loaded_verifier(token_snapshot(&[&key])).await;

@@ -174,10 +174,15 @@ impl Loaded {
         }
     }
 
-    /// The token's `sub` when it passes the signature, `iss`, `aud` and `exp` checks and
-    /// no revocation refuses it; `None` otherwise.
+    /// The token's `sub` when it is an ES256 `at+jwt` that passes the signature, `iss`, `aud`
+    /// and `exp` checks and no revocation refuses it; `None` otherwise.
     fn verify(&self, token: &str, unix_now: i64) -> Option<String> {
         let header = jsonwebtoken::decode_header(token).ok()?;
+        if header.alg != Algorithm::ES256
+            || header.typ.as_deref() != Some(accountsapi::ACCESS_TOKEN_TYP)
+        {
+            return None;
+        }
         let key = self.keys.get(header.kid.as_deref()?)?;
         let claims = jsonwebtoken::decode::<AccessClaims>(token, key, &self.validation)
             .ok()?
@@ -266,6 +271,31 @@ impl JwtVerifier {
             }
         });
         PullTask { task }
+    }
+
+    /// Whether a snapshot younger than [`SNAPSHOT_MAX_AGE`] is loaded: exactly when `verify`
+    /// is not `Err(VerifyUnavailable)`.
+    pub(crate) fn is_fresh(&self) -> bool {
+        self.fresh().is_some()
+    }
+
+    /// The `/readyz` check `"token-state"`: red while there is no fresh snapshot, so a dead
+    /// or failing pull loop is visible there and not only as 503s on requests.
+    pub(crate) fn readiness_check(self: &Arc<Self>) -> httpmw::ReadyCheck {
+        let verifier = self.clone();
+        httpmw::ReadyCheck::new("token-state", move || {
+            let verifier = verifier.clone();
+            async move {
+                if verifier.is_fresh() {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "no accounts.token_state snapshot pulled in the last {}s",
+                        SNAPSHOT_MAX_AGE.as_secs()
+                    ))
+                }
+            }
+        })
     }
 
     fn fresh(&self) -> Option<Arc<Loaded>> {

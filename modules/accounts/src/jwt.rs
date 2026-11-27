@@ -5,8 +5,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use accountsapi::{
-    Revoked, TokenStateSnapshot, ACCESS_EXP_LEEWAY, ACCESS_TTL_MINUTES, MAX_ACCESS_TOKEN_BYTES,
-    MAX_CLIENT_ID_BYTES, SWAROG_AUDIENCE,
+    Revoked, TokenStateSnapshot, ACCESS_EXP_LEEWAY, ACCESS_TOKEN_TYP, ACCESS_TTL_MINUTES,
+    MAX_ACCESS_TOKEN_BYTES, MAX_CLIENT_ID_BYTES, SWAROG_AUDIENCE,
 };
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
@@ -16,9 +16,6 @@ use crate::signing_keys::{self, Clock, SigningKek, SigningKeys, KEK_ENV};
 
 /// How long the signer uses the active key it read before reading it again.
 pub(crate) const ACTIVE_KEY_CACHE_TTL: Duration = Duration::from_secs(60);
-
-/// The JOSE `typ` of an access token (RFC 9068).
-pub(crate) const ACCESS_TOKEN_TYP: &str = "at+jwt";
 
 pub(crate) const ACCESS_TTL_SECS: i64 = ACCESS_TTL_MINUTES as i64 * 60;
 
