@@ -120,6 +120,33 @@ _None._
 - [ ] **No index on `token_revocations.family_id`**
   Each code mint scans the table for a family revocation. It holds only about 15 minutes of rows.
 
+### Known limits (oidc-device-grant step 2)
+
+- [ ] **The second lost poll race in a row is untested**
+  `settle_device_poll` answers `slow_down` only after a second lost guarded statement; no test drives that arm.
+  Source: review of b7fce2ca (2026-11-27).
+- [ ] **Two copies of the redeemed-grant "kept" query**
+  `redeemed_code_kept_tx` and `redeemed_device_kept_tx` run the same EXISTS query on different tables.
+  Source: review of f8ba2bb1 (2026-11-27).
+- [ ] **The replay revoke sequence lives in two places**
+  `web/token.rs` and the device_codes store each revoke a replayed grant's family.
+  Source: review of b7fce2ca (2026-11-27).
+- [ ] **Device-code TTL parsing still decodes twice**
+  `parse_device_code_ttl` calls `decode_field` (modules/accounts/src/admin.rs:330) before `duration_secs`, and
+  `lifetime()` (admin.rs:323-326) hard-codes the m/s/60 units instead of `controlplane::DURATION_UNITS`.
+  Source: review of 05673fa5 (2026-11-27).
+
+### Known limits (oidc-device-grant step 3b)
+
+- [ ] **No rate limit on `/accounts/oidc/device_authorization`**
+  The endpoint is unauthenticated and writes one `device_codes` row per call for any public client with
+  the device grant.
+  Source: review of 91f2c2a2 (2026-11-27).
+- [ ] **A failed mint burns the device code**
+  A transient 503 after the redemption commits leaves the row redeemed; the next poll is a replay and gets
+  `invalid_grant`. The code grant behaves the same.
+  Source: review of 91f2c2a2 (2026-11-27).
+
 ### Deferred
 
 - [ ] **A consent screen on `/authorize`**
