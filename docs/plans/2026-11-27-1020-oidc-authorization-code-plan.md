@@ -4,7 +4,7 @@ Date: 2026-11-27
 Parent: docs/plans/2026-11-24-0004-lore-integration-roadmap-plan.md, Phase A, Step 3.
 Builds on: docs/plans/2026-11-26-1848-one-token-mechanism-plan.md (one ES256 `at+jwt` access token,
 `accounts.oidc_clients` made in the portal, `token_families`, `token_revocations`, gateway pull verifier).
-Status: approved 2026-11-27; implementation not started (owner: "popraw plan, ale narazie nie implementuj")
+Status: approved 2026-11-27; implementation started 2026-11-27 (owner: "mozesz zaczynac A3").
 Plan review: core-reviewer (opus, high), REJECT with 14 items; all applied below, items 1-2 as owner questions.
 Owner answers (2026-11-27): 1, 3, 4 as recommended; 2 no consent screen, recorded in TODO as possibly
 needed later; 5 follow RFC 6749 §4.1.2 and revoke the first redemption's tokens on a replay (D5).
@@ -188,6 +188,10 @@ roznie wydawane dla poszczegolnyhc klientow z rozna zawartoscia"; "nie bedziemy 
     - `check_token_size` at boot checks every stored client the same way.
 
     This closes docs/todo/accounts.md "`oidc_clients.audience` has no length bound".
+
+    Errata (oidc-authorization-code step 1, 2026-11-27): `MAX_ACCESS_TOKEN_BYTES` is raised from 1024
+    to 4096. The worst case above (a 133-byte handle of control characters escapes to about 798 JSON
+    bytes, about 1096 encoded) alone breaks 1024.
 - **D4. `/accounts/oidc/authorize` (GET).**
   - **Parameters:** `response_type`, `client_id`, `redirect_uri`, `scope`, `state` (≤ 256 bytes),
     `code_challenge` (exactly 43 base64url characters), `code_challenge_method=S256`, `nonce`

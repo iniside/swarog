@@ -1,7 +1,11 @@
 # Accounts
 
-Last updated: 2026-11-26
+Last updated: 2026-11-27
 
+- [x] **`oidc_clients.audience` has no length bound** (2026-11-27, oidc-authorization-code step 1)
+  The column was unbounded `text` and the client insert did not cap it. Fixed: the portal create
+  form refuses an audience over `MAX_AUDIENCE_BYTES` (128) and a client whose worst-case token
+  would exceed `MAX_ACCESS_TOKEN_BYTES` (modules/accounts/src/admin.rs `create_client`).
 - [x] **A login within a second of a revocation gets a dead token** (2026-11-26, one-token-mechanism step 6)
   The player and client cut-offs are rounded up to whole seconds (fail closed, D4), and `verify_against`
   refuses `iat <= revoked_at_unix` (modules/accounts/src/jwt.rs). A login after a password reset or

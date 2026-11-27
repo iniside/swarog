@@ -84,10 +84,6 @@ _None._
 
 ### Known limits (one-token-mechanism step 1)
 
-- [ ] **`oidc_clients.audience` has no length bound**
-  The column is unbounded `text` (modules/accounts/src/lib.rs:243) and the client insert
-  (modules/accounts/src/clients.rs:63) does not cap it. Bound it before A3 makes the audience
-  per client.
 - [ ] **The `delete_client` lock has no test**
   No test shows that `delete_client` (modules/accounts/src/clients.rs) serializes with a
   concurrent login or refresh on the same client.

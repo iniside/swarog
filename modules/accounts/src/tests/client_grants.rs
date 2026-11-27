@@ -4,7 +4,7 @@
 
 use super::*;
 
-use accountsapi::grant_types::{PASSWORD, REFRESH_TOKEN};
+use accountsapi::grant_types::{AUTHORIZATION_CODE, GUEST, PASSWORD, REFRESH_TOKEN};
 
 fn assert_invalid_client(err: Error, what: &str) {
     assert_eq!(err.status, opsapi::Status::Unauthorized, "{what}: {err:?}");
@@ -212,6 +212,54 @@ async fn an_external_login_needs_only_an_existing_client() {
     session.expect("a client listing neither password nor guest still serves an external login");
 }
 
+/// A confidential client (one storing a secret digest) is refused on every op-path login and
+/// on refresh even when it lists the grant; only an authorization_code mint admits it.
+#[tokio::test]
+async fn a_confidential_client_is_refused_on_every_op_path_and_admitted_for_authorization_code() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let client = insert_client(&pool, &[PASSWORD, GUEST, AUTHORIZATION_CODE, REFRESH_TOKEN]).await;
+    let email = format!("conf-{}@test.local", suffix().to_lowercase());
+    let reg = svc.register(email.clone(), "pw".into(), "Conf".into(), client.clone()).await.unwrap();
+    sqlx::query("UPDATE accounts.oidc_clients SET secret_digest = 'x' WHERE client_id = $1")
+        .bind(&client)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let other = format!("conf-{}@test.local", suffix().to_lowercase());
+    let register = svc.register(other, "pw".into(), "Conf".into(), client.clone()).await;
+    let login = svc.login(email, "pw".into(), client.clone()).await;
+    let guest = svc.create_guest(client.clone()).await;
+    let sub = format!("epic-{}", suffix());
+    let external = svc.external_login("epic", &sub, "epic:conf", None, &client).await.map(|(s, _)| s);
+    let refreshed = svc.refresh(reg.refresh_token.clone()).await;
+    let used = token_used(&pool, &reg.refresh_token).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let code = svc.store.client_allows_tx(&mut conn, &client, Some(AUTHORIZATION_CODE)).await.unwrap();
+    let password = svc.store.client_allows_tx(&mut conn, &client, Some(PASSWORD)).await.unwrap();
+    drop(conn);
+    let minted = [
+        register.as_ref().ok().map(|s| s.player_id.clone()),
+        guest.as_ref().ok().map(|s| s.player_id.clone()),
+        external.as_ref().ok().map(|s| s.player_id.clone()),
+        Some(reg.player_id.clone()),
+    ];
+    for player in minted.into_iter().flatten() {
+        cleanup_player(&pool, &player).await;
+    }
+    delete_client(&pool, &client).await;
+
+    assert_invalid_client(register.unwrap_err(), "register");
+    assert_invalid_client(login.unwrap_err(), "login");
+    assert_invalid_client(guest.unwrap_err(), "create_guest");
+    assert_invalid_client(external.unwrap_err(), "external_login");
+    assert_invalid_client(refreshed.unwrap_err(), "refresh");
+    assert!(!used, "a refused refresh leaves its token unconsumed");
+    assert!(code.is_some_and(|g| g.refresh_token), "an authorization_code mint admits it, with refresh");
+    assert!(password.is_none(), "a password mint does not");
+}
+
 /// Migrate refuses a `refresh_tokens` without an ON DELETE CASCADE foreign key to its
 /// schema's `token_families`, naming the table and the drop remedy; a key that does not
 /// cascade does not count, and a cascading one, like the one migrate creates, passes.
@@ -259,4 +307,52 @@ async fn boot_refusal_fires_on_tokens_without_a_family_key() {
     }
     linked.expect("a fully linked set passes");
     crate::refuse_unfamilied_tokens(&pool, "accounts").await.unwrap();
+}
+
+/// Migrate refuses an `oidc_clients` without any one column the client code reads, naming
+/// the column and the drop remedy; a table holding them all passes.
+#[tokio::test]
+async fn boot_refusal_fires_on_a_clients_table_missing_a_column() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let schema = format!("accounts_staleclients_{}_{nanos}", std::process::id());
+    let exec = |sql: String| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(&sql).execute(&pool).await.unwrap();
+        }
+    };
+    let columns = [
+        ("redirect_uris", "text[]"),
+        ("root_domains", "text[]"),
+        ("scopes", "text[]"),
+        ("secret_digest", "text"),
+    ];
+    let table = |without: Option<&str>| {
+        let kept: String = columns
+            .iter()
+            .filter(|(c, _)| Some(*c) != without)
+            .map(|(c, t)| format!(", {c} {t}"))
+            .collect();
+        format!("CREATE TABLE {schema}.oidc_clients (client_id text PRIMARY KEY{kept})")
+    };
+    exec(format!("CREATE SCHEMA {schema}")).await;
+    let mut refusals = Vec::new();
+    for (missing, _) in columns {
+        exec(table(Some(missing))).await;
+        refusals.push((missing, crate::refuse_stale_clients(&pool, &schema).await));
+        exec(format!("DROP TABLE {schema}.oidc_clients")).await;
+    }
+    exec(table(None)).await;
+    let complete = crate::refuse_stale_clients(&pool, &schema).await;
+    exec(format!("DROP SCHEMA {schema} CASCADE")).await;
+
+    for (missing, refused) in refusals {
+        let err = refused.expect_err(missing).to_string();
+        assert!(err.contains(&format!("{schema}.oidc_clients has no {missing} column")), "{err}");
+        assert!(err.contains(&format!("DROP SCHEMA {schema} CASCADE;")), "{err}");
+    }
+    complete.expect("a table holding every column passes");
+    crate::refuse_stale_clients(&pool, "accounts").await.unwrap();
 }

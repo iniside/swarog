@@ -14,7 +14,8 @@ use testdb::test_pool;
 
 use super::{
     fake_ip, mask, session_rows, thousands, AccountsAdmin, CREATE_ACCOUNT,
-    CREATE_CLIENT, DELETE_CLIENT, FIELD_DISPLAY_NAME, FIELD_EMAIL, FIELD_GRANTS, MAX_NEEDLE_BYTES,
+    CREATE_CLIENT, DELETE_CLIENT, FIELD_AUDIENCE, FIELD_CONFIDENTIAL, FIELD_DISPLAY_NAME, FIELD_EMAIL,
+    FIELD_GRANTS, FIELD_REDIRECT_URIS, FIELD_ROOT_DOMAINS, MAX_NEEDLE_BYTES,
     PAGE_SIZE, RESET_PASSWORD, REVOKE_ALL, REVOKE_SESSION, SESSIONS_SHOWN,
 };
 use crate::store::FamilyRow;
@@ -1204,12 +1205,25 @@ fn create_account_caps_refuse_one_byte_over_and_pass_at_the_cap() {
     assert!(!display(cap) && display(cap + 1));
 }
 
-fn create_client_call(display: &str, grants: Option<&str>) -> InvokeCall {
+/// A create-client call naming `display`, picking `grants` (a JSON list) and setting each
+/// `(field, value)` of `fields`: confidential, audience, redirect URIs, root domains, scopes.
+fn create_client_call(display: &str, grants: Option<&str>, fields: &[(&str, &str)]) -> InvokeCall {
     let mut input = BTreeMap::from([(FIELD_DISPLAY_NAME.to_string(), display.to_string())]);
     if let Some(grants) = grants {
         input.insert(FIELD_GRANTS.to_string(), grants.to_string());
     }
+    for (key, value) in fields {
+        input.insert(key.to_string(), value.to_string());
+    }
     InvokeCall { input, ..revoke(CREATE_CLIENT, None, None) }
+}
+
+async fn secret_digest_of(pool: &PgPool, client_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT secret_digest FROM accounts.oidc_clients WHERE client_id = $1")
+        .bind(client_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
 }
 
 fn delete_client_call(id: &str) -> InvokeCall {
@@ -1226,13 +1240,13 @@ async fn create_client_refuses_a_blank_name_and_no_grants_with_a_field_error() {
     let admin = AccountsAdmin::new(svc);
     let all = r#"["password"]"#;
     let refused = [
-        (create_client_call("", Some(all)), FIELD_DISPLAY_NAME),
-        (create_client_call("   ", Some(all)), FIELD_DISPLAY_NAME),
-        (create_client_call(&format!("no-grants-{}", suffix()), None), FIELD_GRANTS),
-        (create_client_call(&format!("no-grants-{}", suffix()), Some("")), FIELD_GRANTS),
-        (create_client_call(&format!("no-grants-{}", suffix()), Some("[]")), FIELD_GRANTS),
+        (create_client_call("", Some(all), &[]), FIELD_DISPLAY_NAME),
+        (create_client_call("   ", Some(all), &[]), FIELD_DISPLAY_NAME),
+        (create_client_call(&format!("no-grants-{}", suffix()), None, &[]), FIELD_GRANTS),
+        (create_client_call(&format!("no-grants-{}", suffix()), Some(""), &[]), FIELD_GRANTS),
+        (create_client_call(&format!("no-grants-{}", suffix()), Some("[]"), &[]), FIELD_GRANTS),
         (
-            create_client_call(&format!("bad-grant-{}", suffix()), Some(r#"["implicit"]"#)),
+            create_client_call(&format!("bad-grant-{}", suffix()), Some(r#"["implicit"]"#), &[]),
             FIELD_GRANTS,
         ),
     ];
@@ -1253,7 +1267,7 @@ async fn create_client_stores_a_swarog_client_and_delete_removes_it_once() {
     let (_ctx, svc) = wired(&pool).await;
     let admin = AccountsAdmin::new(svc);
     let name = format!("admin-client-{}", suffix());
-    let call = create_client_call(&format!("  {name}  "), Some(r#"["refresh_token","password"]"#));
+    let call = create_client_call(&format!("  {name}  "), Some(r#"["refresh_token","password"]"#), &[]);
     let created = admin.invoke(call).await.unwrap();
     let InvokeOutcome::Ok { message, reveal: None, redirect: None } = created else {
         panic!("a create answers a message: {created:?}");
@@ -1265,6 +1279,8 @@ async fn create_client_stores_a_swarog_client_and_delete_removes_it_once() {
     assert_eq!(row.display_name, name, "the name is trimmed");
     assert_eq!(row.audience, accountsapi::SWAROG_AUDIENCE);
     assert_eq!(row.grant_types, ["password", "refresh_token"], "grants in grant_types::ALL order");
+    assert!(!row.confidential, "a create not marked confidential is public");
+    assert_eq!(secret_digest_of(&pool, &id).await, None, "a public client stores no secret digest");
 
     let deleted = admin.invoke(delete_client_call(&id)).await.unwrap();
     let InvokeOutcome::Ok { message, .. } = deleted else {
@@ -1274,6 +1290,106 @@ async fn create_client_stores_a_swarog_client_and_delete_removes_it_once() {
     assert!(admin.svc.store.client(&id).await.unwrap().is_none(), "the row is gone");
     let again = admin.invoke(delete_client_call(&id)).await.unwrap_err();
     assert_eq!(again.status, Status::NotFound, "a repeat delete names no client");
+}
+
+#[tokio::test]
+async fn create_client_reveals_a_confidential_secret_once_and_stores_only_its_digest() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let admin = AccountsAdmin::new(svc);
+    let call = create_client_call(
+        &format!("confidential-{}", suffix()),
+        Some(r#"["refresh_token","authorization_code"]"#),
+        &[(FIELD_CONFIDENTIAL, "true"), (FIELD_REDIRECT_URIS, "https://game.example/callback")],
+    );
+    let created = admin.invoke(call).await.unwrap();
+    let InvokeOutcome::Ok { message, reveal: Some(reveal), redirect: None } = created else {
+        panic!("a confidential create reveals its secret: {created:?}");
+    };
+    let id = reveal.label.strip_prefix("Client created — ").expect("the label names the id");
+    let id = id.to_string();
+    let stored = secret_digest_of(&pool, &id).await;
+    let row = admin.svc.store.client(&id).await.unwrap().expect("the created client is stored");
+    delete_client(&pool, &id).await;
+
+    assert_eq!(message, "", "the reveal modal is the whole answer");
+    assert!(reveal.value.starts_with(crate::secret::CLIENT_SECRET_PREFIX), "a cs_ secret");
+    assert_eq!(
+        stored.as_deref(),
+        Some(crate::secret::digest(&reveal.value).as_str()),
+        "the stored digest is the revealed secret's, never the secret"
+    );
+    assert!(row.confidential, "the row reads back confidential");
+    assert_eq!(row.grant_types, ["authorization_code", "refresh_token"], "grants in grant_types::ALL order");
+    assert_eq!(row.redirect_uris, ["https://game.example/callback"]);
+}
+
+/// 63 + 1 + 63 + 1 + 63 + 1 + 61 bytes: a valid root domain of exactly the 253-byte cap,
+/// made distinct by `lead`.
+fn longest_root_domain(lead: char) -> String {
+    format!("{lead}{}.{}.{}.{}", "a".repeat(62), "b".repeat(63), "c".repeat(63), "d".repeat(61))
+}
+
+#[tokio::test]
+async fn create_client_refuses_a_bad_redirect_an_overlong_audience_and_a_confidential_login_grant() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let admin = AccountsAdmin::new(svc);
+    let name = || format!("refused-client-{}", suffix());
+    let password = Some(r#"["password"]"#);
+    let long_audience = "a".repeat(129);
+    let domains: Vec<String> = "abcdefgh".chars().map(longest_root_domain).collect();
+    assert_eq!(domains.len(), crate::clients::MAX_ROOT_DOMAINS, "as many domains as a client may list");
+    assert!(domains.iter().all(|d| d.len() == crate::clients::MAX_ROOT_DOMAIN_BYTES));
+    assert!(domains.iter().all(|d| crate::clients::root_domain_refusal(d).is_none()), "each domain is valid");
+    let domains = domains.join("\n");
+    let refused = [
+        (
+            create_client_call(&name(), password, &[(FIELD_REDIRECT_URIS, "ftp://game.example/cb")]),
+            FIELD_REDIRECT_URIS,
+            "neither https",
+        ),
+        (
+            create_client_call(&name(), password, &[(FIELD_AUDIENCE, long_audience.as_str())]),
+            FIELD_AUDIENCE,
+            "at most 128 bytes",
+        ),
+        (
+            create_client_call(&name(), Some(r#"["authorization_code"]"#), &[]),
+            FIELD_REDIRECT_URIS,
+            "needs at least one redirect URI",
+        ),
+        (
+            create_client_call(
+                &name(),
+                Some(r#"["password","refresh_token"]"#),
+                &[(FIELD_CONFIDENTIAL, "true"), (FIELD_REDIRECT_URIS, "https://game.example/cb")],
+            ),
+            FIELD_GRANTS,
+            "only authorization_code and refresh_token",
+        ),
+        (
+            create_client_call(&name(), password, &[(FIELD_ROOT_DOMAINS, domains.as_str())]),
+            FIELD_ROOT_DOMAINS,
+            "a verifier accepts",
+        ),
+    ];
+    for (call, key, says) in refused {
+        let display = call.input[FIELD_DISPLAY_NAME].clone();
+        let outcome = admin.invoke(call).await.unwrap();
+        let InvokeOutcome::FieldErrors(errors) = &outcome else {
+            panic!("a refused create is a field error on {key}: {outcome:?}");
+        };
+        assert_eq!(errors.keys().collect::<Vec<_>>(), [key], "{errors:?}");
+        assert!(errors[key].contains(says), "{key}: {:?} names {says:?}", errors[key]);
+        let stored: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM accounts.oidc_clients WHERE display_name = $1")
+                .bind(&display)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored, 0, "a refused create stores no client: {key}");
+    }
 }
 
 async fn client_families(pool: &PgPool, client_id: &str) -> i64 {
