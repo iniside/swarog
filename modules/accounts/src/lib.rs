@@ -44,6 +44,7 @@ mod oidc;
 mod ops;
 mod password;
 mod providers;
+mod secret;
 mod signing_keys;
 mod store;
 mod web;
@@ -239,9 +240,14 @@ CREATE TABLE IF NOT EXISTS accounts.browser_sessions (
 CREATE TABLE IF NOT EXISTS accounts.oidc_clients (
 	client_id    text PRIMARY KEY,
 	display_name text        NOT NULL CHECK (display_name <> ''),
-	grant_types  text[]      NOT NULL CHECK (cardinality(grant_types) > 0),
-	audience     text        NOT NULL,
-	created_at   timestamptz NOT NULL DEFAULT now()
+	grant_types   text[]      NOT NULL CHECK (cardinality(grant_types) > 0),
+	audience      text        NOT NULL,
+	redirect_uris text[]      NOT NULL DEFAULT '{}',
+	root_domains  text[]      NOT NULL DEFAULT '{}',
+	scopes        text[]      NOT NULL DEFAULT '{}',
+	-- NULL for a public client.
+	secret_digest text,
+	created_at    timestamptz NOT NULL DEFAULT now()
 );
 
 -- One login's token family: every token minted from that login, for one client. A revoked
@@ -357,6 +363,28 @@ async fn refuse_unfamilied_tokens(pool: &sqlx::PgPool, schema: &str) -> anyhow::
         if !linked {
             anyhow::bail!(
                 "accounts: {table} has no ON DELETE CASCADE foreign key to {families}. \
+                 Remedy: DROP SCHEMA {schema} CASCADE; and reboot."
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a `{schema}.oidc_clients` without a column the client code reads:
+/// `CREATE TABLE IF NOT EXISTS` keeps an older table.
+async fn refuse_stale_clients(pool: &sqlx::PgPool, schema: &str) -> anyhow::Result<()> {
+    for column in ["redirect_uris", "root_domains", "scopes", "secret_digest"] {
+        let present: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM information_schema.columns \
+             WHERE table_schema = $1 AND table_name = 'oidc_clients' AND column_name = $2",
+        )
+        .bind(schema)
+        .bind(column)
+        .fetch_one(pool)
+        .await?;
+        if present == 0 {
+            anyhow::bail!(
+                "accounts: {schema}.oidc_clients has no {column} column. \
                  Remedy: DROP SCHEMA {schema} CASCADE; and reboot."
             );
         }
@@ -1082,8 +1110,8 @@ impl Service {
     }
 
     /// Refuses a refresh in family `family_id` once its client no longer lists
-    /// `refresh_token`. The caller rolls back on the refusal, so the presented token stays
-    /// unconsumed.
+    /// `refresh_token`, and any refresh here of a confidential client's family. The caller
+    /// rolls back on the refusal, so the presented token stays unconsumed.
     async fn refresh_allowed_tx(&self, conn: &mut PgConnection, family_id: &str) -> Result<(), Error> {
         let allowed = self
             .store
@@ -1791,6 +1819,7 @@ impl Accounts {
         }
         refuse_stale_oauth_states(pool, "accounts").await?;
         refuse_unfamilied_tokens(pool, "accounts").await?;
+        refuse_stale_clients(pool, "accounts").await?;
         signing_keys::migrate_signing_keys(pool, SIGNING_KEYS_SCHEMA, &kek).await?;
         clients::migrate_dev_seed(self.dev_seed_on(), pool).await?;
         Ok(())

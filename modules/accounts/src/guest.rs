@@ -15,10 +15,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use base64::Engine as _;
 use rand::RngCore as _;
-use sha2::{Digest, Sha256};
 
 use crate::oidc::short_id;
 use crate::providers::{CredentialVerifier, VerifiedSubject, VerifyError, GUEST};
+use crate::secret::digest;
 use crate::store::Store;
 
 const B64: base64::engine::general_purpose::GeneralPurpose =
@@ -45,16 +45,10 @@ pub(crate) fn mint_ticket() -> GuestTicket {
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     let secret = B64.encode(bytes);
     GuestTicket {
-        secret_hash: secret_hash(&secret),
+        secret_hash: digest(&secret),
         credential: format!("{subject}.{secret}"),
         subject,
     }
-}
-
-/// The stored form of a guest secret — SHA-256, base64url-no-pad (apikeys' encoding,
-/// so the repo has one digest spelling and no `hex` dependency).
-pub(crate) fn secret_hash(secret: &str) -> String {
-    B64.encode(Sha256::digest(secret.as_bytes()))
 }
 
 /// A random v4 UUID rendered as text, from `OsRng` — the `accounts.identities.subject`
@@ -139,7 +133,7 @@ impl CredentialVerifier for GuestCredentials {
         }
         let found = self
             .store
-            .guest_identity_matches(subject, &secret_hash(secret))
+            .guest_identity_matches(subject, &digest(secret))
             .await
             .map_err(|e| VerifyError::Infra(e.into()))?;
         if !found {

@@ -18,10 +18,15 @@ use controlplane::{
     DEFAULT_SEARCH_DEADLINE_MS,
 };
 use controlplane::{decode_field, encode_field, order, FieldValue};
-use accountsapi::grant_types;
+use accountsapi::{grant_types, scopes, MAX_ACCESS_TOKEN_BYTES, SWAROG_AUDIENCE};
 use opsapi::Error;
 
-use crate::clients::{canonical_grants, ClientRow, MAX_CLIENT_NAME_BYTES};
+use crate::clients::{
+    canonical_grants, canonical_scopes, listed_lines, redirect_uri_refusal, root_domain_refusal, ClientRow,
+    NewClient, CONFIDENTIAL_GRANTS, DEFAULT_GRANTS, MAX_AUDIENCE_BYTES, MAX_CLIENT_NAME_BYTES, MAX_REDIRECT_URIS,
+    MAX_ROOT_DOMAINS,
+};
+use crate::secret;
 
 use crate::providers::{EPIC, GOOGLE, GUEST, PASSWORD};
 use crate::store::{render_handle, FamilyRow, IdentityRow, PlayerListRow, PlayerListing};
@@ -62,8 +67,13 @@ pub(crate) const CLIENTS_PAGE: &str = "clients";
 pub(crate) const CLIENTS: &str = "clients";
 const CLIENT_KIND: &str = "oidc_client";
 
-/// Create client's grant types field; its display name is [`FIELD_DISPLAY_NAME`].
+/// Create client's fields; its display name is [`FIELD_DISPLAY_NAME`].
 pub(crate) const FIELD_GRANTS: &str = "grant_types";
+pub(crate) const FIELD_CONFIDENTIAL: &str = "confidential";
+pub(crate) const FIELD_AUDIENCE: &str = "audience";
+pub(crate) const FIELD_REDIRECT_URIS: &str = "redirect_uris";
+pub(crate) const FIELD_ROOT_DOMAINS: &str = "root_domains";
+pub(crate) const FIELD_SCOPES: &str = "scopes";
 
 /// Create account's form fields.
 pub(crate) const FIELD_EMAIL: &str = "email";
@@ -144,6 +154,19 @@ fn done(message: &str) -> InvokeOutcome {
 
 fn field_error(key: &str, msg: impl Into<String>) -> InvokeOutcome {
     InvokeOutcome::FieldErrors(BTreeMap::from([(key.to_string(), msg.into())]))
+}
+
+/// The values picked in the Multi field `key`, none when absent or empty; a malformed pick is
+/// the field error to answer.
+fn picked(req: &InvokeCall, key: &str, kind: &FieldKind) -> Result<Vec<String>, InvokeOutcome> {
+    match req.input.get(key).map(String::as_str) {
+        None | Some("") => Ok(Vec::new()),
+        Some(raw) => match decode_field(kind, raw) {
+            Ok(FieldValue::Multi(picked)) => Ok(picked),
+            Ok(_) => Ok(Vec::new()),
+            Err(e) => Err(field_error(key, e.reason)),
+        },
+    }
 }
 
 /// A password shown once in the portal's reveal modal.
@@ -281,21 +304,71 @@ fn grants_kind() -> FieldKind {
     FieldKind::Multi(grant_types::ALL.map(String::from).to_vec())
 }
 
-/// Create client's form: the display name and the grant types, all picked by default; the
-/// id is generated.
+fn scopes_kind() -> FieldKind {
+    FieldKind::Multi(scopes::ALL.map(String::from).to_vec())
+}
+
+fn optional_field(key: &str, label: &str, kind: FieldKind, help: &str, placeholder: Option<&str>) -> Field {
+    Field {
+        kind,
+        required: false,
+        placeholder: placeholder.map(String::from),
+        ..form_field(key, label, help, "", true)
+    }
+}
+
+/// Create client's form: the display name, public or confidential, the grant types with
+/// [`DEFAULT_GRANTS`] picked, the audience, redirect URIs, root domains and scopes; the id is
+/// generated.
 pub(crate) fn create_client_form() -> FormSpec {
     let kind = grants_kind();
-    let all = FieldValue::Multi(grant_types::ALL.map(String::from).to_vec());
+    let defaults = FieldValue::Multi(DEFAULT_GRANTS.map(String::from).to_vec());
     let grants = Field {
         kind: kind.clone(),
-        default: Some(encode_field(&kind, &all)),
+        default: Some(encode_field(&kind, &defaults)),
         placeholder: None,
         ..form_field(FIELD_GRANTS, "Grant types", "The ways a token may be minted for this client.", "", true)
+    };
+    let confidential = Field {
+        default: Some(encode_field(&FieldKind::Bool, &FieldValue::Bool(false))),
+        mono: false,
+        ..optional_field(
+            FIELD_CONFIDENTIAL,
+            "Confidential",
+            FieldKind::Bool,
+            "A confidential client gets a secret, shown once, and may hold only authorization_code and \
+             refresh_token.",
+            None,
+        )
     };
     FormSpec {
         fields: vec![
             form_field(FIELD_DISPLAY_NAME, "Display name", "Shown to operators.", "Game client", false),
+            confidential,
             grants,
+            optional_field(
+                FIELD_AUDIENCE,
+                "Audience",
+                FieldKind::String,
+                "The aud of its tokens; empty means swarog.",
+                Some(SWAROG_AUDIENCE),
+            ),
+            optional_field(
+                FIELD_REDIRECT_URIS,
+                "Redirect URIs",
+                FieldKind::Text,
+                "One per line: absolute https, or http on a loopback host, with no fragment. \
+                 authorization_code needs one.",
+                None,
+            ),
+            optional_field(
+                FIELD_ROOT_DOMAINS,
+                "Root domains",
+                FieldKind::Text,
+                "One per line: lowercase DNS names, sent in the token's root_domains claim.",
+                None,
+            ),
+            optional_field(FIELD_SCOPES, "Scopes", scopes_kind(), "The scopes it may ask for.", None),
         ],
         hidden: BTreeMap::new(),
         submit_label: "Create client".to_string(),
@@ -323,16 +396,26 @@ fn delete_client_spec(title: String, impact: Vec<(String, Cell)>, type_to_confir
     }
 }
 
+/// One cell per value, the first carrying the rest; `—` for none.
+fn list_cell(kind: CellKind, values: &[String]) -> Cell {
+    let mut cells = values.iter().map(|v| text(kind, v.clone()));
+    let first = cells.next().unwrap_or_else(|| text(CellKind::Muted, "—"));
+    Cell { more: cells.collect(), ..first }
+}
+
 fn oidc_client_row(row: &ClientRow) -> Row {
-    let mut grants = row.grant_types.iter().map(|g| text(CellKind::Ref, g.clone()));
-    let first = grants.next().unwrap_or_else(|| text(CellKind::Muted, "—"));
+    let kind = if row.confidential { "Confidential" } else { "Public" };
     Row {
         entity: Some(EntityRef { kind: CLIENT_KIND.to_string(), id: row.client_id.clone() }),
         cells: vec![
             text(CellKind::Strong, row.display_name.clone()),
             text(CellKind::Mono, row.client_id.clone()),
-            Cell { more: grants.collect(), ..first },
+            text(CellKind::Text, kind),
+            list_cell(CellKind::Ref, &row.grant_types),
+            list_cell(CellKind::Ref, &row.scopes),
             text(CellKind::MonoMuted, row.audience.clone()),
+            list_cell(CellKind::Mono, &row.redirect_uris),
+            list_cell(CellKind::Mono, &row.root_domains),
             text(CellKind::Dim, row.created.clone()),
         ],
         highlight: false,
@@ -347,8 +430,12 @@ pub(crate) fn clients_body(rows: &[ClientRow]) -> PanelBody {
         columns: vec![
             column("name", "Name", CellKind::Strong),
             column("client_id", "Client id", CellKind::Mono),
+            column("type", "Type", CellKind::Text),
             Column { wrap: true, ..column("grants", "Grant types", CellKind::Ref) },
+            Column { wrap: true, ..column("scopes", "Scopes", CellKind::Ref) },
             column("audience", "Audience", CellKind::MonoMuted),
+            Column { wrap: true, ..column("redirect_uris", "Redirect URIs", CellKind::Mono) },
+            Column { wrap: true, ..column("root_domains", "Root domains", CellKind::Mono) },
             column("created", "Created", CellKind::Dim),
         ],
         rows: rows.iter().map(oidc_client_row).collect(),
@@ -1069,8 +1156,10 @@ impl AccountsAdmin {
         Ok(clients_body(&rows))
     }
 
-    /// Create client: a generated id for the Swarog audience, named in the message. The grants
-    /// are stored in `grant_types::ALL` order.
+    /// Create client: a generated id, named in the message. Grants and scopes are stored in
+    /// their contract order. A confidential client's secret is revealed once and only its
+    /// digest stored. Refuses a client whose longest token would be over
+    /// [`MAX_ACCESS_TOKEN_BYTES`].
     async fn create_client(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
         let display = req.input.get(FIELD_DISPLAY_NAME).map(|d| d.trim()).unwrap_or_default();
         if display.is_empty() {
@@ -1079,20 +1168,95 @@ impl AccountsAdmin {
         if display.len() > MAX_CLIENT_NAME_BYTES {
             return Ok(field_error(FIELD_DISPLAY_NAME, format!("at most {MAX_CLIENT_NAME_BYTES} bytes")));
         }
-        let picked = match req.input.get(FIELD_GRANTS).map(String::as_str) {
-            None | Some("") => Vec::new(),
-            Some(raw) => match decode_field(&grants_kind(), raw) {
-                Ok(FieldValue::Multi(picked)) => picked,
-                Ok(_) => Vec::new(),
-                Err(e) => return Ok(field_error(FIELD_GRANTS, e.reason)),
+        let confidential = match req.input.get(FIELD_CONFIDENTIAL).map(String::as_str) {
+            None | Some("") => false,
+            Some(raw) => match decode_field(&FieldKind::Bool, raw) {
+                Ok(FieldValue::Bool(on)) => on,
+                Ok(_) => false,
+                Err(e) => return Ok(field_error(FIELD_CONFIDENTIAL, e.reason)),
             },
         };
-        let grants = canonical_grants(&picked);
+        let grants = match picked(req, FIELD_GRANTS, &grants_kind()) {
+            Ok(picked) => canonical_grants(&picked),
+            Err(refused) => return Ok(refused),
+        };
         if grants.is_empty() {
             return Ok(field_error(FIELD_GRANTS, "pick at least one grant type"));
         }
-        let client_id = self.svc.store.insert_client(display, &grants).await.map_err(internal)?;
-        Ok(done(&format!("Client created — {client_id}")))
+        if confidential && grants.iter().any(|g| !CONFIDENTIAL_GRANTS.contains(&g.as_str())) {
+            return Ok(field_error(
+                FIELD_GRANTS,
+                "a confidential client may hold only authorization_code and refresh_token",
+            ));
+        }
+        let audience = req.input.get(FIELD_AUDIENCE).map(|a| a.trim()).unwrap_or_default();
+        let audience = if audience.is_empty() { SWAROG_AUDIENCE } else { audience };
+        if audience.len() > MAX_AUDIENCE_BYTES {
+            return Ok(field_error(FIELD_AUDIENCE, format!("at most {MAX_AUDIENCE_BYTES} bytes")));
+        }
+        let redirect_uris = listed_lines(req.input.get(FIELD_REDIRECT_URIS).map(String::as_str).unwrap_or_default());
+        if redirect_uris.len() > MAX_REDIRECT_URIS {
+            return Ok(field_error(FIELD_REDIRECT_URIS, format!("at most {MAX_REDIRECT_URIS}")));
+        }
+        if let Some(refusal) = redirect_uris.iter().find_map(|u| redirect_uri_refusal(u)) {
+            return Ok(field_error(FIELD_REDIRECT_URIS, refusal));
+        }
+        if redirect_uris.is_empty() && grants.iter().any(|g| g == grant_types::AUTHORIZATION_CODE) {
+            return Ok(field_error(FIELD_REDIRECT_URIS, "authorization_code needs at least one redirect URI"));
+        }
+        let root_domains = listed_lines(req.input.get(FIELD_ROOT_DOMAINS).map(String::as_str).unwrap_or_default());
+        if root_domains.len() > MAX_ROOT_DOMAINS {
+            return Ok(field_error(FIELD_ROOT_DOMAINS, format!("at most {MAX_ROOT_DOMAINS}")));
+        }
+        if let Some(refusal) = root_domains.iter().find_map(|d| root_domain_refusal(d)) {
+            return Ok(field_error(FIELD_ROOT_DOMAINS, refusal));
+        }
+        let scopes = match picked(req, FIELD_SCOPES, &scopes_kind()) {
+            Ok(picked) => canonical_scopes(&picked),
+            Err(refused) => return Ok(refused),
+        };
+        let mut conn = self.svc.store.pool.acquire().await.map_err(internal)?;
+        let longest = self
+            .svc
+            .tokens
+            .longest_token_bytes(&mut conn, audience, &root_domains)
+            .await
+            .map_err(|e| Error::internal(format!("{e:#}")))?;
+        drop(conn);
+        if longest > MAX_ACCESS_TOKEN_BYTES {
+            let key = if root_domains.is_empty() { FIELD_AUDIENCE } else { FIELD_ROOT_DOMAINS };
+            return Ok(field_error(
+                key,
+                format!("its tokens can be {longest} bytes, over the {MAX_ACCESS_TOKEN_BYTES} a verifier accepts"),
+            ));
+        }
+        let secret = confidential.then(secret::new_client_secret);
+        let digest = secret.as_deref().map(secret::digest);
+        let new = NewClient {
+            display_name: display,
+            grants: &grants,
+            audience,
+            redirect_uris: &redirect_uris,
+            root_domains: &root_domains,
+            scopes: &scopes,
+            secret_digest: digest.as_deref(),
+        };
+        let client_id = self.svc.store.insert_client(&new).await.map_err(internal)?;
+        let message = format!("Client created — {client_id}");
+        let Some(secret) = secret else {
+            return Ok(done(&message));
+        };
+        Ok(InvokeOutcome::Ok {
+            message: String::new(),
+            reveal: Some(SecretReveal {
+                label: message,
+                value: secret,
+                hint: None,
+                expires_at: None,
+                extra: Some("The client secret. Only its digest is stored, so it is shown once.".to_string()),
+            }),
+            redirect: None,
+        })
     }
 
     async fn delete_client(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {

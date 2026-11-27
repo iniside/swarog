@@ -1,4 +1,5 @@
-//! The dev seed's gate and insert, the client id shape and the grant order.
+//! The dev seed's gate and insert, the client id shape, the grant and scope order and the
+//! redirect URI and root domain rules.
 
 use std::ffi::OsString;
 
@@ -7,7 +8,9 @@ use lifecycle::Module as _;
 use testdb::test_pool;
 
 use super::{
-    canonical_grants, dev_seed_from, migrate_dev_seed, new_client_id, seed_dev_client, DEV_SEED_ENV,
+    canonical_grants, canonical_scopes, dev_seed_from, listed_lines, migrate_dev_seed, new_client_id,
+    redirect_uri_refusal, root_domain_refusal, seed_dev_client, DEV_SEED_ENV, MAX_REDIRECT_URI_BYTES,
+    MAX_ROOT_DOMAIN_BYTES,
 };
 use crate::tests::{dev_kek, wired, GHOST_PLAYER};
 use crate::Accounts;
@@ -69,6 +72,70 @@ fn grants_keep_the_contract_order_whatever_the_pick_order() {
     let picked = vec![grant_types::REFRESH_TOKEN.to_string(), grant_types::PASSWORD.to_string()];
     assert_eq!(canonical_grants(&picked), [grant_types::PASSWORD, grant_types::REFRESH_TOKEN]);
     assert!(canonical_grants(&[]).is_empty());
+    let picked = vec!["offline_access".to_string(), "openid".to_string()];
+    assert_eq!(canonical_scopes(&picked), ["openid", "offline_access"]);
+}
+
+#[test]
+fn listed_lines_trims_drops_blanks_and_keeps_each_once() {
+    let raw = " https://a.example/cb \r\n\n  \nhttps://b.example/cb\nhttps://a.example/cb\n";
+    assert_eq!(listed_lines(raw), ["https://a.example/cb", "https://b.example/cb"]);
+    assert!(listed_lines("").is_empty());
+}
+
+#[test]
+fn a_redirect_uri_is_https_or_loopback_http_with_no_fragment() {
+    let long = format!("https://a.example/{}", "p".repeat(MAX_REDIRECT_URI_BYTES - "https://a.example/".len()));
+    for ok in [
+        "https://portal.example/callback",
+        "https://portal.example:8443/cb?x=1",
+        "http://localhost:3000/cb",
+        "http://127.0.0.1/cb",
+        "http://[::1]:9000/cb",
+        long.as_str(),
+    ] {
+        assert_eq!(redirect_uri_refusal(ok), None, "{ok}");
+    }
+    let over = format!("{long}p");
+    for refused in [
+        "/relative/cb",
+        "portal.example/cb",
+        "http://portal.example/cb",
+        "http://10.0.0.1/cb",
+        "https://portal.example/cb#frag",
+        "https://portal.example/cb#",
+        "ftp://portal.example/cb",
+        "custom:callback",
+        over.as_str(),
+    ] {
+        assert!(redirect_uri_refusal(refused).is_some(), "{refused}");
+    }
+}
+
+#[test]
+fn a_root_domain_is_a_lowercase_dns_name() {
+    let label = "a".repeat(63);
+    let longest = [label.as_str(); 4].join(".").chars().take(MAX_ROOT_DOMAIN_BYTES).collect::<String>();
+    for ok in ["example.com", "lore.my-studio.example", "localhost", "a1.b2", label.as_str(), longest.as_str()] {
+        assert_eq!(root_domain_refusal(ok), None, "{ok}");
+    }
+    let long_label = "a".repeat(64);
+    let over = format!("{longest}a");
+    for refused in [
+        "Example.com",
+        "-a.example",
+        "a-.example",
+        "a..example",
+        ".example",
+        "example.",
+        "ex_ample.com",
+        "https://example.com",
+        "",
+        long_label.as_str(),
+        over.as_str(),
+    ] {
+        assert!(root_domain_refusal(refused).is_some(), "{refused}");
+    }
 }
 
 type DevClient = (String, Vec<String>, String);
@@ -87,7 +154,7 @@ async fn dev_client(conn: &mut sqlx::PgConnection) -> Vec<DevClient> {
 async fn the_dev_seed_inserts_the_dev_client_once_and_keeps_an_edited_row() {
     let Some(pool) = test_pool().await else { return };
     wired(&pool).await;
-    let all: Vec<String> = grant_types::ALL.map(String::from).to_vec();
+    let all: Vec<String> = ["password", "guest", "refresh_token"].map(String::from).to_vec();
     let _row = DEV_CLIENT_ROW.lock().await;
     let mut tx = pool.begin().await.unwrap();
     sqlx::query("DELETE FROM accounts.oidc_clients WHERE client_id = $1")

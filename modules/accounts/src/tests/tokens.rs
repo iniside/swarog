@@ -75,7 +75,7 @@ async fn the_boot_size_check_passes_the_default_issuer_and_refuses_a_long_one() 
     let long = Tokens::new(
         pool.clone(),
         "accounts",
-        format!("https://{}.example/accounts/oidc", "a".repeat(600)),
+        format!("https://{}.example/accounts/oidc", "a".repeat(3000)),
         Arc::new(OnceLock::from(dev_kek())),
     );
     let err = long.check_token_size().await.unwrap_err().to_string();

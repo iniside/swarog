@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::epic_oauth::{self, EpicOAuth};
 use crate::oauth_flow::{self, Intent, OAuthFlow};
+use crate::secret::ct_eq;
 use crate::{normalize_email, Service};
 
 pub(crate) const PREFIX: &str = "/accounts/oidc";
@@ -327,17 +328,6 @@ fn well_formed_token(value: &str) -> bool {
         && base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(value)
             .is_ok_and(|bytes| bytes.len() == 32)
-}
-
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b) {
-        diff |= x ^ y;
-    }
-    diff == 0
 }
 
 /// `GET /accounts/oidc/` — the signed-in landing page; a signed-out browser goes to the form.

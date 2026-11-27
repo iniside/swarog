@@ -4,7 +4,8 @@
 
 use std::ffi::OsString;
 
-use accountsapi::{grant_types, DEV_GAME_CLIENT_ID, SWAROG_AUDIENCE};
+use accountsapi::grant_types::{AUTHORIZATION_CODE, GUEST, PASSWORD, REFRESH_TOKEN};
+use accountsapi::{grant_types, scopes, DEV_GAME_CLIENT_ID, SWAROG_AUDIENCE};
 use base64::Engine as _;
 use rand::RngCore as _;
 use sqlx::PgConnection;
@@ -16,6 +17,18 @@ pub(crate) const DEV_SEED_ENV: &str = "ACCOUNTS_DEV_SEED";
 
 /// The longest client display name the portal accepts.
 pub(crate) const MAX_CLIENT_NAME_BYTES: usize = 128;
+/// The portal's caps on a client's audience, root domains and redirect URIs.
+pub(crate) const MAX_AUDIENCE_BYTES: usize = 128;
+pub(crate) const MAX_ROOT_DOMAINS: usize = 8;
+pub(crate) const MAX_ROOT_DOMAIN_BYTES: usize = 253;
+pub(crate) const MAX_REDIRECT_URIS: usize = 10;
+pub(crate) const MAX_REDIRECT_URI_BYTES: usize = 512;
+
+/// The grants the dev seed binds and the portal's create form pre-picks.
+pub(crate) const DEFAULT_GRANTS: [&str; 3] = [PASSWORD, GUEST, REFRESH_TOKEN];
+
+/// The only grants a confidential client may hold.
+pub(crate) const CONFIDENTIAL_GRANTS: [&str; 2] = [AUTHORIZATION_CODE, REFRESH_TOKEN];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ClientRow {
@@ -23,17 +36,45 @@ pub(crate) struct ClientRow {
     pub(crate) display_name: String,
     pub(crate) grant_types: Vec<String>,
     pub(crate) audience: String,
+    pub(crate) redirect_uris: Vec<String>,
+    pub(crate) root_domains: Vec<String>,
+    pub(crate) scopes: Vec<String>,
+    /// The client stores a secret digest.
+    pub(crate) confidential: bool,
     pub(crate) created: String,
 }
 
-type ClientTuple = (String, String, Vec<String>, String, String);
+type ClientTuple = (String, String, Vec<String>, String, Vec<String>, Vec<String>, Vec<String>, bool, String);
 
-fn client_row((client_id, display_name, grant_types, audience, created): ClientTuple) -> ClientRow {
-    ClientRow { client_id, display_name, grant_types, audience, created }
+fn client_row(row: ClientTuple) -> ClientRow {
+    let (client_id, display_name, grant_types, audience, redirect_uris, root_domains, scopes, confidential, created) =
+        row;
+    ClientRow {
+        client_id,
+        display_name,
+        grant_types,
+        audience,
+        redirect_uris,
+        root_domains,
+        scopes,
+        confidential,
+        created,
+    }
 }
 
-const CLIENT_COLUMNS: &str = "client_id, display_name, grant_types, audience, \
-     to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI')";
+const CLIENT_COLUMNS: &str = "client_id, display_name, grant_types, audience, redirect_uris, root_domains, \
+     scopes, secret_digest IS NOT NULL, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI')";
+
+/// A client the portal creates; `secret_digest` is `None` for a public client.
+pub(crate) struct NewClient<'a> {
+    pub(crate) display_name: &'a str,
+    pub(crate) grants: &'a [String],
+    pub(crate) audience: &'a str,
+    pub(crate) redirect_uris: &'a [String],
+    pub(crate) root_domains: &'a [String],
+    pub(crate) scopes: &'a [String],
+    pub(crate) secret_digest: Option<&'a str>,
+}
 
 /// `true` only for an explicitly truthy value (`1`/`true`/`on`, case-insensitive).
 pub(crate) fn dev_seed_from(value: Option<OsString>) -> bool {
@@ -50,11 +91,71 @@ pub(crate) fn new_client_id() -> String {
 /// `grant_types::ALL` filtered to the picked names, so a client's grants are stored in one
 /// order whatever order they were picked in.
 pub(crate) fn canonical_grants(picked: &[String]) -> Vec<String> {
-    grant_types::ALL
-        .iter()
-        .filter(|g| picked.iter().any(|p| p == *g))
-        .map(|g| (*g).to_string())
-        .collect()
+    canonical(&grant_types::ALL, picked)
+}
+
+/// `scopes::ALL` filtered to the picked names, in its order.
+pub(crate) fn canonical_scopes(picked: &[String]) -> Vec<String> {
+    canonical(&scopes::ALL, picked)
+}
+
+fn canonical(all: &[&str], picked: &[String]) -> Vec<String> {
+    all.iter().filter(|v| picked.iter().any(|p| p == *v)).map(|v| (*v).to_string()).collect()
+}
+
+/// The non-blank lines of `raw`, trimmed, each kept once in first-seen order.
+pub(crate) fn listed_lines(raw: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in raw.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if !out.iter().any(|o| o == line) {
+            out.push(line.to_string());
+        }
+    }
+    out
+}
+
+/// Why `uri` cannot be a redirect URI: it must be absolute `https`, or `http` on a loopback
+/// host, with no fragment and within [`MAX_REDIRECT_URI_BYTES`].
+pub(crate) fn redirect_uri_refusal(uri: &str) -> Option<String> {
+    if uri.len() > MAX_REDIRECT_URI_BYTES {
+        return Some(format!("{uri:?} is over {MAX_REDIRECT_URI_BYTES} bytes"));
+    }
+    let Ok(parsed) = url::Url::parse(uri) else {
+        return Some(format!("{uri:?} is not an absolute URL"));
+    };
+    if parsed.fragment().is_some() {
+        return Some(format!("{uri:?} has a fragment"));
+    }
+    let loopback = match parsed.host() {
+        Some(url::Host::Domain(d)) => d == "localhost",
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => return Some(format!("{uri:?} has no host")),
+    };
+    match parsed.scheme() {
+        "https" => None,
+        "http" if loopback => None,
+        _ => Some(format!("{uri:?} is neither https nor http on a loopback host")),
+    }
+}
+
+/// Why `domain` cannot be a root domain: it must be a lowercase DNS name within
+/// [`MAX_ROOT_DOMAIN_BYTES`], each label 1-63 bytes of `a-z`, `0-9` and inner `-`.
+pub(crate) fn root_domain_refusal(domain: &str) -> Option<String> {
+    if domain.len() > MAX_ROOT_DOMAIN_BYTES {
+        return Some(format!("{domain:?} is over {MAX_ROOT_DOMAIN_BYTES} bytes"));
+    }
+    let label_ok = |l: &str| {
+        (1..=63).contains(&l.len())
+            && l.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+    };
+    if domain.split('.').all(label_ok) {
+        None
+    } else {
+        Some(format!("{domain:?} is not a lowercase DNS name"))
+    }
 }
 
 /// Inserts the dev client when absent; an existing row, operator edits included, is kept.
@@ -65,7 +166,7 @@ pub(crate) async fn seed_dev_client<'e, E: sqlx::PgExecutor<'e>>(db: E) -> sqlx:
     )
     .bind(DEV_GAME_CLIENT_ID)
     .bind("Dev game")
-    .bind(grant_types::ALL.as_slice())
+    .bind(DEFAULT_GRANTS.as_slice())
     .bind(SWAROG_AUDIENCE)
     .execute(db)
     .await?;
@@ -118,26 +219,31 @@ impl Store {
         Ok(row.map(client_row))
     }
 
-    /// A new client for the Swarog audience under a generated id, which it returns.
-    pub(crate) async fn insert_client(&self, display_name: &str, grants: &[String]) -> sqlx::Result<String> {
+    /// A new client under a generated id, which it returns.
+    pub(crate) async fn insert_client(&self, new: &NewClient<'_>) -> sqlx::Result<String> {
         let client_id = new_client_id();
         sqlx::query(
-            "INSERT INTO accounts.oidc_clients (client_id, display_name, grant_types, audience) \
-             VALUES ($1, $2, $3, $4)",
+            "INSERT INTO accounts.oidc_clients \
+               (client_id, display_name, grant_types, audience, redirect_uris, root_domains, scopes, secret_digest) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(&client_id)
-        .bind(display_name)
-        .bind(grants)
-        .bind(SWAROG_AUDIENCE)
+        .bind(new.display_name)
+        .bind(new.grants)
+        .bind(new.audience)
+        .bind(new.redirect_uris)
+        .bind(new.root_domains)
+        .bind(new.scopes)
+        .bind(new.secret_digest)
         .execute(&self.pool)
         .await?;
         Ok(client_id)
     }
 
     /// What a mint for `client_id` may issue: `None` unless it names a client listing
-    /// `grant` (any client for `None`), else whether that client also lists `refresh_token`,
-    /// read in the same statement. Takes the row FOR KEY SHARE on the caller's tx, so a
-    /// delete of that client waits for the mint.
+    /// `grant` (any client for `None`) that is public or `grant` is `authorization_code`,
+    /// else whether that client also lists `refresh_token`, read in the same statement. Takes
+    /// the row FOR KEY SHARE on the caller's tx, so a delete of that client waits for the mint.
     pub(crate) async fn client_allows_tx(
         &self,
         conn: &mut PgConnection,
@@ -147,17 +253,19 @@ impl Store {
         let row: Option<(bool,)> = sqlx::query_as(
             "SELECT $3 = ANY(grant_types) FROM accounts.oidc_clients \
               WHERE client_id = $1 AND ($2::text IS NULL OR $2 = ANY(grant_types)) \
+                AND (secret_digest IS NULL OR $2 = $4) \
                 FOR KEY SHARE",
         )
         .bind(client_id)
         .bind(grant)
-        .bind(grant_types::REFRESH_TOKEN)
+        .bind(REFRESH_TOKEN)
+        .bind(AUTHORIZATION_CODE)
         .fetch_optional(&mut *conn)
         .await?;
         Ok(row.map(|(refresh_token,)| MintGrants { refresh_token }))
     }
 
-    /// Whether the client of family `family_id` lists `grant`.
+    /// Whether the client of family `family_id` is public and lists `grant`.
     pub(crate) async fn family_client_allows_tx(
         &self,
         conn: &mut PgConnection,
@@ -167,7 +275,7 @@ impl Store {
         let row: Option<(i32,)> = sqlx::query_as(
             "SELECT 1 FROM accounts.token_families f \
                JOIN accounts.oidc_clients c ON c.client_id = f.client_id \
-              WHERE f.id = $1::uuid AND $2 = ANY(c.grant_types)",
+              WHERE f.id = $1::uuid AND $2 = ANY(c.grant_types) AND c.secret_digest IS NULL",
         )
         .bind(family_id)
         .bind(grant)

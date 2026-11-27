@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use accountsapi::{
     Revoked, TokenStateSnapshot, ACCESS_EXP_LEEWAY, ACCESS_TOKEN_TYP, ACCESS_TTL_MINUTES,
-    MAX_ACCESS_TOKEN_BYTES, MAX_CLIENT_ID_BYTES, SWAROG_AUDIENCE,
+    MAX_ACCESS_TOKEN_BYTES, MAX_CLIENT_ID_BYTES, MAX_HANDLE_BYTES, SWAROG_AUDIENCE,
 };
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,17 @@ pub(crate) struct AccessClaims {
     pub(crate) iat: i64,
     pub(crate) exp: i64,
     pub(crate) jti: String,
+}
+
+/// The longest token a client can be issued: [`AccessClaims`] plus the player's handle and
+/// the client's root domains.
+#[derive(Serialize)]
+struct LongestClaims<'a> {
+    #[serde(flatten)]
+    base: AccessClaims,
+    preferred_username: String,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    root_domains: &'a [String],
 }
 
 /// `(family_id, player_id, client_id, revoked_at_unix)` of one revoked subject.
@@ -103,7 +114,7 @@ impl Tokens {
     /// Signs `claims` with the active key. A cache refresh reads the key on `conn`, never on
     /// a second pool connection: a mint signing inside its transaction passes that
     /// transaction's connection, so it cannot wait on the pool while holding one of its own.
-    pub(crate) async fn sign(&self, conn: &mut PgConnection, claims: &AccessClaims) -> anyhow::Result<String> {
+    pub(crate) async fn sign<C: Serialize>(&self, conn: &mut PgConnection, claims: &C) -> anyhow::Result<String> {
         let active = self.active_key(conn).await?;
         let mut header = Header::new(Algorithm::ES256);
         header.typ = Some(ACCESS_TOKEN_TYP.to_string());
@@ -141,20 +152,37 @@ impl Tokens {
         Ok(ActiveKey { kid, key: EncodingKey::from_ec_der(&der) })
     }
 
-    /// Fails when a token of this issuer with the longest claims a mint can write would be
-    /// over [`MAX_ACCESS_TOKEN_BYTES`]. Every client's audience is [`SWAROG_AUDIENCE`].
-    pub(crate) async fn check_token_size(&self) -> anyhow::Result<()> {
+    /// The length of the longest token this issuer signs for a client of `audience` and
+    /// `root_domains`: the longest player id, client id and JSON-escaped handle. Reads a stale
+    /// signing key on `conn`.
+    pub(crate) async fn longest_token_bytes(
+        &self,
+        conn: &mut PgConnection,
+        audience: &str,
+        root_domains: &[String],
+    ) -> anyhow::Result<usize> {
         let uuid = "ffffffff-ffff-ffff-ffff-ffffffffffff";
         let client_id = "x".repeat(MAX_CLIENT_ID_BYTES);
-        let longest = self.claims(uuid, SWAROG_AUDIENCE, &client_id, uuid, i64::MAX - ACCESS_TTL_SECS);
+        let longest = LongestClaims {
+            base: self.claims(uuid, audience, &client_id, uuid, i64::MAX - ACCESS_TTL_SECS),
+            // serde_json escapes U+0001 in six bytes, its widest escape (serde_json 1.0.150
+            // src/ser.rs:2142-2150).
+            preferred_username: "\u{1}".repeat(MAX_HANDLE_BYTES),
+            root_domains,
+        };
+        Ok(self.sign(conn, &longest).await?.len())
+    }
+
+    /// Fails when a token of this issuer for a [`SWAROG_AUDIENCE`] client with no root domains
+    /// can be over [`MAX_ACCESS_TOKEN_BYTES`].
+    pub(crate) async fn check_token_size(&self) -> anyhow::Result<()> {
         let mut conn = self.pool.acquire().await?;
-        let token = self.sign(&mut conn, &longest).await?;
-        if token.len() > MAX_ACCESS_TOKEN_BYTES {
+        let len = self.longest_token_bytes(&mut conn, SWAROG_AUDIENCE, &[]).await?;
+        if len > MAX_ACCESS_TOKEN_BYTES {
             anyhow::bail!(
-                "accounts: an access token for issuer {} can be {} bytes, over the {MAX_ACCESS_TOKEN_BYTES} \
+                "accounts: an access token for issuer {} can be {len} bytes, over the {MAX_ACCESS_TOKEN_BYTES} \
                  a verifier accepts. Remedy: a shorter ACCOUNTS_OIDC_ISSUER.",
-                self.issuer,
-                token.len()
+                self.issuer
             );
         }
         Ok(())

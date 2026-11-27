@@ -6,7 +6,8 @@
 
 use super::*;
 
-use crate::guest::{is_minted_subject, mint_ticket, secret_hash, MAX_GUEST_CREDENTIAL_BYTES};
+use crate::guest::{is_minted_subject, mint_ticket, MAX_GUEST_CREDENTIAL_BYTES};
+use crate::secret::digest as secret_hash;
 use crate::providers::{Providers, GUEST};
 use crate::store::Store;
 

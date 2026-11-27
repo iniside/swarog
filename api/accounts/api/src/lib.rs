@@ -64,7 +64,7 @@ pub const DEFAULT_OIDC_ISSUER: &str = concat!(crate::default_front_origin!(), "/
 pub const SWAROG_AUDIENCE: &str = "swarog";
 
 /// The client the explicit-only `ACCOUNTS_DEV_SEED` inserts when absent on a dev or proof
-/// boot, listing every grant in [`grant_types::ALL`] and the [`SWAROG_AUDIENCE`].
+/// boot, listing the password, guest and refresh-token grants and the [`SWAROG_AUDIENCE`].
 pub const DEV_GAME_CLIENT_ID: &str = "dev-game";
 
 /// Maximum accepted OIDC client id size in bytes, checked before any lookup. A generated id
@@ -72,8 +72,9 @@ pub const DEV_GAME_CLIENT_ID: &str = "dev-game";
 pub const MAX_CLIENT_ID_BYTES: usize = 64;
 
 /// Maximum accepted access token (JWT) size in bytes. accounts fails to boot when a token
-/// with its configured issuer and the longest claims would be larger.
-pub const MAX_ACCESS_TOKEN_BYTES: usize = 1024;
+/// with its configured issuer and the longest claims would be larger, and the portal refuses
+/// a client whose longest token would be.
+pub const MAX_ACCESS_TOKEN_BYTES: usize = 4096;
 
 /// The JOSE `typ` of an access token (RFC 9068): the accounts verifier and the gateway's
 /// both refuse a token whose header says anything else, so another JWT signed by the same
@@ -102,10 +103,24 @@ pub mod grant_types {
     pub const PASSWORD: &str = "password";
     /// Guest creation and a returning guest's login.
     pub const GUEST: &str = "guest";
+    /// The OAuth authorization code with PKCE, redeemed at the OIDC token endpoint.
+    pub const AUTHORIZATION_CODE: &str = "authorization_code";
     /// Refresh-token rotation.
     pub const REFRESH_TOKEN: &str = "refresh_token";
     /// Every grant type, in the order a client stores and the portal offers them.
-    pub const ALL: [&str; 3] = [PASSWORD, GUEST, REFRESH_TOKEN];
+    pub const ALL: [&str; 4] = [PASSWORD, GUEST, AUTHORIZATION_CODE, REFRESH_TOKEN];
+}
+
+/// The OIDC scopes a client may list and an authorization request may ask for.
+pub mod scopes {
+    /// The OpenID Connect scope.
+    pub const OPENID: &str = "openid";
+    /// Accepted; changes nothing a client is issued.
+    pub const PROFILE: &str = "profile";
+    /// Accepted; changes nothing a client is issued.
+    pub const OFFLINE_ACCESS: &str = "offline_access";
+    /// Every scope, in the order a client stores and the portal offers them.
+    pub const ALL: [&str; 3] = [OPENID, PROFILE, OFFLINE_ACCESS];
 }
 
 /// Epic's whole environment surface: every variable accounts' provider parse reads for
