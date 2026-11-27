@@ -380,42 +380,41 @@ pub const accountsapi::grant_types::ALL: [&str; 3]
 pub const accountsapi::grant_types::GUEST: &str
 pub const accountsapi::grant_types::PASSWORD: &str
 pub const accountsapi::grant_types::REFRESH_TOKEN: &str
-pub mod accountsapi::sessions_rpc
-pub struct accountsapi::sessions_rpc::VerifySessionRequest
-pub accountsapi::sessions_rpc::VerifySessionRequest::token: alloc::string::String
-impl serde_core::ser::Serialize for accountsapi::sessions_rpc::VerifySessionRequest
-pub fn accountsapi::sessions_rpc::VerifySessionRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for accountsapi::sessions_rpc::VerifySessionRequest
-pub fn accountsapi::sessions_rpc::VerifySessionRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Forget for accountsapi::sessions_rpc::VerifySessionRequest
-impl core::marker::Freeze for accountsapi::sessions_rpc::VerifySessionRequest
-impl core::marker::Send for accountsapi::sessions_rpc::VerifySessionRequest
-impl core::marker::Sync for accountsapi::sessions_rpc::VerifySessionRequest
-impl core::marker::Unpin for accountsapi::sessions_rpc::VerifySessionRequest
-impl core::marker::UnsafeUnpin for accountsapi::sessions_rpc::VerifySessionRequest
-impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::sessions_rpc::VerifySessionRequest
-impl core::panic::unwind_safe::UnwindSafe for accountsapi::sessions_rpc::VerifySessionRequest
-pub struct accountsapi::sessions_rpc::VerifySessionResponse
-pub accountsapi::sessions_rpc::VerifySessionResponse::err: alloc::string::String
-pub accountsapi::sessions_rpc::VerifySessionResponse::status: opsapi::Status
-pub accountsapi::sessions_rpc::VerifySessionResponse::value: serde_json::value::Value
-impl serde_core::ser::Serialize for accountsapi::sessions_rpc::VerifySessionResponse
-pub fn accountsapi::sessions_rpc::VerifySessionResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for accountsapi::sessions_rpc::VerifySessionResponse
-pub fn accountsapi::sessions_rpc::VerifySessionResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Forget for accountsapi::sessions_rpc::VerifySessionResponse
-impl core::marker::Freeze for accountsapi::sessions_rpc::VerifySessionResponse
-impl core::marker::Send for accountsapi::sessions_rpc::VerifySessionResponse
-impl core::marker::Sync for accountsapi::sessions_rpc::VerifySessionResponse
-impl core::marker::Unpin for accountsapi::sessions_rpc::VerifySessionResponse
-impl core::marker::UnsafeUnpin for accountsapi::sessions_rpc::VerifySessionResponse
-impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::sessions_rpc::VerifySessionResponse
-impl core::panic::unwind_safe::UnwindSafe for accountsapi::sessions_rpc::VerifySessionResponse
-pub const accountsapi::sessions_rpc::METHOD_VERIFY_SESSION: &str
-pub fn accountsapi::sessions_rpc::describe() -> opsapi::DescribeManifest
-pub fn accountsapi::sessions_rpc::operations(alloc::rcs::arc::Arc<(dyn accountsapi::Sessions + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
-pub fn accountsapi::sessions_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
-pub fn accountsapi::sessions_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
+pub mod accountsapi::token_state_rpc
+pub struct accountsapi::token_state_rpc::TokenStateRequest
+impl serde_core::ser::Serialize for accountsapi::token_state_rpc::TokenStateRequest
+pub fn accountsapi::token_state_rpc::TokenStateRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsapi::token_state_rpc::TokenStateRequest
+pub fn accountsapi::token_state_rpc::TokenStateRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::token_state_rpc::TokenStateRequest
+impl core::marker::Freeze for accountsapi::token_state_rpc::TokenStateRequest
+impl core::marker::Send for accountsapi::token_state_rpc::TokenStateRequest
+impl core::marker::Sync for accountsapi::token_state_rpc::TokenStateRequest
+impl core::marker::Unpin for accountsapi::token_state_rpc::TokenStateRequest
+impl core::marker::UnsafeUnpin for accountsapi::token_state_rpc::TokenStateRequest
+impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::token_state_rpc::TokenStateRequest
+impl core::panic::unwind_safe::UnwindSafe for accountsapi::token_state_rpc::TokenStateRequest
+pub struct accountsapi::token_state_rpc::TokenStateResponse
+pub accountsapi::token_state_rpc::TokenStateResponse::err: alloc::string::String
+pub accountsapi::token_state_rpc::TokenStateResponse::status: opsapi::Status
+pub accountsapi::token_state_rpc::TokenStateResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for accountsapi::token_state_rpc::TokenStateResponse
+pub fn accountsapi::token_state_rpc::TokenStateResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsapi::token_state_rpc::TokenStateResponse
+pub fn accountsapi::token_state_rpc::TokenStateResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::token_state_rpc::TokenStateResponse
+impl core::marker::Freeze for accountsapi::token_state_rpc::TokenStateResponse
+impl core::marker::Send for accountsapi::token_state_rpc::TokenStateResponse
+impl core::marker::Sync for accountsapi::token_state_rpc::TokenStateResponse
+impl core::marker::Unpin for accountsapi::token_state_rpc::TokenStateResponse
+impl core::marker::UnsafeUnpin for accountsapi::token_state_rpc::TokenStateResponse
+impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::token_state_rpc::TokenStateResponse
+impl core::panic::unwind_safe::UnwindSafe for accountsapi::token_state_rpc::TokenStateResponse
+pub const accountsapi::token_state_rpc::METHOD_TOKEN_STATE: &str
+pub fn accountsapi::token_state_rpc::describe() -> opsapi::DescribeManifest
+pub fn accountsapi::token_state_rpc::operations(alloc::rcs::arc::Arc<(dyn accountsapi::TokenState + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn accountsapi::token_state_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub fn accountsapi::token_state_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
 pub macro accountsapi::default_front_origin!
 pub struct accountsapi::DeleteReceipt
 pub accountsapi::DeleteReceipt::deleted_at: alloc::string::String
@@ -575,6 +574,61 @@ impl core::marker::Unpin for accountsapi::PlayerSummary
 impl core::marker::UnsafeUnpin for accountsapi::PlayerSummary
 impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::PlayerSummary
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::PlayerSummary
+pub struct accountsapi::PublicJwk
+pub accountsapi::PublicJwk::alg: alloc::string::String
+pub accountsapi::PublicJwk::crv: alloc::string::String
+pub accountsapi::PublicJwk::kid: alloc::string::String
+pub accountsapi::PublicJwk::kty: alloc::string::String
+pub accountsapi::PublicJwk::use_: alloc::string::String
+pub accountsapi::PublicJwk::x: alloc::string::String
+pub accountsapi::PublicJwk::y: alloc::string::String
+impl core::clone::Clone for accountsapi::PublicJwk
+pub fn accountsapi::PublicJwk::clone(&self) -> Self
+impl core::cmp::Eq for accountsapi::PublicJwk
+impl core::cmp::PartialEq for accountsapi::PublicJwk
+pub fn accountsapi::PublicJwk::eq(&self, &Self) -> bool
+impl core::default::Default for accountsapi::PublicJwk
+pub fn accountsapi::PublicJwk::default() -> Self
+impl core::fmt::Debug for accountsapi::PublicJwk
+pub fn accountsapi::PublicJwk::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for accountsapi::PublicJwk
+impl serde_core::ser::Serialize for accountsapi::PublicJwk
+pub fn accountsapi::PublicJwk::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsapi::PublicJwk
+pub fn accountsapi::PublicJwk::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::PublicJwk
+impl core::marker::Freeze for accountsapi::PublicJwk
+impl core::marker::Send for accountsapi::PublicJwk
+impl core::marker::Sync for accountsapi::PublicJwk
+impl core::marker::Unpin for accountsapi::PublicJwk
+impl core::marker::UnsafeUnpin for accountsapi::PublicJwk
+impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::PublicJwk
+impl core::panic::unwind_safe::UnwindSafe for accountsapi::PublicJwk
+pub struct accountsapi::Revoked
+pub accountsapi::Revoked::id: alloc::string::String
+pub accountsapi::Revoked::revoked_at_unix: i64
+impl core::clone::Clone for accountsapi::Revoked
+pub fn accountsapi::Revoked::clone(&self) -> Self
+impl core::cmp::Eq for accountsapi::Revoked
+impl core::cmp::PartialEq for accountsapi::Revoked
+pub fn accountsapi::Revoked::eq(&self, &Self) -> bool
+impl core::default::Default for accountsapi::Revoked
+pub fn accountsapi::Revoked::default() -> Self
+impl core::fmt::Debug for accountsapi::Revoked
+pub fn accountsapi::Revoked::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for accountsapi::Revoked
+impl serde_core::ser::Serialize for accountsapi::Revoked
+pub fn accountsapi::Revoked::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsapi::Revoked
+pub fn accountsapi::Revoked::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::Revoked
+impl core::marker::Freeze for accountsapi::Revoked
+impl core::marker::Send for accountsapi::Revoked
+impl core::marker::Sync for accountsapi::Revoked
+impl core::marker::Unpin for accountsapi::Revoked
+impl core::marker::UnsafeUnpin for accountsapi::Revoked
+impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::Revoked
+impl core::panic::unwind_safe::UnwindSafe for accountsapi::Revoked
 pub struct accountsapi::Session
 pub accountsapi::Session::access_expires_in_secs: i64
 pub accountsapi::Session::player_id: alloc::string::String
@@ -602,18 +656,52 @@ impl core::marker::Unpin for accountsapi::Session
 impl core::marker::UnsafeUnpin for accountsapi::Session
 impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::Session
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::Session
+pub struct accountsapi::TokenStateSnapshot
+pub accountsapi::TokenStateSnapshot::issuer: alloc::string::String
+pub accountsapi::TokenStateSnapshot::keys: alloc::vec::Vec<accountsapi::PublicJwk>
+pub accountsapi::TokenStateSnapshot::revoked_clients: alloc::vec::Vec<accountsapi::Revoked>
+pub accountsapi::TokenStateSnapshot::revoked_families: alloc::vec::Vec<alloc::string::String>
+pub accountsapi::TokenStateSnapshot::revoked_players: alloc::vec::Vec<accountsapi::Revoked>
+impl core::clone::Clone for accountsapi::TokenStateSnapshot
+pub fn accountsapi::TokenStateSnapshot::clone(&self) -> Self
+impl core::cmp::Eq for accountsapi::TokenStateSnapshot
+impl core::cmp::PartialEq for accountsapi::TokenStateSnapshot
+pub fn accountsapi::TokenStateSnapshot::eq(&self, &Self) -> bool
+impl core::default::Default for accountsapi::TokenStateSnapshot
+pub fn accountsapi::TokenStateSnapshot::default() -> Self
+impl core::fmt::Debug for accountsapi::TokenStateSnapshot
+pub fn accountsapi::TokenStateSnapshot::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for accountsapi::TokenStateSnapshot
+impl serde_core::ser::Serialize for accountsapi::TokenStateSnapshot
+pub fn accountsapi::TokenStateSnapshot::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsapi::TokenStateSnapshot
+pub fn accountsapi::TokenStateSnapshot::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::TokenStateSnapshot
+impl core::marker::Freeze for accountsapi::TokenStateSnapshot
+impl core::marker::Send for accountsapi::TokenStateSnapshot
+impl core::marker::Sync for accountsapi::TokenStateSnapshot
+impl core::marker::Unpin for accountsapi::TokenStateSnapshot
+impl core::marker::UnsafeUnpin for accountsapi::TokenStateSnapshot
+impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::TokenStateSnapshot
+impl core::panic::unwind_safe::UnwindSafe for accountsapi::TokenStateSnapshot
+pub const accountsapi::ACCESS_EXP_LEEWAY: core::time::Duration
+pub const accountsapi::ACCESS_TOKEN_TYP: &str
+pub const accountsapi::ACCESS_TTL_MINUTES: u64
 pub const accountsapi::DEFAULT_OIDC_ISSUER: &str
 pub const accountsapi::DEV_GAME_CLIENT_ID: &str
 pub const accountsapi::EPIC_ENV_KEYS: &[&str]
 pub const accountsapi::GOOGLE_ENV_KEYS: &[&str]
 pub const accountsapi::LOGIN_LIMIT_BURST: u32
 pub const accountsapi::LOGIN_LIMIT_PER_SEC: f64
+pub const accountsapi::MAX_ACCESS_TOKEN_BYTES: usize
 pub const accountsapi::MAX_CLIENT_ID_BYTES: usize
 pub const accountsapi::MAX_DISPLAY_NAME_BYTES: usize
 pub const accountsapi::MAX_HANDLE_BYTES: usize
 pub const accountsapi::MAX_LOOKUP_IDS: usize
-pub const accountsapi::MAX_SESSION_TOKEN_BYTES: usize
+pub const accountsapi::MAX_OPAQUE_TOKEN_BYTES: usize
+pub const accountsapi::REVOCATION_SKEW_MARGIN: core::time::Duration
 pub const accountsapi::SWAROG_AUDIENCE: &str
+pub const accountsapi::TOKEN_STATE_PULL_INTERVAL: core::time::Duration
 pub trait accountsapi::Auth: core::marker::Send + core::marker::Sync
 pub fn accountsapi::Auth::begin_delete<'life0, 'async_trait>(&'life0 self, opsapi::Identity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::DeleteTicket, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Auth::create_guest<'life0, 'async_trait>(&'life0 self, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::GuestSession, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -627,5 +715,5 @@ pub fn accountsapi::Auth::register<'life0, 'async_trait>(&'life0 self, alloc::st
 pub trait accountsapi::Directory: core::marker::Send + core::marker::Sync
 pub fn accountsapi::Directory::find_by_handle<'life0, 'async_trait>(&'life0 self, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<accountsapi::PlayerSummary>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Directory::players_by_id<'life0, 'async_trait>(&'life0 self, alloc::vec::Vec<alloc::string::String>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<accountsapi::PlayerSummary>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub trait accountsapi::Sessions: core::marker::Send + core::marker::Sync
-pub fn accountsapi::Sessions::verify_session<'life0, 'async_trait>(&'life0 self, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::string::String>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait accountsapi::TokenState: core::marker::Send + core::marker::Sync
+pub fn accountsapi::TokenState::token_state<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::TokenStateSnapshot, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

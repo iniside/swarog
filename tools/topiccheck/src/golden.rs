@@ -126,6 +126,13 @@ fn rpc_modules() -> Vec<RpcModule> {
             accountsapi::directory_rpc::describe().ops,
         ),
         (
+            "accountsapi::token_state_rpc",
+            accountsapi::token_state_rpc::route_bindings(),
+            accountsapi::token_state_rpc::wire_ops(),
+            accountsapi::token_state_rpc::body_shapes(),
+            accountsapi::token_state_rpc::describe().ops,
+        ),
+        (
             "apikeysapi::keys_rpc",
             apikeysapi::keys_rpc::route_bindings(),
             apikeysapi::keys_rpc::wire_ops(),

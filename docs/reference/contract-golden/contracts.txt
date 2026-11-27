@@ -342,7 +342,7 @@ wire module=accountsapi::auth_rpc method=accounts.refresh retry=Never
 wire module=accountsapi::auth_rpc method=accounts.register retry=Never
 wire module=accountsapi::directory_rpc method=accounts.findByHandle retry=OnceAfterReconnect
 wire module=accountsapi::directory_rpc method=accounts.playersById retry=OnceAfterReconnect
-wire module=accountsapi::sessions_rpc method=accounts.verifySession retry=OnceAfterReconnect
+wire module=accountsapi::token_state_rpc method=accounts.tokenState retry=OnceAfterReconnect
 wire module=apikeysapi::keys_rpc method=apikeys.lookupKey retry=OnceAfterReconnect
 wire module=charactersapi::ownership_rpc method=characters.ownerOf retry=OnceAfterReconnect
 wire module=charactersapi::player_rpc method=characters.create retry=Never

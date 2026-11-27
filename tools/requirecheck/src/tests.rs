@@ -40,8 +40,8 @@ fn undeclared_mandatory_require_is_flagged() {
 
 #[test]
 fn optional_try_require_is_never_flagged() {
-    // gateway's try_require::<Sessions> is Optional and deliberately undeclared.
-    let h = hits(&[("gateway", RequireKind::Optional, "accounts.sessions")]);
+    // gateway's try_require::<TokenState> is Optional and deliberately undeclared.
+    let h = hits(&[("gateway", RequireKind::Optional, "accounts.token_state")]);
     let d = declared(&[("gateway", &[])]);
     assert!(undeclared(&h, &d, &[]).is_empty());
 }

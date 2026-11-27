@@ -16,7 +16,6 @@ accounts.register	clientId	external
 accounts.register	displayName	external
 accounts.register	email	external
 accounts.register	password	external
-accounts.verifySession	token	wire
 apikeys.lookupKey	key	wire
 characters.create	class	external
 characters.create	name	external
