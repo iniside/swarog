@@ -33,7 +33,15 @@ Per-module mechanics live in each `modules/<name>/src/lib.rs` header and the
   stays behind `ACCOUNTS_OPEN_REGISTRATION` (default OFF). accounts is the OIDC issuer
   (`ACCOUNTS_OIDC_ISSUER`, default `accountsapi::DEFAULT_OIDC_ISSUER`): its ES256 signing keys
   live in `accounts.signing_keys` sealed under `ACCOUNTS_SIGNING_KEK`, which is REQUIRED
-  (unset, malformed, or a KEK that cannot open a stored key fails startup). `wallet` grants starter
+  (unset, malformed, or a KEK that cannot open a stored key fails startup). It serves
+  `/authorize` (code flow, PKCE S256 for every client, no consent screen), `/token`
+  (`authorization_code`, `refresh_token`) and `/revoke` (RFC 7009) under the issuer path. A
+  code lives 60 s, is single-use and bound to the browser session (`ON DELETE SET NULL`, so
+  signing out kills it); a second redemption is refused and revokes the first one's tokens.
+  A confidential client holds only `authorization_code` and `refresh_token` and the op path
+  refuses it; a client refreshes only its own families. The ID token is `typ=JWT`, which the
+  verifiers refuse as an access token. Endpoints, errors and the Lore relying-party advice:
+  `docs/reference/accounts-oidc.md`. `wallet` grants starter
   currency on `player.promoted` (and non-guest `player.registered`) when configured.
   Self-delete: `begin` mints/upserts a confirmation ticket (a repeat returns the same
   live one); `delete` consumes it and in one tx writes a player revocation and deletes
