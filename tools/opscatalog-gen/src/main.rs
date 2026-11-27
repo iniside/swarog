@@ -67,6 +67,7 @@ fn rpc_modules() -> Vec<(&'static str, Vec<opsapi::RouteBinding>)> {
     vec![
         ("accountsapi::auth_rpc", accountsapi::auth_rpc::route_bindings()),
         ("accountsapi::directory_rpc", accountsapi::directory_rpc::route_bindings()),
+        ("accountsapi::token_state_rpc", accountsapi::token_state_rpc::route_bindings()),
         ("apikeysapi::keys_rpc", apikeysapi::keys_rpc::route_bindings()),
         ("charactersapi::ownership_rpc", charactersapi::ownership_rpc::route_bindings()),
         ("charactersapi::player_rpc", charactersapi::player_rpc::route_bindings()),

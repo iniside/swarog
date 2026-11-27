@@ -1114,6 +1114,26 @@ fn references_schemas(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Every runtime-named schema a file creates as `CREATE SCHEMA {name}` (a format placeholder,
+/// as a scratch-schema test fixture builds). A `REFERENCES {name}.…` to that same placeholder
+/// stays inside the schema the file created; a placeholder the file never creates is still a
+/// finding.
+fn placeholder_schemas(text: &str) -> Vec<String> {
+    let marker = "CREATE SCHEMA ";
+    find_all(text, marker)
+        .into_iter()
+        .filter_map(|i| {
+            let rest = &text[i + marker.len()..];
+            let rest = rest.strip_prefix("IF NOT EXISTS ").unwrap_or(rest);
+            let name = rest.split(|c: char| c.is_whitespace() || c == ';' || c == '"').next()?;
+            let ident = name.strip_prefix('{')?.strip_suffix('}')?;
+            let is_ident = !ident.is_empty()
+                && ident.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            is_ident.then(|| name.to_string())
+        })
+        .collect()
+}
+
 /// Cross-schema FK check for one file's `text` (fact 8). `own_schema_fallback` is the
 /// `modules/<name>` path segment, used both as the sanity-check target for a declared
 /// schema and as the fallback "own schema" for a file with no DDL at all (a REFERENCES
@@ -1144,9 +1164,10 @@ fn cross_schema_fk_violations(text: &str, own_schema_fallback: &str) -> Vec<Stri
             )];
         }
     };
+    let scratch = placeholder_schemas(text);
     references_schemas(text)
         .into_iter()
-        .filter(|s| s != &own)
+        .filter(|s| s != &own && !scratch.contains(s))
         .map(|s| {
             format!(
                 "REFERENCES {s}.… crosses from schema `{own}` into schema `{s}` — a relation to \

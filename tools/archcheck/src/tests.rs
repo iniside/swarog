@@ -168,6 +168,24 @@ fn same_schema_reference_is_clean() {
 }
 
 #[test]
+fn reference_into_a_created_placeholder_schema_is_clean() {
+    let text = "exec(format!(\"CREATE SCHEMA {schema}\"));\n\
+                exec(format!(\"CREATE TABLE {schema}.t (p int REFERENCES {schema}.players(id))\"));";
+    assert!(cross_schema_fk_violations(text, "mine").is_empty());
+}
+
+#[test]
+fn reference_into_an_uncreated_placeholder_or_a_foreign_schema_is_a_violation() {
+    let text = "exec(format!(\"CREATE SCHEMA {schema}\"));\n\
+                exec(format!(\"CREATE TABLE {schema}.t (p int REFERENCES {other}.players(id))\"));\n\
+                exec(format!(\"CREATE TABLE {schema}.u (p int REFERENCES otherschema.foo(id))\"));";
+    let v = cross_schema_fk_violations(text, "mine");
+    assert_eq!(v.len(), 2, "{v:?}");
+    assert!(v[0].contains("{other}"), "{v:?}");
+    assert!(v[1].contains("otherschema"), "{v:?}");
+}
+
+#[test]
 fn file_with_no_ddl_is_clean() {
     assert!(cross_schema_fk_violations("fn helper() {}", "mine").is_empty());
 }

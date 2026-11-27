@@ -2,6 +2,7 @@
 nav players | accounts | players | 10
 nav economy | wallet | economy | 10
 nav platform | apikeys | apikeys | 10
+nav platform | accounts | clients | 15
 nav platform | mail | outbox | 20
 nav platform | scheduler | scheduler | 30
 nav platform | config | config | 40
@@ -58,6 +59,7 @@ row_action apirole | apikeys | role.edit | 10
 row_action apirole | apikeys | role.delete | 20
 row_action friendship | friends | friendship.remove | 0
 row_action holding | inventory | holding.revoke | 0
+row_action oidc_client | accounts | delete-client | 10
 row_action player | accounts | reset-password | 10
 row_action player | accounts | suspend | 20
 row_action player | accounts | delete-account | 30
