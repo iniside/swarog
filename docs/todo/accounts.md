@@ -99,6 +99,27 @@ _None._
   revoke-then-mint cycle can push it about 2 s ahead. `REVOCATION_SKEW_MARGIN` (60 s) covers it;
   only operator actions repeated faster than that could exhaust it (review of a289af45, 2026-11-27).
 
+### Known limits (oidc-authorization-code step 1)
+
+- [ ] **The Epic login lets a confidential client reach the mint**
+  The Epic start does not check the client; a confidential client is refused only at the final
+  mint, by `client_allows_tx` (modules/accounts/src/lib.rs:584, clients.rs:280).
+
+### Known limits (oidc-authorization-code step 3)
+
+- [ ] **Unredeemed codes of an ended session stay until the prune**
+  Logout sets `oidc_codes.session_digest` to NULL; such a code can no longer be redeemed, but its
+  row stays until the prune (modules/accounts/src/codes.rs).
+- [ ] **Two boot refusals run after the DDL**
+  `refuse_stale_oauth_states` and `refuse_unfamilied_tokens` (modules/accounts/src/lib.rs:352,
+  :375) run after `Ddl::run` (:1945-1946), unlike `refuse_stale_codes` (:1848); no test shows they
+  still catch the old shape.
+
+### Known limits (oidc-authorization-code step 4)
+
+- [ ] **No index on `token_revocations.family_id`**
+  Each code mint scans the table for a family revocation. It holds only about 15 minutes of rows.
+
 ### Deferred
 
 - [ ] **A consent screen on `/authorize`**

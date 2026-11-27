@@ -23,6 +23,9 @@ _None._
   Fix at the source: enforce the bound once on the serving path, where `LocalFace` /
   `controlplanerpc::register_face` hand a call to `Provider::invoke`, rather than per-module copies.
   Source: proof-auditor review of the INVOKE_DEADLINE change, admin-second-pass step 15 (2026-11-24).
+- [ ] **A redirect URI longer than 4096 bytes cannot be entered**
+  The OIDC client create form's redirect-URI field is capped by `controlplane::MAX_INPUT_VALUE_BYTES`
+  (core/controlplane/src/lib.rs:205). Source: oidc-authorization-code step 1 (2026-11-27).
 - [ ] **The OIDC clients table has no pager**
   The accounts clients page lists every row of `accounts.oidc_clients` in one query
   (modules/accounts/src/clients.rs:104, no LIMIT). Source: one-token-mechanism step 1 review (2026-11-26).

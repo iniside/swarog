@@ -571,3 +571,5 @@ Resolved 2026-11-24: grants live in a separate `authz` module (Step 5a).
 - Operator roles (`controlplane::Role`) moving onto `authz`. When that happens, the
   `authz` contract moves to `core/` so `core/admin` can consume it.
 - Account suspension (no `player.suspended` exists; lore would react to it when it lands).
+- The C# client (clients/csharp, tools/csharp-client-gen). No roadmap step regenerates or fixes it;
+  it is updated later in its own work (owner, 2026-11-27).
