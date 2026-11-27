@@ -1,6 +1,6 @@
 # Weles
 
-Last updated: 2026-10-23
+Last updated: 2026-11-27
 
 ## In progress
 
@@ -10,6 +10,13 @@ _None._
 
 ### Supervisor and control plane
 
+- [ ] **A local fleet still binds every interface**
+  weles hands each service `PORT=:{port}` and `EDGE_ADDR=:{port}` (weles/master/src/manifest.rs:566,
+  :568), which `to_bind_addr` (core/app/src/lib.rs:671) turns into `0.0.0.0`. So the services that
+  verifyctl's weles stages start can still raise Windows firewall prompts. processctl, splitproof and
+  verifyctl's own fleets bind `127.0.0.1` since 66612abc. A loopback-only bind needs a host field or a
+  "local fleet" flag in the fleet format; multi-host and Docker keep all interfaces.
+  Source: owner, 2026-11-27 ("weles zostaw i dopisz do todo").
 - [ ] **Readiness probe off the monitor thread**
   WELES-01. `observe` calls `health::probe` inline per service while the phase is
   `WaitingHealthy`, so the probe runs synchronously on the monitor thread
