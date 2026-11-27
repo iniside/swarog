@@ -10,7 +10,7 @@ pub const BUILD_ENV_ALLOWLIST: &[&str] = &[
     "ALL_PROXY", "APPDATA", "CARGO_HOME", "CARGO_HTTP_CAINFO", "CARGO_HTTP_PROXY",
     "CARGO_NET_GIT_FETCH_WITH_CLI", "CARGO_TARGET_DIR", "COMSPEC", "DEVELOPER_DIR", "GIT_SSL_CAINFO",
     "HOME", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "PATH", "PATHEXT", "RUSTFLAGS",
-    "ProgramFiles(x86)", "RUSTUP_HOME", "SDKROOT", "SSL_CERT_DIR", "SSL_CERT_FILE", "SYSTEMROOT", "TEMP",
+    "ProgramFiles", "ProgramFiles(x86)", "RUSTUP_HOME", "SDKROOT", "SSL_CERT_DIR", "SSL_CERT_FILE", "SYSTEMROOT", "TEMP",
     "TMP", "TMPDIR", "USERPROFILE", "WINDIR", "all_proxy", "http_proxy", "https_proxy", "no_proxy",
 ];
 
@@ -697,10 +697,12 @@ pub fn runtime_environment() -> BTreeMap<String, String> {
 
 #[cfg(windows)]
 fn append_msvc_linker_path(env: &mut BTreeMap<String, String>) {
-    let program_files_x86 = std::env::var_os("ProgramFiles(x86)").map(PathBuf::from);
+    // Read the filtered map being built, not the process environment: a variable the allowlist
+    // drops must break discovery here too, not only under a sanitised parent (verifyctl).
+    let program_files_x86 = env.get("ProgramFiles(x86)").map(PathBuf::from);
     // VS 2022+ IDE editions install under ProgramFiles; Build Tools and older releases under (x86).
     let visual_studio_roots =
-        [std::env::var_os("ProgramFiles").map(PathBuf::from), program_files_x86.clone()];
+        [env.get("ProgramFiles").map(PathBuf::from), program_files_x86.clone()];
     let mut candidates = Vec::new();
     for root in visual_studio_roots.into_iter().flatten() {
         let Ok(releases) = std::fs::read_dir(root.join("Microsoft Visual Studio")) else {

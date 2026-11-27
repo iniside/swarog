@@ -22,10 +22,6 @@ _None._
   its Linux-only tests never compile; guardian.rs:955-959 includes only the macOS test
   module.
   Source: docs/plans/2026-07-14-1721-guardian-argv0-shim-fix-plan.md:198 (2026-07-14).
-- [ ] **The MSVC linker PATH test fails here**
-  `sanitized_build_path_contains_the_discovered_msvc_linker` (tools/processctl/src/fleet_tests.rs:643)
-  fails: the first PATH entry is `target\debug\build\ring-…\out`, which has no `link.exe`.
-  Source: verifyctl run verify-1795776086-65428-62521403, 2026-11-27.
 - [ ] **MSVC discovery has no hermetic test**
   PROCESSCTL-05. `append_msvc_linker_path` (tools/processctl/src/fleet.rs:635-706) reads the real
   `ProgramFiles`/`ProgramFiles(x86)` and filesystem, so `sanitized_build_path_contains_the_discovered_msvc_linker`

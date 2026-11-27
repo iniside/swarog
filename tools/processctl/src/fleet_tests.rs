@@ -43,6 +43,19 @@ fn apple_toolchain_selection_is_preserved_only_in_build_environment() {
 }
 
 #[test]
+fn program_files_root_is_preserved_only_in_build_environment() {
+    let environment = EnvironmentSnapshot::from_values([(
+        "ProgramFiles".to_string(),
+        "C:\\Program Files".to_string(),
+    )]);
+    let build = environment.build_environment();
+    let runtime = environment.runtime_environment();
+
+    assert_eq!(build.get("ProgramFiles").map(String::as_str), Some("C:\\Program Files"));
+    assert!(!runtime.contains_key("ProgramFiles"), "ProgramFiles is build-only");
+}
+
+#[test]
 fn apple_toolchain_selection_is_not_discovered_when_absent() {
     let environment = EnvironmentSnapshot::from_values([]);
     let build = environment.build_environment();
