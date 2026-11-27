@@ -1,9 +1,9 @@
 # Verify reds left by earlier plans (clippy, fortress, audit, processctl)
 
 Date: 2026-11-27
-Status: waiting for approval
+Status: approved (owner, 2026-11-27: "ok zaczynaj z rekomendacja")
 Plan review: core-reviewer (opus, high), APPROVE; its fact corrections, checks and TODO list are applied below.
-Open for the owner: the Step 3 shape (Q1).
+Q1 answered: the recommended shape (the lookup reads the filtered map).
 
 ## Context
 
