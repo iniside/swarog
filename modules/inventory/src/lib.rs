@@ -88,14 +88,12 @@ CREATE TABLE IF NOT EXISTS inventory.wiped_characters (
 -- Which player owns each live character, recorded from character.created by its own
 -- subscription and removed by the character.deleted wipe: inventory's own index from a
 -- character-owned holding to its player, so a player's view can list its characters'
--- holdings without a call into characters. Integrity is the wiped_characters tombstone
+-- holdings without calling the characters module. Integrity is the wiped_characters tombstone
 -- (the record handler skips a wiped id), not a cross-module FK.
 CREATE TABLE IF NOT EXISTS inventory.character_owners (
 	character_id uuid PRIMARY KEY,
 	player_id    uuid NOT NULL
 );
-CREATE INDEX IF NOT EXISTS character_owners_player_idx
-	ON inventory.character_owners (player_id);
 
 -- One row per operator grant the portal applied, keyed by its form instance's request id:
 -- the grant transaction inserts it first, so a repeat of one submit finds it and changes
@@ -106,8 +104,6 @@ CREATE TABLE IF NOT EXISTS inventory.operator_grants (
 	request_id text        PRIMARY KEY,
 	at         timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS operator_grants_at_idx
-	ON inventory.operator_grants (at);
 
 CREATE TABLE IF NOT EXISTS inventory.purged_players (
 	player_id  uuid PRIMARY KEY,
@@ -207,6 +203,17 @@ impl Module for Inventory {
             .ok_or_else(|| anyhow::anyhow!("inventory requires a DB pool"))?;
         Ddl::new(pool)
             .sql(SCHEMA_DDL)
+            // character_owners_player_idx serves a player's view of its characters' holdings;
+            // operator_grants_at_idx serves the inventory-grants-prune sweep alone.
+            .index(
+                "inventory.character_owners_player_idx",
+                "CREATE INDEX character_owners_player_idx \
+                 ON inventory.character_owners (player_id)",
+            )
+            .index(
+                "inventory.operator_grants_at_idx",
+                "CREATE INDEX operator_grants_at_idx ON inventory.operator_grants (at)",
+            )
             .index(
                 "inventory.holdings_owner_idx",
                 "CREATE INDEX holdings_owner_idx ON inventory.holdings(owner_type, owner_id)",

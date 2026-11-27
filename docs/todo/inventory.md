@@ -1,6 +1,6 @@
 # Inventory
 
-Last updated: 2026-11-26
+Last updated: 2026-11-27
 
 ## In progress
 
@@ -23,12 +23,6 @@ _None._
   dropped from list views, with no cursor or `has_more`
   (`modules/inventory/src/store.rs:6-11`, 2026-07-14; docs/reference/module-reference.md:156).
 
-- [ ] **archcheck fails on inventory's DDL**
-  `cargo run -p archcheck` is red at HEAD with three findings in `modules/inventory/src/lib.rs`:
-  - :91 rule 10, a foreign-schema `characters.` reference;
-  - :97 and :109 rule 22, `INDEX IF NOT EXISTS` outside `Ddl::index`.
-  The file was last changed in admin-second-pass (2026-11-24). Found while verifying the
-  oidc-signing-keys Step 2 review fix (309d8708, 2026-11-26).
 
 ### Known limits (admin-control-plane-redesign step 16)
 
