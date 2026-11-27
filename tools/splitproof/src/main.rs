@@ -6365,8 +6365,8 @@ async fn replicas_exactly_once(
     replica.name = "leaderboard-svc#2";
     replica.http_port = REPLICA_HTTP;
     replica.edge_port = Some(REPLICA_EDGE);
-    replica.env.insert("PORT".into(), format!(":{REPLICA_HTTP}"));
-    replica.env.insert("EDGE_ADDR".into(), format!(":{REPLICA_EDGE}"));
+    replica.env.insert("PORT".into(), format!("127.0.0.1:{REPLICA_HTTP}"));
+    replica.env.insert("EDGE_ADDR".into(), format!("127.0.0.1:{REPLICA_EDGE}"));
 
     // Base leaderboard-svc is already up in `fleet`. Bring the SECOND instance up and wait for
     // its OWN /readyz — both processes then serve (HTTP + plane started; see the caveat above,

@@ -843,9 +843,9 @@ fn swap_probe(input: &SwapInput) -> Result<SwapProbe> {
     // the front serves the push backplane's inbound face — the internal edge's 9013.
     // EDGE_ADDR must be stated: its default is `:9000`, which characters-svc is holding in
     // the fleet this probe runs alongside.
-    environment.insert("PORT".into(), format!(":{http_port}"));
-    environment.insert("PLAYER_EDGE_ADDR".into(), format!(":{player_port}"));
-    environment.insert("EDGE_ADDR".into(), format!(":{edge_port}"));
+    environment.insert("PORT".into(), format!("127.0.0.1:{http_port}"));
+    environment.insert("PLAYER_EDGE_ADDR".into(), format!("127.0.0.1:{player_port}"));
+    environment.insert("EDGE_ADDR".into(), format!("127.0.0.1:{edge_port}"));
     environment.insert("TLS_MODE".into(), "off".into());
     // The mTLS material weles minted for this fleet — without it the stubs cannot
     // dial the real peers, and the key check would never reach apikeys-svc.

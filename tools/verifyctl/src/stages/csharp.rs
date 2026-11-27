@@ -208,8 +208,8 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
 /// The fixed environment the stage sets over the inherited one, in insertion order.
 fn stage_env(database_url: &str) -> Vec<(&'static str, String)> {
     vec![
-        ("PORT", format!(":{HTTP_PORT}")),
-        ("PLAYER_EDGE_ADDR", format!(":{PLAYER_PORT}")),
+        ("PORT", format!("127.0.0.1:{HTTP_PORT}")),
+        ("PLAYER_EDGE_ADDR", format!("127.0.0.1:{PLAYER_PORT}")),
         ("DATABASE_URL", database_url.into()),
         ("APIKEYS_DEV_SEED", "1".into()),
         ("ACCOUNTS_DEV_SEED", "1".into()),

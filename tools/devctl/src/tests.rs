@@ -204,7 +204,7 @@ fn topology_specs_are_isolated_and_unknown_overrides_fail_closed() {
     assert!(!monolith[0].env.contains_key("CARGO_HOME"));
     assert_eq!(
         monolith[0].env.get("PORT").map(String::as_str),
-        Some(":8080")
+        Some("127.0.0.1:8080")
     );
     assert_eq!(
         monolith[0].env.get("ACCOUNTS_OPEN_REGISTRATION").map(String::as_str),

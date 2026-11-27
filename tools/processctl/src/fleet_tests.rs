@@ -71,15 +71,15 @@ fn inherited_application_overrides_are_explicit_and_cannot_rewire_topology() {
     // accounts-svc serves the browser cookie on plain http and trusts the gateway-svc host, as admin-svc does.
     assert_eq!(accounts.env.get("ACCOUNTS_COOKIE_SECURE").map(String::as_str), Some("0"));
     assert_eq!(accounts.env.get("TRUSTED_PROXY_CIDRS").map(String::as_str), Some("127.0.0.1/32"));
-    assert_eq!(accounts.env.get("PORT").map(String::as_str), Some(":8084"));
-    assert_eq!(accounts.env.get("EDGE_ADDR").map(String::as_str), Some(":9003"));
+    assert_eq!(accounts.env.get("PORT").map(String::as_str), Some("127.0.0.1:8084"));
+    assert_eq!(accounts.env.get("EDGE_ADDR").map(String::as_str), Some("127.0.0.1:9003"));
     assert_eq!(accounts.env.get("EDGE_CA_KEY").map(String::as_str), Some("run/edge-ca.key"));
     assert!(!accounts.env.contains_key("HTTP_PROXY"));
 
     let monolith = game_backend_monolith(&inputs(), FleetFlavor::Development, &environment);
     assert_eq!((monolith.http_port, monolith.player_port), (8080, Some(9100)));
-    assert_eq!(monolith.env.get("PORT").map(String::as_str), Some(":8080"));
-    assert_eq!(monolith.env.get("PLAYER_EDGE_ADDR").map(String::as_str), Some(":9100"));
+    assert_eq!(monolith.env.get("PORT").map(String::as_str), Some("127.0.0.1:8080"));
+    assert_eq!(monolith.env.get("PLAYER_EDGE_ADDR").map(String::as_str), Some("127.0.0.1:9100"));
     assert_eq!(monolith.env.get("EDGE_CA_KEY").map(String::as_str), Some("run/edge-ca.key"));
 }
 
@@ -140,8 +140,8 @@ fn accounts_signing_env_in_both_topologies() {
         let (kek, issuer) = signing_env(&monolith.env);
         let effective = (kek, Some(issuer.unwrap_or(DEFAULT_OIDC_ISSUER)));
         assert_eq!(effective, want_monolith, "monolith {flavor:?}");
-        // The monolith's front door is the PORT the server binds.
-        let front = format!("{}/accounts/oidc", monolith.env["PORT"]);
+        // The monolith's front door is the port the server binds.
+        let front = format!(":{}/accounts/oidc", monolith.http_port);
         let issuer = want_monolith.1.unwrap();
         assert!(issuer == ISSUER || issuer.ends_with(&front), "{issuer} is not the monolith");
     }
@@ -260,7 +260,7 @@ fn split_gateway_origin_is_the_gateway_port() {
         assert_eq!(gateway.http_port, port, "{flavor:?}: gateway-svc's http_port");
         assert_eq!(
             gateway.env.get("PORT").map(String::as_str),
-            Some(format!(":{}", crate::split_gateway_port!()).as_str()),
+            Some(format!("127.0.0.1:{}", crate::split_gateway_port!()).as_str()),
             "{flavor:?}: gateway-svc's PORT env"
         );
     }

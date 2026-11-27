@@ -815,9 +815,9 @@ pub fn game_backend_fleet_with_environment(
     };
     let service = |name, http_port, edge_port: Option<u16>, dependencies: Vec<&'static str>| {
         let mut env = base();
-        env.insert("PORT".into(), format!(":{http_port}"));
+        env.insert("PORT".into(), format!("127.0.0.1:{http_port}"));
         if let Some(port) = edge_port {
-            env.insert("EDGE_ADDR".into(), format!(":{port}"));
+            env.insert("EDGE_ADDR".into(), format!("127.0.0.1:{port}"));
         }
         ServiceSpec {
             name,
@@ -886,12 +886,12 @@ pub fn game_backend_fleet_with_environment(
     let mut gateway_env = environment.runtime_environment();
     gateway_env.insert("EDGE_CA_CERT".into(), cert.clone());
     gateway_env.insert("EDGE_CA_KEY".into(), key.clone());
-    gateway_env.insert("PORT".into(), concat!(":", crate::split_gateway_port!()).into());
+    gateway_env.insert("PORT".into(), concat!("127.0.0.1:", crate::split_gateway_port!()).into());
     // Explicit because this spec is built inline and never goes through `service()`, which
     // is where every other svc gets its `EDGE_ADDR`. Without it `app::run` falls back to
     // its `:9000` default — characters-svc's port.
-    gateway_env.insert("EDGE_ADDR".into(), format!(":{GATEWAY_EDGE_PORT}"));
-    gateway_env.insert("PLAYER_EDGE_ADDR".into(), ":9100".into());
+    gateway_env.insert("EDGE_ADDR".into(), format!("127.0.0.1:{GATEWAY_EDGE_PORT}"));
+    gateway_env.insert("PLAYER_EDGE_ADDR".into(), "127.0.0.1:9100".into());
     gateway_env.insert("TLS_MODE".into(), "off".into());
     for (name, port) in [
         ("CHARACTERS", 9000),
@@ -1086,12 +1086,12 @@ pub fn game_backend_monolith(
     let (http_port, player_port) = (8080, 9100);
     let mut env = environment.runtime_environment();
     for (key, value) in [
-        ("PORT", format!(":{http_port}")),
+        ("PORT", format!("127.0.0.1:{http_port}")),
         ("DATABASE_URL", inputs.database_url.clone()),
         // One process, all modules + both planes — a larger pool than a split peer, and
         // the same value the const budget assertion above charges for the monolith.
         ("DATABASE_POOL_MAX_CONNECTIONS", MONOLITH_POOL_MAX.to_string()),
-        ("PLAYER_EDGE_ADDR", format!(":{player_port}")),
+        ("PLAYER_EDGE_ADDR", format!("127.0.0.1:{player_port}")),
         ("EDGE_CA_CERT", inputs.edge_ca_cert.display().to_string()),
         ("EDGE_CA_KEY", inputs.edge_ca_key.display().to_string()),
         ("APIKEYS_DEV_SEED", "1".into()),
