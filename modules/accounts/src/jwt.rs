@@ -107,6 +107,11 @@ impl Tokens {
         }
     }
 
+    /// The issuer URL: every token's `iss` and the base of the hosted endpoints' URIs.
+    pub(crate) fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
     /// The live public keys, shared with the JWKS route so both read through one cache.
     pub(crate) fn keys(&self) -> Arc<SigningKeys> {
         self.keys.clone()

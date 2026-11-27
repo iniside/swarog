@@ -1,6 +1,7 @@
 //! `POST /accounts/oidc/token`: the token endpoint. A client authenticates (a confidential one
 //! with its secret, a public one by `client_id` alone), then exchanges an authorization code
-//! with its PKCE verifier, or rotates a refresh token of its own families.
+//! with its PKCE verifier, polls a device code (RFC 8628 §3.4), or rotates a refresh token of
+//! its own families.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,6 +23,7 @@ use sqlx::PgConnection;
 use super::Web;
 use crate::clients::TokenClient;
 use crate::codes::RedeemedGrant;
+use crate::device_codes::DevicePoll;
 use crate::secret::{ct_eq, digest};
 use crate::{client_id_within_cap, internal, RefreshPresenter, Service};
 
@@ -39,6 +41,15 @@ pub(crate) enum TokenError {
     InvalidGrant,
     UnauthorizedClient,
     UnsupportedGrantType,
+    InvalidScope,
+    /// RFC 8628 §3.5: the device code is not approved or denied yet.
+    AuthorizationPending,
+    /// RFC 8628 §3.5: polled sooner than its interval.
+    SlowDown,
+    /// RFC 8628 §3.5: the player denied the device code.
+    AccessDenied,
+    /// RFC 8628 §3.5: the device code expired, or its approving browser session ended.
+    ExpiredToken,
     /// The database failed; never folded into a client error.
     Unavailable,
 }
@@ -51,6 +62,11 @@ impl IntoResponse for TokenError {
             TokenError::InvalidGrant => (StatusCode::BAD_REQUEST, "invalid_grant"),
             TokenError::UnauthorizedClient => (StatusCode::BAD_REQUEST, "unauthorized_client"),
             TokenError::UnsupportedGrantType => (StatusCode::BAD_REQUEST, "unsupported_grant_type"),
+            TokenError::InvalidScope => (StatusCode::BAD_REQUEST, "invalid_scope"),
+            TokenError::AuthorizationPending => (StatusCode::BAD_REQUEST, "authorization_pending"),
+            TokenError::SlowDown => (StatusCode::BAD_REQUEST, "slow_down"),
+            TokenError::AccessDenied => (StatusCode::BAD_REQUEST, "access_denied"),
+            TokenError::ExpiredToken => (StatusCode::BAD_REQUEST, "expired_token"),
             TokenError::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
         };
         let mut resp = no_store((status, Json(serde_json::json!({ "error": error }))).into_response());
@@ -226,6 +242,7 @@ async fn grant(svc: &Service, headers: &HeaderMap, form: &HashMap<String, String
     match grant_type.as_str() {
         AUTHORIZATION_CODE if listed(AUTHORIZATION_CODE) => code_grant(svc, &client, form).await,
         REFRESH_TOKEN if listed(REFRESH_TOKEN) => refresh_grant(svc, &client, form).await,
+        DEVICE_CODE if listed(DEVICE_CODE) && client.secret_digest.is_none() => device_grant(svc, &client, form).await,
         AUTHORIZATION_CODE | REFRESH_TOKEN | DEVICE_CODE => Err(TokenError::UnauthorizedClient),
         _ => Err(TokenError::UnsupportedGrantType),
     }
@@ -277,6 +294,39 @@ async fn code_grant(
         return Err(TokenError::InvalidGrant);
     }
     let (session, id_token) = mint_code(svc, &redeemed).await.map_err(|e| grant_error("code mint", e))?;
+    let mut answer = TokenResponse::new(session);
+    answer.scope = Some(redeemed.scope).filter(|s| !s.is_empty());
+    answer.id_token = id_token;
+    Ok(answer)
+}
+
+/// Polls a device code (D6): the store answers every check before the redemption, revoking a
+/// replay's first family itself; an approved code is redeemed in its own committed statement
+/// and minted in a separate transaction, as an authorization code is.
+async fn device_grant(
+    svc: &Service,
+    client: &TokenClient,
+    form: &HashMap<String, String>,
+) -> Result<TokenResponse, TokenError> {
+    let Some(device_code) = form.get("device_code") else { return Err(TokenError::InvalidRequest) };
+    let poll = svc
+        .store
+        .poll_device_code(device_code, &client.client_id)
+        .await
+        .map_err(|e| unavailable("device poll", e))?;
+    let redeemed = match poll {
+        DevicePoll::Redeemed(redeemed) => redeemed,
+        DevicePoll::Unknown => return Err(TokenError::InvalidGrant),
+        DevicePoll::Replayed { family_id } => {
+            tracing::warn!(%family_id, "device code replayed — revoked the tokens of its first redemption");
+            return Err(TokenError::InvalidGrant);
+        }
+        DevicePoll::Expired => return Err(TokenError::ExpiredToken),
+        DevicePoll::SlowDown => return Err(TokenError::SlowDown),
+        DevicePoll::Pending => return Err(TokenError::AuthorizationPending),
+        DevicePoll::Denied => return Err(TokenError::AccessDenied),
+    };
+    let (session, id_token) = mint_code(svc, &redeemed).await.map_err(|e| grant_error("device mint", e))?;
     let mut answer = TokenResponse::new(session);
     answer.scope = Some(redeemed.scope).filter(|s| !s.is_empty());
     answer.id_token = id_token;

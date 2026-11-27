@@ -26,6 +26,7 @@ pub(crate) const MAX_REQUESTED_IP_BYTES: usize = 64;
 /// Inserts tried before a run of digest collisions is answered as an error.
 const MAX_INSERT_TRIES: usize = 5;
 /// The longest raw `user_code` input that is normalised at all.
+#[cfg_attr(not(test), expect(dead_code, reason = "the device approval pages are its callers"))]
 const MAX_USER_CODE_INPUT_BYTES: usize = 64;
 
 /// What `/device_authorization` binds a new code pair to.
@@ -47,6 +48,7 @@ pub(crate) struct IssuedDeviceCode {
 }
 
 /// A pending, unexpired code as the approval page shows it.
+#[cfg_attr(not(test), expect(dead_code, reason = "the device approval pages are its callers"))]
 pub(crate) struct PendingDevice {
     pub(crate) client_id: String,
     pub(crate) scope: String,
@@ -132,6 +134,7 @@ fn new_user_code() -> String {
 
 /// The stored form of a typed `user_code`: upper-cased, without `-` and spaces; `None` when
 /// the rest is not [`USER_CODE_LEN`] characters of [`USER_CODE_ALPHABET`].
+#[cfg_attr(not(test), expect(dead_code, reason = "the device approval pages are its callers"))]
 pub(crate) fn normalize_user_code(input: &str) -> Option<String> {
     if input.len() > MAX_USER_CODE_INPUT_BYTES {
         return None;
@@ -203,6 +206,7 @@ impl Store {
     }
 
     /// The pending, unexpired code a typed `user_code` names; `None` for any other.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the device approval pages are its callers"))]
     pub(crate) async fn pending_device_code(&self, user_code: &str) -> sqlx::Result<Option<PendingDevice>> {
         let Some(code) = normalize_user_code(user_code) else { return Ok(None) };
         type Row = (String, String, String, Option<String>, i64, i64);
@@ -231,6 +235,7 @@ impl Store {
     /// `false` for any other code, or when the session is gone or its player or the session
     /// was deleted before the update, which its foreign-key checks refuse as
     /// [`Store::insert_oidc_code`]'s insert does.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the device approval pages are its callers"))]
     pub(crate) async fn approve_device_code(&self, user_code: &str, session_digest: &[u8]) -> sqlx::Result<bool> {
         let Some(code) = normalize_user_code(user_code) else { return Ok(false) };
         let res = sqlx::query(
@@ -253,6 +258,7 @@ impl Store {
     }
 
     /// Denies the pending, unexpired code a typed `user_code` names; `false` for any other.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the device approval pages are its callers"))]
     pub(crate) async fn deny_device_code(&self, user_code: &str) -> sqlx::Result<bool> {
         let Some(code) = normalize_user_code(user_code) else { return Ok(false) };
         let res = sqlx::query(
@@ -415,9 +421,8 @@ impl Store {
     }
 
     /// Revokes the tokens a replayed `device_code`'s first redemption minted, in its own
-    /// transaction, as a replayed authorization code's are.
+    /// transaction, as a replayed authorization code's are; `/token` logs the replay.
     async fn revoke_device_replay(&self, pool: &PgPool, family_id: &str) -> sqlx::Result<()> {
-        tracing::warn!(%family_id, "device code replayed — revoking the tokens of its first redemption");
         let mut tx = pool.begin().await?;
         self.revoke_replayed_family_tx(&mut tx, family_id).await?;
         tx.commit().await

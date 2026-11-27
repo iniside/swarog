@@ -6,6 +6,7 @@ mod authorize;
 mod browser_session;
 mod client_grants;
 mod delete;
+mod device;
 mod device_codes;
 mod directory;
 mod epic_browser;

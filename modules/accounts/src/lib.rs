@@ -35,7 +35,6 @@
 mod admin;
 mod clients;
 mod codes;
-#[cfg_attr(not(test), expect(dead_code, reason = "the device authorization routes are its callers"))]
 mod device_codes;
 pub mod conformance;
 mod discovery;

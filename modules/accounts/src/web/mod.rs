@@ -3,8 +3,10 @@
 //! web OAuth is configured, the signed-in landing page and logout. A successful sign-in mints a browser session (`session.rs`), never a
 //! player bearer. The OIDC authorization endpoint (`authorize.rs`) issues codes to a signed-in browser,
 //! the token endpoint (`token.rs`) exchanges them and the revocation endpoint (`revoke.rs`) ends a client's tokens.
+//! The device authorization endpoint (`device.rs`) issues the code pairs a device polls `/token` with.
 
 pub(crate) mod authorize;
+pub(crate) mod device;
 pub(crate) mod revoke;
 pub(crate) mod session;
 pub(crate) mod token;
@@ -83,7 +85,7 @@ impl LoginLimiter {
         Arc::new(LoginLimiter { limiter, trusted })
     }
 
-    fn client_ip(&self, peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
+    pub(crate) fn client_ip(&self, peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
         let xff = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
         let xri = headers.get("x-real-ip").and_then(|v| v.to_str().ok());
         httpmw::client_ip(peer.ip(), xff, xri, &self.trusted)
@@ -265,6 +267,10 @@ pub(crate) fn router(web: Arc<Web>) -> Router {
         .route(LOGIN, get(login_page).post(login_submit))
         .route(authorize::AUTHORIZE, get(authorize::authorize))
         .route(token::TOKEN, post(token::token).layer(DefaultBodyLimit::max(token::MAX_TOKEN_BODY_BYTES)))
+        .route(
+            device::DEVICE_AUTHORIZATION,
+            post(device::device_authorization).layer(DefaultBodyLimit::max(device::MAX_DEVICE_BODY_BYTES)),
+        )
         .route(revoke::REVOKE, post(revoke::revoke).layer(DefaultBodyLimit::max(revoke::MAX_REVOKE_BODY_BYTES)))
         .route("/accounts/oidc/epic", post(epic_start))
         .route("/accounts/oidc/google", post(google_start))
