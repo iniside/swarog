@@ -23,14 +23,15 @@ _None._
   module.
   Source: docs/plans/2026-07-14-1721-guardian-argv0-shim-fix-plan.md:198 (2026-07-14).
 - [ ] **MSVC discovery has no hermetic test**
-  PROCESSCTL-05. `append_msvc_linker_path` (tools/processctl/src/fleet.rs:635-706) reads the real
-  `ProgramFiles`/`ProgramFiles(x86)` and filesystem, so `sanitized_build_path_contains_the_discovered_msvc_linker`
-  (tools/processctl/src/fleet_tests.rs:373) proves the 64-bit Program Files root only on a host with VS there;
-  on a Build-Tools-under-(x86) host it passes with or without that scan, and newest-version-wins across roots is
-  never pinned. Needs the scan extracted to a fn taking candidate roots, then a tempdir test.
+  PROCESSCTL-05. `append_msvc_linker_path` (tools/processctl/src/fleet.rs:699-772) reads
+  `ProgramFiles`/`ProgramFiles(x86)` from the snapshot map but scans the real filesystem, so
+  `sanitized_build_path_contains_the_discovered_msvc_linker` (tools/processctl/src/fleet_tests.rs:641) proves the
+  64-bit Program Files root only on a host with VS there; on a Build-Tools-under-(x86) host it passes with or
+  without that scan, and newest-version-wins across roots is never pinned. Needs a tempdir test that passes fake
+  roots through `EnvironmentSnapshot::from_values`.
   Source: proof-auditor review of 08be12df (2026-11-01).
 - [ ] **MSVC linker test only checks INCLUDE exists**
-  PROCESSCTL-06. tools/processctl/src/fleet_tests.rs:413 asserts `contains_key("INCLUDE")`; an INCLUDE with no
+  PROCESSCTL-06. tools/processctl/src/fleet_tests.rs:679 asserts `contains_key("INCLUDE")`; an INCLUDE with no
   existing dirs passes (fleet.rs inserts `join_paths` of an empty list). Should assert an entry holding
   `vcruntime.h` and one holding `windows.h`/`stdio.h`.
   Source: proof-auditor review of 08be12df (2026-11-01).
