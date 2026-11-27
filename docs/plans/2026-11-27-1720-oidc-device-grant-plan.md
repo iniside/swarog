@@ -4,7 +4,7 @@ Date: 2026-11-27
 Parent: docs/plans/2026-11-24-0004-lore-integration-roadmap-plan.md, Phase A, Step 4.
 Builds on: docs/plans/2026-11-27-1020-oidc-authorization-code-plan.md (A3: `/authorize`, `/token`,
 `/revoke`, `oidc_codes`, the generalised mint, confidential clients).
-Status: approved (owner, 2026-11-27: "mozesz zrobic punkty 1 i 2"); Steps 1 and 2 dispatched, later steps wait
+Status: approved (owner, 2026-11-27); Step 1 dispatched, Step 2 and later wait for the owner ("juz skoncz ten punkt 1")
 Plan review: core-reviewer (opus, high), REJECT with 13 items; all applied below.
 Owner answers (2026-11-27, "na punkty mozesz byc jak rekomendujesz"): D2 per-client lifetime on the
 Clients page, as recommended; D10 "View devices" drawn disabled until roadmap Step 12, as recommended.
