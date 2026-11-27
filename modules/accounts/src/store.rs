@@ -918,21 +918,23 @@ impl Store {
 
     /// Starts a NEW token family of `player_id` for `client_id` on the caller's tx, with an
     /// access expiry [`Store::mint_access_tx`] then moves to its first token's `exp`, and
-    /// answers the id Postgres mints for it.
+    /// answers its id: `family_id` when given (a code redemption chose it), else a fresh one.
     pub async fn insert_family_tx(
         &self,
         conn: &mut PgConnection,
         player_id: &str,
         client_id: &str,
+        family_id: Option<&str>,
     ) -> Result<String, sqlx::Error> {
         sqlx::query_scalar(
             "INSERT INTO accounts.token_families (id, player_id, client_id, access_expires_at) \
-             VALUES (gen_random_uuid(), $1::uuid, $2, now() + make_interval(mins => $3)) \
+             VALUES (coalesce($4::uuid, gen_random_uuid()), $1::uuid, $2, now() + make_interval(mins => $3)) \
              RETURNING id::text",
         )
         .bind(player_id)
         .bind(client_id)
         .bind(ACCESS_TTL_MINUTES)
+        .bind(family_id)
         .fetch_one(&mut *conn)
         .await
     }
@@ -1119,7 +1121,7 @@ impl Store {
     }
 
     /// Whether the family row existed; deleting it takes its tokens by cascade.
-    async fn delete_family_tx(&self, conn: &mut PgConnection, family_id: &str) -> Result<bool, sqlx::Error> {
+    pub(crate) async fn delete_family_tx(&self, conn: &mut PgConnection, family_id: &str) -> Result<bool, sqlx::Error> {
         let deleted = sqlx::query("DELETE FROM accounts.token_families WHERE id = $1::uuid")
             .bind(family_id)
             .execute(&mut *conn)

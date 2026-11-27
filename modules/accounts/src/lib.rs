@@ -56,6 +56,7 @@ use async_trait::async_trait;
 use bus::{AnyTx, Bus, Delivery, Error as BusError, TxHandler};
 use futures::future::BoxFuture;
 use lifecycle::{Context, Ddl, Module};
+use accountsapi::grant_types::REFRESH_TOKEN;
 use opsapi::{Error, Identity};
 use sqlx::PgConnection;
 
@@ -470,6 +471,14 @@ struct MintedVia<'a> {
     secret_hash: Option<&'a str>,
 }
 
+/// Who presents a refresh token: an op-path caller, which names no client, or a client
+/// `/token` authenticated.
+#[derive(Clone, Copy)]
+pub(crate) enum RefreshPresenter<'a> {
+    OpPath,
+    Client(&'a str),
+}
+
 /// A password [`Service::verify_password`] accepted: the player, the normalised email
 /// of its `password` identity and the stored hash the password matched. Minting through
 /// it checks, in the minting transaction, that the identity still stores that hash, so
@@ -578,7 +587,7 @@ impl Service {
         else {
             return Err(invalid_client());
         };
-        let session = self.mint_session_tx(conn, &p.id, client_id, grants).await?;
+        let (session, _) = self.mint_session_tx(conn, &p.id, client_id, grants, None).await?;
         let stamped = self
             .store
             .stamp_identity_used_tx(conn, provider, subject, &p.id, secret_hash)
@@ -590,20 +599,23 @@ impl Service {
         Ok(session)
     }
 
-    /// The mint every login calls after its grant check: a new token family for `player_id`
-    /// and `client_id`, its refresh root when `grants` lists `refresh_token`, and its first
-    /// access token, on the caller's transaction. The caller's grant check holds the client
-    /// row FOR KEY SHARE; the family insert takes the player row FOR KEY SHARE through its FK.
+    /// The mint every login and code exchange calls after its grant check: a new token
+    /// family for `player_id` and `client_id`, under `family_id` when given, its refresh
+    /// root when `grants` lists `refresh_token`, and its first access token, on the caller's
+    /// transaction, answered with what that token was minted with. The caller's grant check
+    /// holds the client row FOR KEY SHARE; the family insert takes the player row FOR KEY
+    /// SHARE through its FK.
     async fn mint_session_tx(
         &self,
         conn: &mut PgConnection,
         player_id: &str,
         client_id: &str,
         grants: clients::MintGrants,
-    ) -> Result<accountsapi::Session, Error> {
+        family_id: Option<&str>,
+    ) -> Result<(accountsapi::Session, store::MintedAccess), Error> {
         let family_id = self
             .store
-            .insert_family_tx(conn, player_id, client_id)
+            .insert_family_tx(conn, player_id, client_id, family_id)
             .await
             .map_err(internal)?;
         let refresh_token = if grants.refresh_token {
@@ -616,22 +628,29 @@ impl Service {
         } else {
             String::new()
         };
-        let token = self.sign_access(conn, player_id, &family_id).await?;
-        Ok(accountsapi::Session {
+        let (token, minted) = self.sign_access(conn, player_id, &family_id).await?;
+        let session = accountsapi::Session {
             player_id: player_id.to_string(),
             token,
             refresh_token,
             access_expires_in_secs: store::access_expires_in_secs(),
-        })
+        };
+        Ok((session, minted))
     }
 
     /// Mints and signs the next access token of family `family_id` for `player_id`
     /// ([`store::Store::mint_access_tx`]), reading the client's audience and root domains,
     /// the player's handle and a stale signing key on `conn`, the caller's transaction.
-    async fn sign_access(&self, conn: &mut PgConnection, player_id: &str, family_id: &str) -> Result<String, Error> {
+    async fn sign_access(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        family_id: &str,
+    ) -> Result<(String, store::MintedAccess), Error> {
         let minted = self.store.mint_access_tx(conn, family_id).await.map_err(internal)?;
         let claims = self.tokens.claims(player_id, family_id, &minted);
-        self.tokens.sign(conn, &claims).await.map_err(|e| internal(format!("{e:#}")))
+        let token = self.tokens.sign(conn, &claims).await.map_err(|e| internal(format!("{e:#}")))?;
+        Ok((token, minted))
     }
 
     /// Mints a fresh bearer token through the password identity `verified` matched, in its
@@ -1166,19 +1185,134 @@ impl Service {
     }
 
     /// Refuses a refresh in family `family_id` once its client no longer lists
-    /// `refresh_token`, and any refresh here of a confidential client's family. The caller
-    /// rolls back on the refusal, so the presented token stays unconsumed.
-    async fn refresh_allowed_tx(&self, conn: &mut PgConnection, family_id: &str) -> Result<(), Error> {
-        let allowed = self
+    /// `refresh_token`; on the op path any refresh of a confidential client's family, and
+    /// at `/token` one of another client's family. The caller rolls back on the refusal, so
+    /// the presented token stays unconsumed.
+    async fn refresh_allowed_tx(
+        &self,
+        conn: &mut PgConnection,
+        family_id: &str,
+        presenter: RefreshPresenter<'_>,
+    ) -> Result<(), Error> {
+        let client = self
             .store
-            .family_client_allows_tx(conn, family_id, accountsapi::grant_types::REFRESH_TOKEN)
+            .family_client_tx(conn, family_id, REFRESH_TOKEN)
             .await
             .map_err(internal)?;
+        let allowed = client.is_some_and(|c| {
+            c.lists_grant
+                && match presenter {
+                    RefreshPresenter::OpPath => !c.confidential,
+                    RefreshPresenter::Client(client_id) => c.client_id == client_id,
+                }
+        });
         if allowed {
             Ok(())
         } else {
             Err(invalid_client())
         }
+    }
+
+    /// Rotates `refresh_token` for `presenter`: reuse inside the grace window replays the
+    /// recorded successor, reuse outside it kills the family, except that a
+    /// [`RefreshPresenter::Client`] presenting another client's family is refused with
+    /// nothing consumed or killed.
+    pub(crate) async fn refresh_as(
+        &self,
+        refresh_token: String,
+        presenter: RefreshPresenter<'_>,
+    ) -> Result<accountsapi::Session, Error> {
+        if !opaque_token_within_cap(&refresh_token) {
+            return Err(Error::unauthorized("invalid refresh token"));
+        }
+        let successor = store::new_token();
+        let mut tx = self.store.pool.begin().await.map_err(internal)?;
+        let rotated = match self
+            .store
+            .rotate_refresh_tx(&mut tx, &refresh_token, &successor)
+            .await
+        {
+            Ok(rotated) => rotated,
+            Err(e) => {
+                tx.rollback().await.ok();
+                return Err(internal(e));
+            }
+        };
+        // Read on the SAME transaction as the failed UPDATE (and skipped entirely when
+        // it succeeded — the row is already ours).
+        let row = if rotated.is_some() {
+            None
+        } else {
+            match self.store.refresh_row_tx(&mut tx, &refresh_token).await {
+                Ok(row) => row,
+                Err(e) => {
+                    tx.rollback().await.ok();
+                    return Err(internal(e));
+                }
+            }
+        };
+        let outcome = match store::classify_presentation(rotated, row) {
+            store::RefreshVerdict::Rotate {
+                player_id,
+                family_id,
+            } => match self.refresh_allowed_tx(&mut tx, &family_id, presenter).await {
+                Ok(()) => {
+                    self.complete_rotation_tx(&mut tx, &player_id, &family_id, &refresh_token, successor)
+                        .await
+                }
+                Err(err) => {
+                    tx.rollback().await.ok();
+                    return Err(err);
+                }
+            },
+            store::RefreshVerdict::GraceReplay {
+                player_id,
+                family_id,
+                successor,
+            } => match self.refresh_allowed_tx(&mut tx, &family_id, presenter).await {
+                Ok(()) => {
+                    self.issue_access_in_family_tx(&mut tx, &player_id, &family_id, successor)
+                        .await
+                }
+                Err(err) => {
+                    tx.rollback().await.ok();
+                    return Err(err);
+                }
+            },
+            store::RefreshVerdict::Revoke { family_id } => {
+                if let RefreshPresenter::Client(client_id) = presenter {
+                    match self.store.family_client_tx(&mut tx, &family_id, REFRESH_TOKEN).await {
+                        Ok(Some(owner)) if owner.client_id == client_id => {}
+                        Ok(_) => {
+                            tx.rollback().await.ok();
+                            return Err(Error::unauthorized("invalid refresh token"));
+                        }
+                        Err(e) => {
+                            tx.rollback().await.ok();
+                            return Err(internal(e));
+                        }
+                    }
+                }
+                tracing::warn!(
+                    %family_id,
+                    "consumed refresh token replayed outside the grace window — revoking the token family"
+                );
+                match self.store.kill_family_tx(&mut tx, &family_id).await {
+                    Ok(_) => Err(Error::unauthorized("invalid refresh token")),
+                    Err(e) => Err(internal(e)),
+                }
+            }
+            store::RefreshVerdict::Deny => Err(Error::unauthorized("invalid refresh token")),
+        };
+        // A revoked family must persist, so the tx commits on the 401 path too; only a
+        // 5xx (a store failure mid-verdict) discards the work.
+        match &outcome {
+            Err(err) if err.status == opsapi::Status::Internal => {
+                tx.rollback().await.ok();
+            }
+            _ => tx.commit().await.map_err(internal)?,
+        }
+        outcome
     }
 
     /// Mints one access token inside an EXISTING family, moving the family's
@@ -1191,7 +1325,7 @@ impl Service {
         family_id: &str,
         refresh_token: String,
     ) -> Result<accountsapi::Session, Error> {
-        let token = self.sign_access(conn, player_id, family_id).await?;
+        let (token, _) = self.sign_access(conn, player_id, family_id).await?;
         Ok(accountsapi::Session {
             player_id: player_id.to_string(),
             token,
@@ -1490,84 +1624,7 @@ impl accountsapi::Auth for Service {
     /// window additionally revokes the family, and that revocation COMMITS before the
     /// 401 is returned.
     async fn refresh(&self, refresh_token: String) -> Result<accountsapi::Session, Error> {
-        if !opaque_token_within_cap(&refresh_token) {
-            return Err(Error::unauthorized("invalid refresh token"));
-        }
-        let successor = store::new_token();
-        let mut tx = self.store.pool.begin().await.map_err(internal)?;
-        let rotated = match self
-            .store
-            .rotate_refresh_tx(&mut tx, &refresh_token, &successor)
-            .await
-        {
-            Ok(rotated) => rotated,
-            Err(e) => {
-                tx.rollback().await.ok();
-                return Err(internal(e));
-            }
-        };
-        // Read on the SAME transaction as the failed UPDATE (and skipped entirely when
-        // it succeeded — the row is already ours).
-        let row = if rotated.is_some() {
-            None
-        } else {
-            match self.store.refresh_row_tx(&mut tx, &refresh_token).await {
-                Ok(row) => row,
-                Err(e) => {
-                    tx.rollback().await.ok();
-                    return Err(internal(e));
-                }
-            }
-        };
-        let outcome = match store::classify_presentation(rotated, row) {
-            store::RefreshVerdict::Rotate {
-                player_id,
-                family_id,
-            } => match self.refresh_allowed_tx(&mut tx, &family_id).await {
-                Ok(()) => {
-                    self.complete_rotation_tx(&mut tx, &player_id, &family_id, &refresh_token, successor)
-                        .await
-                }
-                Err(err) => {
-                    tx.rollback().await.ok();
-                    return Err(err);
-                }
-            },
-            store::RefreshVerdict::GraceReplay {
-                player_id,
-                family_id,
-                successor,
-            } => match self.refresh_allowed_tx(&mut tx, &family_id).await {
-                Ok(()) => {
-                    self.issue_access_in_family_tx(&mut tx, &player_id, &family_id, successor)
-                        .await
-                }
-                Err(err) => {
-                    tx.rollback().await.ok();
-                    return Err(err);
-                }
-            },
-            store::RefreshVerdict::Revoke { family_id } => {
-                tracing::warn!(
-                    %family_id,
-                    "consumed refresh token replayed outside the grace window — revoking the token family"
-                );
-                match self.store.kill_family_tx(&mut tx, &family_id).await {
-                    Ok(_) => Err(Error::unauthorized("invalid refresh token")),
-                    Err(e) => Err(internal(e)),
-                }
-            }
-            store::RefreshVerdict::Deny => Err(Error::unauthorized("invalid refresh token")),
-        };
-        // A revoked family must persist, so the tx commits on the 401 path too; only a
-        // 5xx (a store failure mid-verdict) discards the work.
-        match &outcome {
-            Err(err) if err.status == opsapi::Status::Internal => {
-                tx.rollback().await.ok();
-            }
-            _ => tx.commit().await.map_err(internal)?,
-        }
-        outcome
+        self.refresh_as(refresh_token, RefreshPresenter::OpPath).await
     }
 
     /// The caller's own player + identities (player_id from `identity`, injected by

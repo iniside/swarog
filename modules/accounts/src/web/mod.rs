@@ -1,15 +1,17 @@
 //! The hosted browser pages under `/accounts/oidc`: the email-and-password sign-in form
 //! with "Continue with Epic" and "Continue with Google", each shown when that provider's
 //! web OAuth is configured, the signed-in landing page and logout. A successful sign-in mints a browser session (`session.rs`), never a
-//! player bearer. The OIDC authorization endpoint (`authorize.rs`) issues codes to a signed-in browser.
+//! player bearer. The OIDC authorization endpoint (`authorize.rs`) issues codes to a signed-in browser,
+//! and the token endpoint (`token.rs`) exchanges them.
 
 pub(crate) mod authorize;
 pub(crate) mod session;
+pub(crate) mod token;
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use axum::extract::{ConnectInfo, Query, Request, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -261,6 +263,7 @@ pub(crate) fn router(web: Arc<Web>) -> Router {
         .route(LANDING, get(landing))
         .route(LOGIN, get(login_page).post(login_submit))
         .route(authorize::AUTHORIZE, get(authorize::authorize))
+        .route(token::TOKEN, post(token::token).layer(DefaultBodyLimit::max(token::MAX_TOKEN_BODY_BYTES)))
         .route("/accounts/oidc/epic", post(epic_start))
         .route("/accounts/oidc/google", post(google_start))
         .route("/accounts/oidc/logout", post(logout))

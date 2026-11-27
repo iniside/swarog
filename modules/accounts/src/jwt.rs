@@ -40,13 +40,11 @@ pub(crate) struct AccessClaims {
 
 /// The `typ` header of an id_token. Both access verifiers accept only [`ACCESS_TOKEN_TYP`], so
 /// an id_token is never taken for an access token.
-#[cfg_attr(not(test), expect(dead_code, reason = "the /token endpoint is its only signer"))]
 pub(crate) const ID_TOKEN_TYP: &str = "JWT";
 
 /// The claims of one id_token (OIDC Core 1.0 section 2). `aud` is the client's id,
 /// `auth_time` when the player logged in, `nonce` the authorization request's when it sent
 /// one.
-#[cfg_attr(not(test), expect(dead_code, reason = "the /token endpoint is its only signer"))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct IdClaims {
     pub(crate) iss: String,
@@ -258,7 +256,6 @@ impl Tokens {
     }
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "the /token endpoint is its only signer"))]
 impl Tokens {
     /// The claims of the id_token issued to `client_id` at `iat` for player `sub` of `handle`,
     /// who logged in at `auth_time`. It lives as long as an access token.

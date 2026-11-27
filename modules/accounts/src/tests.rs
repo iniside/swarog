@@ -19,6 +19,7 @@ mod prune;
 mod refresh;
 mod registration_gate;
 mod signing_keys;
+mod token;
 mod tokens;
 use crate::oauth_flow::Intent;
 use crate::oidc::{IssuerMatch, OidcVerifier};

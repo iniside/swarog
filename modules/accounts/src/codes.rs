@@ -4,7 +4,7 @@
 use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
 
-use crate::store::{is_foreign_key_violation, Store};
+use crate::store::{is_foreign_key_violation, Revocation, Store};
 
 /// How long an issued code can be redeemed.
 pub(crate) const CODE_TTL_SECS: i32 = 60;
@@ -22,7 +22,6 @@ pub(crate) struct NewCode<'a> {
 }
 
 /// A code a redemption consumed, with the id of the token family it mints.
-#[cfg_attr(not(test), expect(dead_code, reason = "the /token endpoint is its only redeemer"))]
 pub(crate) struct RedeemedCode {
     pub(crate) client_id: String,
     pub(crate) player_id: String,
@@ -37,6 +36,19 @@ pub(crate) struct RedeemedCode {
 
 fn code_digest(code: &str) -> Vec<u8> {
     Sha256::digest(code.as_bytes()).to_vec()
+}
+
+/// Domain-separated stable FNV-1a key serializing a code's mint with the revocation of its
+/// replay. Hash collisions only add serialization.
+fn code_family_lock_key(family_id: &str) -> i64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET_BASIS;
+    for byte in b"accounts.code-family.v1\0".iter().chain(family_id.as_bytes()) {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash as i64
 }
 
 impl Store {
@@ -103,7 +115,6 @@ impl Store {
     /// stays, `redeemed_at` set, for replay detection whatever its `session_digest`. A
     /// redemption racing the session delete either commits first, or waits on the row lock
     /// and then finds `session_digest` NULL.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the /token endpoint is its only redeemer"))]
     pub(crate) async fn redeem_oidc_code<'e, E: sqlx::PgExecutor<'e>>(
         &self,
         db: E,
@@ -136,6 +147,66 @@ impl Store {
                 family_id,
             },
         ))
+    }
+
+    /// The family id the first redemption of `code` stamped, while its row is kept for replay
+    /// detection ([`REPLAY_WINDOW_SECS`]); `None` for a code never redeemed or past that window.
+    pub(crate) async fn replayed_code_family<'e, E: sqlx::PgExecutor<'e>>(
+        &self,
+        db: E,
+        code: &str,
+    ) -> sqlx::Result<Option<String>> {
+        if !crate::opaque_token_within_cap(code) {
+            return Ok(None);
+        }
+        sqlx::query_scalar(
+            "SELECT family_id::text FROM accounts.oidc_codes \
+              WHERE code_digest = $1 AND redeemed_at IS NOT NULL \
+                AND created_at > now() - make_interval(secs => $2)",
+        )
+        .bind(code_digest(code))
+        .bind(f64::from(REPLAY_WINDOW_SECS))
+        .fetch_optional(db)
+        .await
+    }
+
+    /// Takes the advisory lock on a code's family id, the FIRST lock of both the code's mint
+    /// and the revocation of its replay, so the two serialize.
+    pub(crate) async fn lock_code_family_tx(&self, conn: &mut PgConnection, family_id: &str) -> sqlx::Result<()> {
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(code_family_lock_key(family_id))
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
+    }
+
+    /// Revokes the tokens a replayed code's first redemption minted, on the caller's
+    /// transaction: under [`Store::lock_code_family_tx`], a family revocation, which a mint
+    /// still waiting on that lock then refuses to mint under, and the family's delete when
+    /// it was already minted.
+    pub(crate) async fn revoke_replayed_family_tx(&self, conn: &mut PgConnection, family_id: &str) -> sqlx::Result<()> {
+        self.lock_code_family_tx(conn, family_id).await?;
+        self.delete_family_tx(conn, family_id).await?;
+        self.insert_revocation_tx(conn, Revocation::Family(family_id)).await
+    }
+
+    /// Whether a family revocation for `family_id` exists, on the caller's transaction.
+    pub(crate) async fn family_revoked_tx(&self, conn: &mut PgConnection, family_id: &str) -> sqlx::Result<bool> {
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM accounts.token_revocations WHERE family_id = $1::uuid)")
+            .bind(family_id)
+            .fetch_one(&mut *conn)
+            .await
+    }
+
+    /// Whether `player_id` exists, taking its row FOR KEY SHARE on the caller's transaction,
+    /// the lock the family insert's foreign key takes, so a code's mint answers a player
+    /// deleted after its redemption instead of failing that insert.
+    pub(crate) async fn key_share_player_tx(&self, conn: &mut PgConnection, player_id: &str) -> sqlx::Result<bool> {
+        let row: Option<(i32,)> = sqlx::query_as("SELECT 1 FROM accounts.players WHERE id = $1::uuid FOR KEY SHARE")
+            .bind(player_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+        Ok(row.is_some())
     }
 
     /// Deletes every code of a player on the caller's transaction, answering how many.

@@ -198,6 +198,22 @@ pub(crate) struct MintGrants {
     pub(crate) refresh_token: bool,
 }
 
+/// What `/token` authenticates a client against.
+pub(crate) struct TokenClient {
+    pub(crate) client_id: String,
+    pub(crate) grant_types: Vec<String>,
+    /// `None` for a public client.
+    pub(crate) secret_digest: Option<String>,
+}
+
+/// The client a token family was minted for.
+pub(crate) struct FamilyClient {
+    pub(crate) client_id: String,
+    pub(crate) confidential: bool,
+    /// The client lists the grant asked about.
+    pub(crate) lists_grant: bool,
+}
+
 impl Store {
     /// Every client, newest first.
     pub(crate) async fn clients(&self) -> sqlx::Result<Vec<ClientRow>> {
@@ -217,6 +233,16 @@ impl Store {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(client_row))
+    }
+
+    pub(crate) async fn token_client(&self, client_id: &str) -> sqlx::Result<Option<TokenClient>> {
+        let row: Option<(String, Vec<String>, Option<String>)> = sqlx::query_as(
+            "SELECT client_id, grant_types, secret_digest FROM accounts.oidc_clients WHERE client_id = $1",
+        )
+        .bind(client_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(client_id, grant_types, secret_digest)| TokenClient { client_id, grant_types, secret_digest }))
     }
 
     /// A new client under a generated id, which it returns.
@@ -265,23 +291,24 @@ impl Store {
         Ok(row.map(|(refresh_token,)| MintGrants { refresh_token }))
     }
 
-    /// Whether the client of family `family_id` is public and lists `grant`.
-    pub(crate) async fn family_client_allows_tx(
+    /// The client of family `family_id`, and whether it lists `grant`; `None` for no family.
+    pub(crate) async fn family_client_tx(
         &self,
         conn: &mut PgConnection,
         family_id: &str,
         grant: &str,
-    ) -> sqlx::Result<bool> {
-        let row: Option<(i32,)> = sqlx::query_as(
-            "SELECT 1 FROM accounts.token_families f \
+    ) -> sqlx::Result<Option<FamilyClient>> {
+        let row: Option<(String, bool, bool)> = sqlx::query_as(
+            "SELECT c.client_id, c.secret_digest IS NOT NULL, $2 = ANY(c.grant_types) \
+               FROM accounts.token_families f \
                JOIN accounts.oidc_clients c ON c.client_id = f.client_id \
-              WHERE f.id = $1::uuid AND $2 = ANY(c.grant_types) AND c.secret_digest IS NULL",
+              WHERE f.id = $1::uuid",
         )
         .bind(family_id)
         .bind(grant)
         .fetch_optional(&mut *conn)
         .await?;
-        Ok(row.is_some())
+        Ok(row.map(|(client_id, confidential, lists_grant)| FamilyClient { client_id, confidential, lists_grant }))
     }
 
     /// Whether a row was deleted. Lock order: the client row first, so no login adds a

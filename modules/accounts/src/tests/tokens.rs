@@ -268,7 +268,7 @@ async fn revoke_all_writes_one_player_revocation_that_outlives_the_player() {
     let (_ctx, svc) = wired(&pool).await;
     let (pid, _) = registered(&svc, "RevAll").await;
     let mut second = svc.store.pool.begin().await.unwrap();
-    svc.store.insert_family_tx(&mut second, &pid, TEST_CLIENT_ID).await.unwrap();
+    svc.store.insert_family_tx(&mut second, &pid, TEST_CLIENT_ID, None).await.unwrap();
     second.commit().await.unwrap();
 
     let mut tx = pool.begin().await.unwrap();
@@ -312,7 +312,7 @@ async fn a_player_revocation_waiting_on_a_mint_is_stamped_after_the_mint() {
     let mut minter = pool.begin().await.unwrap();
     let mint_now: String = sqlx::query_scalar("SELECT now()::text").fetch_one(&mut *minter).await.unwrap();
     let minter_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *minter).await.unwrap();
-    svc.store.insert_family_tx(&mut minter, &pid, TEST_CLIENT_ID).await.unwrap();
+    svc.store.insert_family_tx(&mut minter, &pid, TEST_CLIENT_ID, None).await.unwrap();
 
     let revoke = tokio::spawn({
         let (svc, pid) = (svc.clone(), pid.clone());
