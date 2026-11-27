@@ -182,6 +182,7 @@ async fn a_device_poll_runs_pending_slow_down_tokens_then_replay() {
     let (device_code, user_code) = pair(&base, &client_id, "openid").await;
 
     assert_error(poll(&base, &client_id, &device_code).await, 400, "authorization_pending", "first poll").await;
+    backdate(&pool, &device_code, "interval_secs = 3600").await;
     assert_error(poll(&base, &client_id, &device_code).await, 400, "slow_down", "a poll too soon").await;
     assert_error(poll(&base, &other, &device_code).await, 400, "invalid_grant", "another client's code").await;
     let form = [("grant_type", DEVICE_CODE), ("client_id", client_id.as_str())];
