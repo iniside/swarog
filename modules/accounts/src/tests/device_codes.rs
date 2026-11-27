@@ -13,7 +13,7 @@ use super::*;
 use crate::codes::REPLAY_WINDOW_SECS;
 use crate::device_codes::{
     format_user_code, normalize_user_code, DevicePoll, IssuedDeviceCode, NewDeviceCode, PollAttempt, PollCheck,
-    MAX_USER_AGENT_BYTES, POLL_INTERVAL_SECS, SLOW_DOWN_STEP_SECS,
+    MAX_USER_AGENT_BYTES, SLOW_DOWN_STEP_SECS,
 };
 use crate::web;
 use crate::web::token::mint_code;
@@ -347,10 +347,11 @@ async fn a_lost_stamp_answers_the_settled_row() {
     assert_replayed(&svc, answer, &other.family_id, "redeemed since").await;
 
     let stamped = classified_on_time(&svc, &client_id, &live).await;
-    backdate(&mut conn, &stamped.device_code, "last_polled_at = now()").await;
+    // A long interval, so the stamp is inside it whatever the test's pace.
+    backdate(&mut conn, &stamped.device_code, "interval_secs = 600, last_polled_at = now()").await;
     let answer = after_lost_stamp(&svc, &stamped.device_code, &client_id, "stamped since").await;
     assert_eq!(name(&answer), "slow_down", "stamped since");
-    assert_eq!(interval_of(&pool, &stamped.device_code).await, POLL_INTERVAL_SECS + SLOW_DOWN_STEP_SECS);
+    assert_eq!(interval_of(&pool, &stamped.device_code).await, 600 + SLOW_DOWN_STEP_SECS);
 
     drop(conn);
     cleanup_player(&pool, &pid).await;
@@ -371,11 +372,13 @@ async fn a_lost_redemption_answers_the_settled_row() {
 
     let ended = session(&svc, &pid).await;
     let signed_out = stamped_approved(&svc, &client_id, &ended).await;
+    // A long interval, so its own stamp stays inside it whatever the test's pace.
+    backdate(&mut conn, &signed_out.device_code, "interval_secs = 600").await;
     sign_out(&pool, &ended).await;
     let answer = after_lost_redeem(&svc, &signed_out.device_code, &client_id, "signed out since").await;
     assert_eq!(name(&answer), "expired", "signed out since");
     let interval = interval_of(&pool, &signed_out.device_code).await;
-    assert_eq!(interval, POLL_INTERVAL_SECS, "its own stamp read as too soon");
+    assert_eq!(interval, 600, "its own stamp read as too soon");
 
     let expired = stamped_approved(&svc, &client_id, &live).await;
     backdate(&mut conn, &expired.device_code, "expires_at = now() - interval '1 second'").await;
