@@ -70,15 +70,16 @@ pub(crate) struct RedeemedDevice {
 
 /// The answer to one poll, in the order its checks run.
 pub(crate) enum DevicePoll {
-    /// An unknown `device_code`, or another client's: `invalid_grant`.
+    /// An unknown `device_code`, another client's, or one redeemed more than
+    /// [`REPLAY_WINDOW_SECS`] past its expiry: `invalid_grant`, nothing revoked.
     Unknown,
     /// A `device_code` redeemed before: the first redemption's family is revoked; `invalid_grant`.
     Replayed { family_id: String },
     /// Past its expiry, or approved under a browser session that has since ended: `expired_token`.
     Expired,
     /// Polled sooner than its interval, which grew by [`SLOW_DOWN_STEP_SECS`]; also the answer to
-    /// a poll that lost a race to another poll, a redemption or the expiry, so the client's next
-    /// poll reads the settled row: `slow_down`.
+    /// a poll whose guarded statements lost a race twice in a row, so the client's next poll
+    /// reads the settled row: `slow_down`.
     SlowDown,
     /// Not approved or denied yet: `authorization_pending`.
     Pending,
@@ -86,6 +87,35 @@ pub(crate) enum DevicePoll {
     Denied,
     /// Approved and now redeemed; the caller mints under its family id.
     Redeemed(RedeemedDevice),
+}
+
+/// How one pass of a poll's checks ended.
+pub(crate) enum PollAttempt {
+    /// The row settled this answer.
+    Answer(DevicePoll),
+    /// A guarded statement lost a race; `stamped` when this poll had already stamped the row.
+    Lost { stamped: bool },
+}
+
+/// Where a poll stands after a check.
+pub(crate) enum PollCheck {
+    /// The poll's answer.
+    Answer(DevicePoll),
+    /// Not too soon: stamp the poll next.
+    OnTime,
+    /// Approved under a live session: redeem it next.
+    Approved,
+}
+
+/// The answer a stamped poll's status gives: pending, denied, or approved under a browser
+/// session that ended since (expired); an approved code still bound to a session is redeemed.
+fn status_check(status: &str, signed_out: bool) -> PollCheck {
+    match (status, signed_out) {
+        ("pending", _) => PollCheck::Answer(DevicePoll::Pending),
+        ("denied", _) => PollCheck::Answer(DevicePoll::Denied),
+        (_, true) => PollCheck::Answer(DevicePoll::Expired),
+        _ => PollCheck::Approved,
+    }
 }
 
 fn digest(code: &str) -> Vec<u8> {
@@ -235,48 +265,119 @@ impl Store {
         Ok(res.rows_affected() == 1)
     }
 
-    /// Answers one poll of `device_code` by `client_id`. Every check is its own statement
-    /// that commits on its own, so the device row is never locked across a client or player
-    /// lock; a check that loses a race to another statement answers [`DevicePoll::SlowDown`].
+    /// Answers one poll of `device_code` by `client_id`, running the checks from the top (D6).
+    /// When a guarded statement loses a race to another statement (an approval, a sign-out, the
+    /// expiry, a reset's delete, another poll), the row is read and classified once more, so the
+    /// settled row gets its own answer; only a second loss in a row answers
+    /// [`DevicePoll::SlowDown`], and the client's next poll reads the row again.
     pub(crate) async fn poll_device_code(&self, device_code: &str, client_id: &str) -> sqlx::Result<DevicePoll> {
         if !crate::opaque_token_within_cap(device_code) {
             return Ok(DevicePoll::Unknown);
         }
         let digest = digest(device_code);
-        let pool = &self.pool;
+        let first = self.device_poll_attempt(&digest, client_id, false).await?;
+        self.settle_device_poll(&digest, client_id, first).await
+    }
 
-        let row: Option<(String, Option<String>, bool)> = sqlx::query_as(
-            "SELECT client_id, family_id::text, expires_at <= now() \
+    /// The answer to a poll whose first attempt ended as `first`: a lost statement is followed
+    /// by one more attempt from the top, which a poll that already stamped runs without the
+    /// interval check and the stamp, so its own stamp does not read as too soon.
+    pub(crate) async fn settle_device_poll(
+        &self,
+        digest: &[u8],
+        client_id: &str,
+        first: PollAttempt,
+    ) -> sqlx::Result<DevicePoll> {
+        let stamped = match first {
+            PollAttempt::Answer(answer) => return Ok(answer),
+            PollAttempt::Lost { stamped } => stamped,
+        };
+        Ok(match self.device_poll_attempt(digest, client_id, stamped).await? {
+            PollAttempt::Answer(answer) => answer,
+            PollAttempt::Lost { .. } => DevicePoll::SlowDown,
+        })
+    }
+
+    /// One pass of the checks over the row of `digest`. Lock order: a reset, Revoke all or
+    /// self-delete locks the player row before it deletes the player's device codes, and a
+    /// client delete locks the client row before its cascade, so a poll must never hold the
+    /// device row while it waits on either. Each statement below therefore commits on its own
+    /// and no transaction spans two of them; the redemption commits before the mint, which
+    /// takes the player and client locks in its own transaction (D7). The price is that the row
+    /// can change between two statements, which the guarded statements detect and
+    /// [`Store::settle_device_poll`] answers.
+    async fn device_poll_attempt(&self, digest: &[u8], client_id: &str, stamped: bool) -> sqlx::Result<PollAttempt> {
+        match self.classify_device_poll(digest, client_id, stamped).await? {
+            PollCheck::Answer(answer) => return Ok(PollAttempt::Answer(answer)),
+            PollCheck::Approved => {}
+            PollCheck::OnTime => match self.stamp_device_poll(digest).await? {
+                None => return Ok(PollAttempt::Lost { stamped: false }),
+                Some(PollCheck::Answer(answer)) => return Ok(PollAttempt::Answer(answer)),
+                Some(_) => {}
+            },
+        }
+        Ok(match self.redeem_device_poll(digest).await? {
+            Some(redeemed) => PollAttempt::Answer(DevicePoll::Redeemed(redeemed)),
+            None => PollAttempt::Lost { stamped: true },
+        })
+    }
+
+    /// Checks 1-4 of a poll, each its own statement: unknown or foreign, redeemed (a replay
+    /// inside [`REPLAY_WINDOW_SECS`] past the expiry is revoked), expired, then too soon. A poll
+    /// that already stamped skips the interval check and answers from the row's status instead.
+    pub(crate) async fn classify_device_poll(
+        &self,
+        digest: &[u8],
+        client_id: &str,
+        stamped: bool,
+    ) -> sqlx::Result<PollCheck> {
+        let pool = &self.pool;
+        type Row = (String, Option<String>, bool, bool, String, bool);
+        let row: Option<Row> = sqlx::query_as(
+            "SELECT client_id, family_id::text, expires_at > now() - make_interval(secs => $2), \
+                    expires_at <= now(), status, session_digest IS NULL \
                FROM accounts.device_codes WHERE device_code_digest = $1",
         )
-        .bind(&digest)
+        .bind(digest)
+        .bind(f64::from(REPLAY_WINDOW_SECS))
         .fetch_optional(pool)
         .await?;
-        let Some((owner, family_id, expired)) = row else { return Ok(DevicePoll::Unknown) };
+        let Some((owner, family_id, replay_kept, expired, status, signed_out)) = row else {
+            return Ok(PollCheck::Answer(DevicePoll::Unknown));
+        };
         if owner != client_id {
-            return Ok(DevicePoll::Unknown);
+            return Ok(PollCheck::Answer(DevicePoll::Unknown));
         }
         if let Some(family_id) = family_id {
+            if !replay_kept {
+                return Ok(PollCheck::Answer(DevicePoll::Unknown));
+            }
             self.revoke_device_replay(pool, &family_id).await?;
-            return Ok(DevicePoll::Replayed { family_id });
+            return Ok(PollCheck::Answer(DevicePoll::Replayed { family_id }));
         }
         if expired {
-            return Ok(DevicePoll::Expired);
+            return Ok(PollCheck::Answer(DevicePoll::Expired));
+        }
+        if stamped {
+            return Ok(status_check(&status, signed_out));
         }
 
         let too_soon = sqlx::query(
             "UPDATE accounts.device_codes SET interval_secs = interval_secs + $2 \
-              WHERE device_code_digest = $1 AND redeemed_at IS NULL \
+              WHERE device_code_digest = $1 AND redeemed_at IS NULL AND expires_at > now() \
                 AND last_polled_at > now() - make_interval(secs => interval_secs)",
         )
-        .bind(&digest)
+        .bind(digest)
         .bind(SLOW_DOWN_STEP_SECS)
         .execute(pool)
         .await?;
-        if too_soon.rows_affected() == 1 {
-            return Ok(DevicePoll::SlowDown);
-        }
+        Ok(if too_soon.rows_affected() == 1 { PollCheck::Answer(DevicePoll::SlowDown) } else { PollCheck::OnTime })
+    }
 
+    /// Check 5: stamps the poll on an unredeemed, unexpired row whose interval has passed and
+    /// answers from its status; `None` when the guard lost (the row was redeemed, expired,
+    /// deleted or stamped by another poll since it was classified).
+    pub(crate) async fn stamp_device_poll(&self, digest: &[u8]) -> sqlx::Result<Option<PollCheck>> {
         let stamped: Option<(String, bool)> = sqlx::query_as(
             "UPDATE accounts.device_codes SET last_polled_at = now() \
               WHERE device_code_digest = $1 AND redeemed_at IS NULL AND expires_at > now() \
@@ -284,17 +385,16 @@ impl Store {
                      OR last_polled_at <= now() - make_interval(secs => interval_secs)) \
              RETURNING status, session_digest IS NULL",
         )
-        .bind(&digest)
-        .fetch_optional(pool)
+        .bind(digest)
+        .fetch_optional(&self.pool)
         .await?;
-        match stamped.as_ref().map(|(status, signed_out)| (status.as_str(), *signed_out)) {
-            None => return Ok(DevicePoll::SlowDown),
-            Some(("pending", _)) => return Ok(DevicePoll::Pending),
-            Some(("denied", _)) => return Ok(DevicePoll::Denied),
-            Some((_, true)) => return Ok(DevicePoll::Expired),
-            Some(_) => {}
-        }
+        Ok(stamped.map(|(status, signed_out)| status_check(&status, signed_out)))
+    }
 
+    /// Check 6: redeems an approved, unredeemed, unexpired code still bound to a live session,
+    /// stamping a new family id; `None` when the guard lost (signed out, expired, deleted or
+    /// redeemed by another poll since it was stamped).
+    pub(crate) async fn redeem_device_poll(&self, digest: &[u8]) -> sqlx::Result<Option<RedeemedDevice>> {
         let redeemed: Option<(String, String, String, i64, String)> = sqlx::query_as(
             "UPDATE accounts.device_codes SET redeemed_at = now(), family_id = gen_random_uuid() \
               WHERE device_code_digest = $1 AND status = 'approved' AND redeemed_at IS NULL \
@@ -302,15 +402,16 @@ impl Store {
              RETURNING client_id, player_id::text, scope, floor(EXTRACT(EPOCH FROM auth_time))::int8, \
                        family_id::text",
         )
-        .bind(&digest)
-        .fetch_optional(pool)
+        .bind(digest)
+        .fetch_optional(&self.pool)
         .await?;
-        Ok(match redeemed {
-            Some((client_id, player_id, scope, auth_time, family_id)) => {
-                DevicePoll::Redeemed(RedeemedDevice { client_id, player_id, scope, auth_time, family_id })
-            }
-            None => DevicePoll::SlowDown,
-        })
+        Ok(redeemed.map(|(client_id, player_id, scope, auth_time, family_id)| RedeemedDevice {
+            client_id,
+            player_id,
+            scope,
+            auth_time,
+            family_id,
+        }))
     }
 
     /// Revokes the tokens a replayed `device_code`'s first redemption minted, in its own

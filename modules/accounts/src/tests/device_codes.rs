@@ -5,14 +5,15 @@
 use std::net::{IpAddr, Ipv4Addr};
 
 use accountsapi::grant_types::{AUTHORIZATION_CODE, DEVICE_CODE, REFRESH_TOKEN};
+use sha2::{Digest as _, Sha256};
 use sqlx::PgConnection;
 
 use super::hosted_login::registered;
 use super::*;
 use crate::codes::REPLAY_WINDOW_SECS;
 use crate::device_codes::{
-    format_user_code, normalize_user_code, DevicePoll, IssuedDeviceCode, NewDeviceCode, MAX_USER_AGENT_BYTES,
-    SLOW_DOWN_STEP_SECS,
+    format_user_code, normalize_user_code, DevicePoll, IssuedDeviceCode, NewDeviceCode, PollAttempt, PollCheck,
+    MAX_USER_AGENT_BYTES, POLL_INTERVAL_SECS, SLOW_DOWN_STEP_SECS,
 };
 use crate::web;
 use crate::web::token::mint_code;
@@ -249,6 +250,175 @@ async fn a_poll_answers_every_branch_in_order() {
     cleanup_player(&pool, &pid).await;
     delete_client(&pool, &client_id).await;
     delete_client(&pool, &other_client).await;
+}
+
+/// The digest a device code's row is keyed by.
+fn code_digest(device_code: &str) -> Vec<u8> {
+    Sha256::digest(device_code.as_bytes()).to_vec()
+}
+
+/// Deletes the row of `device_code`, as a reset or Revoke all does.
+async fn delete_row(conn: &mut PgConnection, device_code: &str) {
+    sqlx::query("DELETE FROM accounts.device_codes WHERE device_code_digest = $1")
+        .bind(code_digest(device_code))
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+}
+
+/// Ends the browser session whose digest is `session_digest`, as a sign-out does.
+async fn sign_out(pool: &PgPool, session_digest: &[u8]) {
+    sqlx::query("DELETE FROM accounts.browser_sessions WHERE token_digest = $1")
+        .bind(session_digest)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// A code of `client_id` approved under `session_digest` whose first poll is classified on
+/// time, so its stamp runs next.
+async fn classified_on_time(svc: &Service, client_id: &str, session_digest: &[u8]) -> IssuedDeviceCode {
+    let code = issue(svc, client_id).await;
+    assert!(svc.store.approve_device_code(&code.user_code, session_digest).await.unwrap());
+    let check = svc.store.classify_device_poll(&code_digest(&code.device_code), client_id, false).await.unwrap();
+    assert!(matches!(check, PollCheck::OnTime), "a first poll is on time");
+    code
+}
+
+/// As [`classified_on_time`], then stamped, so its redemption runs next.
+async fn stamped_approved(svc: &Service, client_id: &str, session_digest: &[u8]) -> IssuedDeviceCode {
+    let code = classified_on_time(svc, client_id, session_digest).await;
+    let check = svc.store.stamp_device_poll(&code_digest(&code.device_code)).await.unwrap();
+    assert!(matches!(check, Some(PollCheck::Approved)), "an approved code stamps to its redemption");
+    code
+}
+
+/// Asserts the stamp of `device_code` loses its guard, then answers the poll as
+/// [`Store::poll_device_code`] does after that loss.
+async fn after_lost_stamp(svc: &Service, device_code: &str, client_id: &str, case: &str) -> DevicePoll {
+    let digest = code_digest(device_code);
+    assert!(svc.store.stamp_device_poll(&digest).await.unwrap().is_none(), "{case}: the stamp lost");
+    svc.store.settle_device_poll(&digest, client_id, PollAttempt::Lost { stamped: false }).await.unwrap()
+}
+
+/// Asserts the redemption of `device_code` loses its guard, then answers the poll as
+/// [`Store::poll_device_code`] does after that loss.
+async fn after_lost_redeem(svc: &Service, device_code: &str, client_id: &str, case: &str) -> DevicePoll {
+    let digest = code_digest(device_code);
+    assert!(svc.store.redeem_device_poll(&digest).await.unwrap().is_none(), "{case}: the redemption lost");
+    svc.store.settle_device_poll(&digest, client_id, PollAttempt::Lost { stamped: true }).await.unwrap()
+}
+
+/// Asserts `answer` replays `family_id` and that family is revoked.
+async fn assert_replayed(svc: &Service, answer: DevicePoll, family_id: &str, case: &str) {
+    match answer {
+        DevicePoll::Replayed { family_id: replayed } => assert_eq!(replayed, family_id, "{case}"),
+        other => panic!("{case}: answered {}", name(&other)),
+    }
+    let mut conn = svc.store.pool.acquire().await.unwrap();
+    assert!(svc.store.family_revoked_tx(&mut conn, family_id).await.unwrap(), "{case}: family not revoked");
+}
+
+/// A stamp that loses to a change made after the poll was classified reads the row again and
+/// answers what the row settled to: an expiry is expired, a delete is unknown, another poll's
+/// redemption is a revoked replay, and another poll's stamp is too soon (the interval grows).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lost_stamp_answers_the_settled_row() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let client_id = device_client(&pool).await;
+    let (_, pid) = registered(&svc, "device-lost-stamp").await;
+    let live = session(&svc, &pid).await;
+    let mut conn = pool.acquire().await.unwrap();
+
+    let expired = classified_on_time(&svc, &client_id, &live).await;
+    backdate(&mut conn, &expired.device_code, "expires_at = now() - interval '1 second'").await;
+    let answer = after_lost_stamp(&svc, &expired.device_code, &client_id, "expired since").await;
+    assert_eq!(name(&answer), "expired", "expired since");
+
+    let deleted = classified_on_time(&svc, &client_id, &live).await;
+    delete_row(&mut conn, &deleted.device_code).await;
+    let answer = after_lost_stamp(&svc, &deleted.device_code, &client_id, "deleted since").await;
+    assert_eq!(name(&answer), "unknown", "deleted since");
+
+    let raced = classified_on_time(&svc, &client_id, &live).await;
+    let other = svc.store.redeem_device_poll(&code_digest(&raced.device_code)).await.unwrap().expect("redeemed");
+    let answer = after_lost_stamp(&svc, &raced.device_code, &client_id, "redeemed since").await;
+    assert_replayed(&svc, answer, &other.family_id, "redeemed since").await;
+
+    let stamped = classified_on_time(&svc, &client_id, &live).await;
+    backdate(&mut conn, &stamped.device_code, "last_polled_at = now()").await;
+    let answer = after_lost_stamp(&svc, &stamped.device_code, &client_id, "stamped since").await;
+    assert_eq!(name(&answer), "slow_down", "stamped since");
+    assert_eq!(interval_of(&pool, &stamped.device_code).await, POLL_INTERVAL_SECS + SLOW_DOWN_STEP_SECS);
+
+    drop(conn);
+    cleanup_player(&pool, &pid).await;
+    delete_client(&pool, &client_id).await;
+}
+
+/// A redemption that loses to a change made after the poll was stamped reads the row again,
+/// without its own stamp reading as too soon: a sign-out or an expiry is expired, a delete is
+/// unknown, and another poll's redemption is a revoked replay.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lost_redemption_answers_the_settled_row() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let client_id = device_client(&pool).await;
+    let (_, pid) = registered(&svc, "device-lost-redeem").await;
+    let live = session(&svc, &pid).await;
+    let mut conn = pool.acquire().await.unwrap();
+
+    let ended = session(&svc, &pid).await;
+    let signed_out = stamped_approved(&svc, &client_id, &ended).await;
+    sign_out(&pool, &ended).await;
+    let answer = after_lost_redeem(&svc, &signed_out.device_code, &client_id, "signed out since").await;
+    assert_eq!(name(&answer), "expired", "signed out since");
+    let interval = interval_of(&pool, &signed_out.device_code).await;
+    assert_eq!(interval, POLL_INTERVAL_SECS, "its own stamp read as too soon");
+
+    let expired = stamped_approved(&svc, &client_id, &live).await;
+    backdate(&mut conn, &expired.device_code, "expires_at = now() - interval '1 second'").await;
+    let answer = after_lost_redeem(&svc, &expired.device_code, &client_id, "expired since").await;
+    assert_eq!(name(&answer), "expired", "expired since");
+
+    let deleted = stamped_approved(&svc, &client_id, &live).await;
+    delete_row(&mut conn, &deleted.device_code).await;
+    let answer = after_lost_redeem(&svc, &deleted.device_code, &client_id, "deleted since").await;
+    assert_eq!(name(&answer), "unknown", "deleted since");
+
+    let raced = stamped_approved(&svc, &client_id, &live).await;
+    let other = svc.store.redeem_device_poll(&code_digest(&raced.device_code)).await.unwrap().expect("redeemed");
+    let answer = after_lost_redeem(&svc, &raced.device_code, &client_id, "redeemed since").await;
+    assert_replayed(&svc, answer, &other.family_id, "redeemed since").await;
+
+    drop(conn);
+    cleanup_player(&pool, &pid).await;
+    delete_client(&pool, &client_id).await;
+}
+
+/// A redeemed code polled again more than [`REPLAY_WINDOW_SECS`] past its expiry is refused
+/// as unknown and revokes nothing, even while the prune has not deleted its row yet.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_replay_past_the_window_revokes_nothing() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let client_id = device_client(&pool).await;
+    let (_, pid) = registered(&svc, "device-late-replay").await;
+    let mut conn = pool.acquire().await.unwrap();
+
+    let code = issue(&svc, &client_id).await;
+    assert!(svc.store.approve_device_code(&code.user_code, &session(&svc, &pid).await).await.unwrap());
+    let family_id = redeem(&svc, &code.device_code, &client_id).await;
+    let past = format!("expires_at = now() - make_interval(secs => {})", REPLAY_WINDOW_SECS + 1);
+    backdate(&mut conn, &code.device_code, &past).await;
+    assert_eq!(rows_of(&mut conn, &code.device_code).await, 1, "the prune has not run");
+    assert_eq!(name(&poll(&svc, &code.device_code, &client_id).await), "unknown", "a replay past the window");
+    assert!(!svc.store.family_revoked_tx(&mut conn, &family_id).await.unwrap(), "a replay past the window revoked");
+
+    drop(conn);
+    cleanup_player(&pool, &pid).await;
+    delete_client(&pool, &client_id).await;
 }
 
 /// Approve and deny move only a pending, unexpired code, and approve needs a live session.
