@@ -324,6 +324,8 @@ pub(crate) async fn mint_code(
 
 /// Lock order: the code family's advisory lock (which a replay's revocation takes first
 /// too), then the client row and the player row FOR KEY SHARE, the order of every login.
+/// After the player's key share it re-reads the code's row, which a reset or Revoke all that
+/// held the player first has deleted, so no code redeemed before one mints after it.
 async fn mint_code_tx(
     svc: &Service,
     conn: &mut PgConnection,
@@ -343,6 +345,9 @@ async fn mint_code_tx(
         return Err(invalid_grant());
     };
     if !svc.store.key_share_player_tx(conn, &code.player_id).await.map_err(internal)? {
+        return Err(invalid_grant());
+    }
+    if !svc.store.redeemed_code_kept_tx(conn, &code.player_id, &code.family_id).await.map_err(internal)? {
         return Err(invalid_grant());
     }
     let (session, minted) = svc

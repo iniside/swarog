@@ -431,6 +431,55 @@ async fn a_replay_that_locks_first_prevents_the_mint() {
     delete_client(&pool, &client_id).await;
 }
 
+/// A password reset (or, with `revoke_all`, a Revoke all) holding the player row lock when a
+/// redeemed code's mint takes its key share deletes the code: the mint waits on the lock, then
+/// is `invalid_grant` and the player has no family.
+async fn a_reset_before_the_mint_prevents_it(revoke_all: bool) {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let client_id = token_client(&pool, &[AUTHORIZATION_CODE, REFRESH_TOKEN], false).await;
+    let (_, pid) = registered(&svc, if revoke_all { "token-revoke-all" } else { "token-reset" }).await;
+    let code = issue(&svc, &client_id, &pid, "openid", None).await;
+    let redeemed = svc.store.redeem_oidc_code(&pool, &code).await.unwrap().unwrap();
+
+    let mut reset = pool.begin().await.unwrap();
+    let reset_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *reset).await.unwrap();
+    let held = if revoke_all {
+        svc.store.revoke_player_families_tx(&mut reset, &pid).await.unwrap().is_some()
+    } else {
+        svc.store.kill_player_families_tx(&mut reset, &pid).await.unwrap().is_some()
+    };
+    assert!(held, "no player to reset");
+    let mint = tokio::spawn({
+        let svc = svc.clone();
+        async move { mint_code(&svc, &redeemed).await.map(|_| ()) }
+    });
+    let waiting = blocked_query(&pool, reset_pid).await.unwrap_or_default();
+    assert!(waiting.contains("accounts.players"), "the mint never waited on the player lock: {waiting:?}");
+    reset.commit().await.unwrap();
+    let minted = mint.await.unwrap();
+    assert_eq!(minted.unwrap_err().status, opsapi::Status::Unauthorized, "the mint after the reset");
+    let families: i64 = sqlx::query_scalar("SELECT count(*) FROM accounts.token_families WHERE player_id = $1::uuid")
+        .bind(&pid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(families, 0, "a family minted after the reset");
+
+    cleanup_player(&pool, &pid).await;
+    delete_client(&pool, &client_id).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_password_reset_before_the_mint_prevents_it() {
+    a_reset_before_the_mint_prevents_it(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revoke_all_before_the_mint_prevents_it() {
+    a_reset_before_the_mint_prevents_it(true).await;
+}
+
 /// A player deleted between the redemption and the mint is `invalid_grant`, never a 500.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_player_deleted_after_the_redemption_is_an_invalid_grant() {

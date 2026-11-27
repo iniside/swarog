@@ -209,6 +209,26 @@ impl Store {
         Ok(row.is_some())
     }
 
+    /// Whether the row of the code redeemed under `family_id` is still kept, on the caller's
+    /// transaction. A reset or Revoke all deletes the player's codes under the player row lock,
+    /// so read after [`Store::key_share_player_tx`] it answers `false` for a code whose player
+    /// was reset before the mint, and no later reset can commit before the mint does.
+    pub(crate) async fn redeemed_code_kept_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        family_id: &str,
+    ) -> sqlx::Result<bool> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM accounts.oidc_codes \
+                            WHERE player_id = $1::uuid AND family_id = $2::uuid)",
+        )
+        .bind(player_id)
+        .bind(family_id)
+        .fetch_one(&mut *conn)
+        .await
+    }
+
     /// Deletes every code of a player on the caller's transaction, answering how many.
     pub(crate) async fn delete_player_oidc_codes_tx(
         &self,
