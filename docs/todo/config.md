@@ -21,19 +21,6 @@ _None._
   (docs/research/2026-07-14-2058-timing-sensitive-tests-survey.md:105,
   2026-07-14). Low severity.
 
-- [ ] **archcheck fails on config's DDL**
-  `cargo run -p archcheck` is red at HEAD with six rule-22 findings in `modules/config/src/lib.rs`:
-  - :114, `CREATE SCHEMA` text outside a `*_DDL` const (`SCHEMA_DDL_TEMPLATE` is not named `*_DDL`);
-  - :115, :123 and :129, `CREATE TABLE` text;
-  - :139 and :159, `CREATE OR REPLACE FUNCTION` text.
-  The file was last changed in admin-second-pass (2026-11-24). Found while verifying the
-  oidc-signing-keys Step 2 review fix (309d8708, 2026-11-26).
-- [ ] **clippy fails on a config test**
-  The verifyctl `clippy` stage is red: `modules/config/src/tests.rs:423`
-  `svc.set_tx(&mut *tx, &ns, "k", "1")` trips `clippy::explicit_auto_deref` ("deref which would
-  be done by auto-deref", help: `&mut tx`), so `config` (lib test) does not compile under
-  `-D warnings`. Source: verifyctl run verify-1795776086-65428-62521403, 2026-11-27.
-
 ### Known limits (admin-control-plane-redesign step 23)
 
 - [ ] **Re-saving a float rewrites its digits**

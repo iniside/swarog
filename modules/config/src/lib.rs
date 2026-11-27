@@ -110,7 +110,7 @@ const NOTIFY_CHANNEL: &str = "config_changed";
 /// `CREATE TABLE IF NOT EXISTS` keeps an existing older table as it is (one without the
 /// `revision` column then fails its first write in the stamp trigger). No migration
 /// bridge.
-const SCHEMA_DDL_TEMPLATE: &str = r#"
+const SCHEMA_TEMPLATE_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS config;
 CREATE TABLE IF NOT EXISTS config.settings (
 	namespace  text NOT NULL,
@@ -216,11 +216,11 @@ BEGIN
 END;
 $$;"#;
 
-/// [`SCHEMA_DDL_TEMPLATE`] with the history bound filled in from [`store::MAX_REVISIONS`], the
+/// [`SCHEMA_TEMPLATE_DDL`] with the history bound filled in from [`store::MAX_REVISIONS`], the
 /// one source of N, so the trigger's trim and the panel's read cannot drift. The trigger
 /// function is `CREATE OR REPLACE`, so an existing database picks the trim up on boot.
 static SCHEMA_DDL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    SCHEMA_DDL_TEMPLATE.replace("@MAX_REVISIONS@", &store::MAX_REVISIONS.to_string())
+    SCHEMA_TEMPLATE_DDL.replace("@MAX_REVISIONS@", &store::MAX_REVISIONS.to_string())
 });
 
 /// The writer [`Service::set`] and [`Service::set_tx`] record in `config.setting_history`.

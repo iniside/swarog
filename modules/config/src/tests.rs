@@ -420,7 +420,7 @@ async fn set_tx_writer_label_does_not_leak_into_later_writes() {
     let svc = Service::new(pool.clone());
 
     let mut tx = pool.begin().await.unwrap();
-    svc.set_tx(&mut *tx, &ns, "k", "1").await.unwrap();
+    svc.set_tx(&mut tx, &ns, "k", "1").await.unwrap();
     sqlx::query("UPDATE config.settings SET value = '2' WHERE namespace = $1 AND key = 'k'")
         .bind(&ns)
         .execute(&mut *tx)
