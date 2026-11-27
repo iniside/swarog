@@ -297,26 +297,24 @@ impl Tokens {
         Ok(Tokens::verify_against(&snapshot, token, Tokens::unix_now()))
     }
 
+    /// The claims of `token` when it is an ES256 `at+jwt` signed by a key of this issuer for
+    /// `audience`, whatever its expiry or revocation: what `/revoke` needs, since revoking
+    /// an expired or already revoked token's family is harmless. `Err` only when the keys
+    /// cannot be read.
+    pub(crate) async fn verify_signed(&self, token: &str, audience: &str) -> anyhow::Result<Option<AccessClaims>> {
+        if token.len() > MAX_ACCESS_TOKEN_BYTES {
+            return Ok(None);
+        }
+        let keys = self.keys.jwks().await?.keys.clone();
+        let snapshot = TokenStateSnapshot { issuer: self.issuer.clone(), keys, ..Default::default() };
+        Ok(Tokens::decode_signed(&snapshot, token, audience))
+    }
+
     /// The claims of `token` when it is an ES256 `at+jwt` signed by a key of `snapshot`, of
     /// its issuer and the Swarog audience, not past `exp` by more than [`ACCESS_EXP_LEEWAY`]
     /// at `now` (Unix seconds), and not refused by a revocation.
     pub(crate) fn verify_against(snapshot: &TokenStateSnapshot, token: &str, now: i64) -> Option<AccessClaims> {
-        if token.len() > MAX_ACCESS_TOKEN_BYTES {
-            return None;
-        }
-        let header = jsonwebtoken::decode_header(token).ok()?;
-        if header.alg != Algorithm::ES256 || header.typ.as_deref() != Some(ACCESS_TOKEN_TYP) {
-            return None;
-        }
-        let kid = header.kid?;
-        let jwk = snapshot.keys.iter().find(|k| k.kid == kid)?;
-        let key = DecodingKey::from_ec_components(&jwk.x, &jwk.y).ok()?;
-        let mut validation = Validation::new(Algorithm::ES256);
-        validation.set_issuer(&[&snapshot.issuer]);
-        validation.set_audience(&[SWAROG_AUDIENCE]);
-        validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
-        validation.validate_exp = false;
-        let claims = jsonwebtoken::decode::<AccessClaims>(token, &key, &validation).ok()?.claims;
+        let claims = Tokens::decode_signed(snapshot, token, SWAROG_AUDIENCE)?;
         if now > claims.exp.saturating_add(ACCESS_EXP_LEEWAY.as_secs() as i64) {
             return None;
         }
@@ -330,6 +328,27 @@ impl Tokens {
             return None;
         }
         Some(claims)
+    }
+
+    /// The claims of `token` when it is an ES256 `at+jwt` signed by a key of `snapshot`, of
+    /// its issuer and `audience`; neither expiry nor revocation is checked.
+    fn decode_signed(snapshot: &TokenStateSnapshot, token: &str, audience: &str) -> Option<AccessClaims> {
+        if token.len() > MAX_ACCESS_TOKEN_BYTES {
+            return None;
+        }
+        let header = jsonwebtoken::decode_header(token).ok()?;
+        if header.alg != Algorithm::ES256 || header.typ.as_deref() != Some(ACCESS_TOKEN_TYP) {
+            return None;
+        }
+        let kid = header.kid?;
+        let jwk = snapshot.keys.iter().find(|k| k.kid == kid)?;
+        let key = DecodingKey::from_ec_components(&jwk.x, &jwk.y).ok()?;
+        let mut validation = Validation::new(Algorithm::ES256);
+        validation.set_issuer(&[&snapshot.issuer]);
+        validation.set_audience(&[audience]);
+        validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
+        validation.validate_exp = false;
+        Some(jsonwebtoken::decode::<AccessClaims>(token, &key, &validation).ok()?.claims)
     }
 
     pub(crate) fn unix_now() -> i64 {

@@ -62,14 +62,14 @@ impl IntoResponse for TokenError {
     }
 }
 
-fn no_store(mut resp: Response) -> Response {
+pub(crate) fn no_store(mut resp: Response) -> Response {
     let h = resp.headers_mut();
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     h.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
     resp
 }
 
-fn unavailable(what: &str, e: impl std::fmt::Display) -> TokenError {
+pub(crate) fn unavailable(what: &str, e: impl std::fmt::Display) -> TokenError {
     tracing::error!(err = %e, "token: {what} failed");
     TokenError::Unavailable
 }

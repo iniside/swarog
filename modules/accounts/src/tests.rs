@@ -18,6 +18,7 @@ mod password_email;
 mod prune;
 mod refresh;
 mod registration_gate;
+mod revoke;
 mod signing_keys;
 mod token;
 mod tokens;

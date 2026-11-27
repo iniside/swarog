@@ -2,9 +2,10 @@
 //! with "Continue with Epic" and "Continue with Google", each shown when that provider's
 //! web OAuth is configured, the signed-in landing page and logout. A successful sign-in mints a browser session (`session.rs`), never a
 //! player bearer. The OIDC authorization endpoint (`authorize.rs`) issues codes to a signed-in browser,
-//! and the token endpoint (`token.rs`) exchanges them.
+//! the token endpoint (`token.rs`) exchanges them and the revocation endpoint (`revoke.rs`) ends a client's tokens.
 
 pub(crate) mod authorize;
+pub(crate) mod revoke;
 pub(crate) mod session;
 pub(crate) mod token;
 
@@ -264,6 +265,7 @@ pub(crate) fn router(web: Arc<Web>) -> Router {
         .route(LOGIN, get(login_page).post(login_submit))
         .route(authorize::AUTHORIZE, get(authorize::authorize))
         .route(token::TOKEN, post(token::token).layer(DefaultBodyLimit::max(token::MAX_TOKEN_BODY_BYTES)))
+        .route(revoke::REVOKE, post(revoke::revoke).layer(DefaultBodyLimit::max(revoke::MAX_REVOKE_BODY_BYTES)))
         .route("/accounts/oidc/epic", post(epic_start))
         .route("/accounts/oidc/google", post(google_start))
         .route("/accounts/oidc/logout", post(logout))

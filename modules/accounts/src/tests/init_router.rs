@@ -72,11 +72,21 @@ async fn init_mounts_both_callbacks_outside_the_bucket_and_the_page_headers() {
     let jwks = client().get(format!("{base}/accounts/oidc/jwks")).send().await.unwrap();
 
     assert_eq!(discovery.status(), 200, "init mounts the discovery document");
-    assert_eq!(
-        discovery.json::<serde_json::Value>().await.unwrap(),
-        serde_json::json!({"issuer": issuer, "jwks_uri": format!("{issuer}/jwks")}),
-        "the discovery document holds exactly the issuer and its JWKS URI"
-    );
+    let discovery: serde_json::Value = discovery.json().await.unwrap();
+    for (field, suffix) in [
+        ("jwks_uri", "/jwks"),
+        ("authorization_endpoint", "/authorize"),
+        ("token_endpoint", "/token"),
+        ("revocation_endpoint", "/revoke"),
+    ] {
+        assert_eq!(discovery[field], format!("{issuer}{suffix}"), "the discovery document's {field}");
+    }
+    assert_eq!(discovery["issuer"], *issuer);
+    // A form-less POST reaches the handlers, so the hosted router serves both endpoints.
+    for path in ["/accounts/oidc/token", "/accounts/oidc/revoke"] {
+        let resp = client().post(format!("{base}{path}")).send().await.unwrap();
+        assert_eq!(resp.status(), 400, "init mounts {path}");
+    }
     assert_eq!(jwks.status(), 200, "init mounts the JWKS");
     let jwks: serde_json::Value = jwks.json().await.unwrap();
     assert!(!jwks["keys"].as_array().unwrap().is_empty(), "the JWKS lists the active key: {jwks}");

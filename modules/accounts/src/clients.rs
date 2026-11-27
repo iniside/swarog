@@ -204,6 +204,8 @@ pub(crate) struct TokenClient {
     pub(crate) grant_types: Vec<String>,
     /// `None` for a public client.
     pub(crate) secret_digest: Option<String>,
+    /// The `aud` of the access tokens minted for this client.
+    pub(crate) audience: String,
 }
 
 /// The client a token family was minted for.
@@ -236,13 +238,18 @@ impl Store {
     }
 
     pub(crate) async fn token_client(&self, client_id: &str) -> sqlx::Result<Option<TokenClient>> {
-        let row: Option<(String, Vec<String>, Option<String>)> = sqlx::query_as(
-            "SELECT client_id, grant_types, secret_digest FROM accounts.oidc_clients WHERE client_id = $1",
+        let row: Option<(String, Vec<String>, Option<String>, String)> = sqlx::query_as(
+            "SELECT client_id, grant_types, secret_digest, audience FROM accounts.oidc_clients WHERE client_id = $1",
         )
         .bind(client_id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|(client_id, grant_types, secret_digest)| TokenClient { client_id, grant_types, secret_digest }))
+        Ok(row.map(|(client_id, grant_types, secret_digest, audience)| TokenClient {
+            client_id,
+            grant_types,
+            secret_digest,
+            audience,
+        }))
     }
 
     /// A new client under a generated id, which it returns.

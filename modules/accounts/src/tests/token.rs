@@ -11,16 +11,16 @@ use crate::codes::NewCode;
 use crate::web;
 use crate::web::token::{mint_code, TOKEN};
 
-const CALLBACK: &str = "https://app.example/cb";
+pub(super) const CALLBACK: &str = "https://app.example/cb";
 const VERIFIER: &str = "dBjftJeZ4CVP-mJ92K9yLx3_kq0~OOXWqDHVvF.Tm7Q-verifier";
-const SECRET: &str = "cs_token-test-secret";
+pub(super) const SECRET: &str = "cs_token-test-secret";
 
 fn challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
 /// A client of `grants` returning to [`CALLBACK`], confidential under [`SECRET`] when asked.
-async fn token_client(pool: &PgPool, grants: &[&str], confidential: bool) -> String {
+pub(super) async fn token_client(pool: &PgPool, grants: &[&str], confidential: bool) -> String {
     let client_id = format!("t-{}", suffix());
     sqlx::query(
         "INSERT INTO accounts.oidc_clients \
@@ -40,7 +40,7 @@ async fn token_client(pool: &PgPool, grants: &[&str], confidential: bool) -> Str
 }
 
 /// A code for `client_id` and `pid` under a fresh browser session, challenged by [`VERIFIER`].
-async fn issue(svc: &Service, client_id: &str, pid: &str, scope: &str, nonce: Option<&str>) -> String {
+pub(super) async fn issue(svc: &Service, client_id: &str, pid: &str, scope: &str, nonce: Option<&str>) -> String {
     let session = svc.store.create_browser_session(pid).await.unwrap().unwrap();
     let code = store::new_token();
     let challenge = challenge(VERIFIER);
@@ -49,7 +49,7 @@ async fn issue(svc: &Service, client_id: &str, pid: &str, scope: &str, nonce: Op
     code
 }
 
-fn exchange<'a>(client_id: &'a str, code: &'a str) -> Vec<(&'a str, &'a str)> {
+pub(super) fn exchange<'a>(client_id: &'a str, code: &'a str) -> Vec<(&'a str, &'a str)> {
     vec![
         ("grant_type", AUTHORIZATION_CODE),
         ("code", code),
@@ -63,7 +63,7 @@ fn refresh_form<'a>(token: &'a str, client_id: &'a str) -> [(&'a str, &'a str); 
     [("grant_type", REFRESH_TOKEN), ("refresh_token", token), ("client_id", client_id)]
 }
 
-fn set<'a>(mut form: Vec<(&'a str, &'a str)>, name: &'a str, value: Option<&'a str>) -> Vec<(&'a str, &'a str)> {
+pub(super) fn set<'a>(mut form: Vec<(&'a str, &'a str)>, name: &'a str, value: Option<&'a str>) -> Vec<(&'a str, &'a str)> {
     form.retain(|(k, _)| *k != name);
     if let Some(value) = value {
         form.push((name, value));
@@ -79,7 +79,7 @@ async fn post(base: &str, form: &[(&str, &str)], basic: Option<(&str, &str)>) ->
     req.send().await.unwrap()
 }
 
-async fn json(resp: reqwest::Response) -> serde_json::Value {
+pub(super) async fn json(resp: reqwest::Response) -> serde_json::Value {
     resp.json().await.unwrap()
 }
 
@@ -100,7 +100,7 @@ async fn redeemed(pool: &PgPool, code: &str) -> bool {
     .unwrap()
 }
 
-async fn code_family(pool: &PgPool, code: &str) -> String {
+pub(super) async fn code_family(pool: &PgPool, code: &str) -> String {
     sqlx::query_scalar(
         "SELECT family_id::text FROM accounts.oidc_codes WHERE code_digest = sha256(convert_to($1, 'UTF8'))",
     )
@@ -110,7 +110,7 @@ async fn code_family(pool: &PgPool, code: &str) -> String {
     .unwrap()
 }
 
-async fn families(pool: &PgPool, family_id: &str) -> i64 {
+pub(super) async fn families(pool: &PgPool, family_id: &str) -> i64 {
     sqlx::query_scalar("SELECT count(*) FROM accounts.token_families WHERE id = $1::uuid")
         .bind(family_id)
         .fetch_one(pool)
@@ -118,7 +118,7 @@ async fn families(pool: &PgPool, family_id: &str) -> i64 {
         .unwrap()
 }
 
-async fn family_revocations(pool: &PgPool, family_id: &str) -> i64 {
+pub(super) async fn family_revocations(pool: &PgPool, family_id: &str) -> i64 {
     sqlx::query_scalar("SELECT count(*) FROM accounts.token_revocations WHERE family_id = $1::uuid")
         .bind(family_id)
         .fetch_one(pool)
