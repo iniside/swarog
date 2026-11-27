@@ -157,14 +157,14 @@ fn field_error(key: &str, msg: impl Into<String>) -> InvokeOutcome {
 }
 
 /// The values picked in the Multi field `key`, none when absent or empty; a malformed pick is
-/// the field error to answer.
-fn picked(req: &InvokeCall, key: &str, kind: &FieldKind) -> Result<Vec<String>, InvokeOutcome> {
+/// the reason to answer on that field.
+fn picked(req: &InvokeCall, key: &str, kind: &FieldKind) -> Result<Vec<String>, String> {
     match req.input.get(key).map(String::as_str) {
         None | Some("") => Ok(Vec::new()),
         Some(raw) => match decode_field(kind, raw) {
             Ok(FieldValue::Multi(picked)) => Ok(picked),
             Ok(_) => Ok(Vec::new()),
-            Err(e) => Err(field_error(key, e.reason)),
+            Err(e) => Err(e.reason),
         },
     }
 }
@@ -1178,7 +1178,7 @@ impl AccountsAdmin {
         };
         let grants = match picked(req, FIELD_GRANTS, &grants_kind()) {
             Ok(picked) => canonical_grants(&picked),
-            Err(refused) => return Ok(refused),
+            Err(reason) => return Ok(field_error(FIELD_GRANTS, reason)),
         };
         if grants.is_empty() {
             return Ok(field_error(FIELD_GRANTS, "pick at least one grant type"));
@@ -1213,7 +1213,7 @@ impl AccountsAdmin {
         }
         let scopes = match picked(req, FIELD_SCOPES, &scopes_kind()) {
             Ok(picked) => canonical_scopes(&picked),
-            Err(refused) => return Ok(refused),
+            Err(reason) => return Ok(field_error(FIELD_SCOPES, reason)),
         };
         let mut conn = self.svc.store.pool.acquire().await.map_err(internal)?;
         let longest = self

@@ -2,6 +2,7 @@ use super::*;
 use accountsapi::Auth as _;
 use base64::Engine as _;
 
+mod authorize;
 mod browser_session;
 mod client_grants;
 mod delete;

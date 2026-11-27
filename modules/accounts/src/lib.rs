@@ -34,6 +34,7 @@
 
 mod admin;
 mod clients;
+mod codes;
 pub mod conformance;
 mod discovery;
 mod epic_oauth;
@@ -283,6 +284,23 @@ CREATE TABLE IF NOT EXISTS accounts.token_revocations (
 	revoked_at timestamptz NOT NULL,
 	expires_at timestamptz NOT NULL,
 	CHECK (num_nonnulls(family_id, player_id, client_id) = 1)
+);
+
+-- Authorization codes of /accounts/oidc/authorize, keyed by the code's SHA-256 digest. A
+-- redeemed row stays until the replay window passes, so a replay can still find it.
+CREATE TABLE IF NOT EXISTS accounts.oidc_codes (
+	code_digest    bytea PRIMARY KEY,
+	client_id      text        NOT NULL REFERENCES accounts.oidc_clients(client_id) ON DELETE CASCADE,
+	player_id      uuid        NOT NULL REFERENCES accounts.players(id) ON DELETE CASCADE,
+	redirect_uri   text        NOT NULL,
+	code_challenge text        NOT NULL,
+	scope          text        NOT NULL,
+	nonce          text,
+	auth_time      timestamptz NOT NULL,
+	created_at     timestamptz NOT NULL DEFAULT now(),
+	redeemed_at    timestamptz,
+	family_id      uuid,
+	CHECK ((redeemed_at IS NULL) = (family_id IS NULL))
 );
 "#;
 
@@ -1791,6 +1809,18 @@ impl Accounts {
             .index(
                 "accounts.oauth_states_created_idx",
                 "CREATE INDEX oauth_states_created_idx ON accounts.oauth_states(created_at)",
+            )
+            .index(
+                "accounts.oidc_codes_player_idx",
+                "CREATE INDEX oidc_codes_player_idx ON accounts.oidc_codes(player_id)",
+            )
+            .index(
+                "accounts.oidc_codes_client_idx",
+                "CREATE INDEX oidc_codes_client_idx ON accounts.oidc_codes(client_id)",
+            )
+            .index(
+                "accounts.oidc_codes_created_idx",
+                "CREATE INDEX oidc_codes_created_idx ON accounts.oidc_codes(created_at)",
             )
             .index(
                 "accounts.token_revocations_expires_idx",

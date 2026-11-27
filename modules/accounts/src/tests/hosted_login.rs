@@ -60,13 +60,13 @@ pub(super) fn location(resp: &reqwest::Response) -> String {
 }
 
 /// GETs the form and returns its login-CSRF token.
-async fn login_csrf(base: &str) -> String {
+pub(super) async fn login_csrf(base: &str) -> String {
     let resp = client().get(format!("{base}/accounts/oidc/login")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     cookie_value(&set_cookie(&resp, web::LOGIN_CSRF_COOKIE))
 }
 
-async fn post_login(base: &str, csrf: &str, email: &str, password: &str, return_to: &str) -> reqwest::Response {
+pub(super) async fn post_login(base: &str, csrf: &str, email: &str, password: &str, return_to: &str) -> reqwest::Response {
     client()
         .post(format!("{base}/accounts/oidc/login"))
         .header("Cookie", format!("{}={csrf}", web::LOGIN_CSRF_COOKIE))
@@ -76,7 +76,7 @@ async fn post_login(base: &str, csrf: &str, email: &str, password: &str, return_
         .unwrap()
 }
 
-async fn registered(svc: &Service, tag: &str) -> (String, String) {
+pub(super) async fn registered(svc: &Service, tag: &str) -> (String, String) {
     let email = format!("hosted-{tag}-{}@test.local", suffix().to_ascii_lowercase());
     let pid = svc.register(email.clone(), "pw".into(), "Hosted".into(), test_client()).await.unwrap().player_id;
     (email, pid)

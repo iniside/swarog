@@ -1,8 +1,9 @@
 //! The hosted browser pages under `/accounts/oidc`: the email-and-password sign-in form
 //! with "Continue with Epic" and "Continue with Google", each shown when that provider's
 //! web OAuth is configured, the signed-in landing page and logout. A successful sign-in mints a browser session (`session.rs`), never a
-//! player bearer.
+//! player bearer. The OIDC authorization endpoint (`authorize.rs`) issues codes to a signed-in browser.
 
+pub(crate) mod authorize;
 pub(crate) mod session;
 
 use std::net::{IpAddr, SocketAddr};
@@ -41,6 +42,7 @@ const BUNDLE_CSS: &str = include_str!("../../../../UILayout/design-system/compon
 const BASE_TMPL: &str = include_str!("templates/base.html.tmpl");
 const LOGIN_TMPL: &str = include_str!("templates/login.html.tmpl");
 const LANDING_TMPL: &str = include_str!("templates/landing.html.tmpl");
+const ERROR_TMPL: &str = include_str!("templates/error.html.tmpl");
 
 /// The one `Secure` rule for every accounts cookie: ON unless `ACCOUNTS_COOKIE_SECURE` is
 /// explicitly falsy (`0`/`false`/`off`, case-insensitive).
@@ -119,6 +121,7 @@ impl Web {
             ("base.html", BASE_TMPL),
             ("login.html", LOGIN_TMPL),
             ("landing.html", LANDING_TMPL),
+            ("error.html", ERROR_TMPL),
         ] {
             env.add_template(name, source)?;
         }
@@ -257,6 +260,7 @@ pub(crate) fn router(web: Arc<Web>) -> Router {
         .route(PREFIX, get(|| async { see_other(LANDING) }))
         .route(LANDING, get(landing))
         .route(LOGIN, get(login_page).post(login_submit))
+        .route(authorize::AUTHORIZE, get(authorize::authorize))
         .route("/accounts/oidc/epic", post(epic_start))
         .route("/accounts/oidc/google", post(google_start))
         .route("/accounts/oidc/logout", post(logout))

@@ -1223,8 +1223,8 @@ impl Store {
     }
 
     /// Revokes every token family of a player on the caller's tx: all its family rows (and
-    /// by cascade their refresh tokens), its browser sessions, and every
-    /// access token issued so far through one player revocation. `None`
+    /// by cascade their refresh tokens), its browser sessions, its authorization codes, and
+    /// every access token issued so far through one player revocation. `None`
     /// when there is no such player; otherwise a "did anything end" signal only: deleted
     /// family rows (expired ones included) plus the browser sessions that were still live.
     /// Not a session count.
@@ -1256,6 +1256,7 @@ impl Store {
             .execute(&mut *conn)
             .await?;
         let browsers = self.delete_player_browser_sessions_tx(conn, player_id).await?;
+        self.delete_player_oidc_codes_tx(conn, player_id).await?;
         Ok(Some(families.rows_affected() + browsers))
     }
 
@@ -1310,8 +1311,8 @@ impl Store {
     }
 
     /// Revokes every family of a player that still grants access
-    /// ([`Store::revocable_families_tx`]), every browser session, and every access token
-    /// issued so far through one player revocation, on the caller's tx:
+    /// ([`Store::revocable_families_tx`]), every browser session and authorization code, and
+    /// every access token issued so far through one player revocation, on the caller's tx:
     /// `None` when there is no such player, otherwise how many families and live browser
     /// sessions it revoked. The set it counts is the set it deletes, read after the player
     /// row lock ([`Store::lock_player_row_tx`], the lock order of
@@ -1332,6 +1333,7 @@ impl Store {
             self.delete_family_tx(conn, family).await?;
         }
         let browsers = self.delete_player_browser_sessions_tx(conn, player_id).await?;
+        self.delete_player_oidc_codes_tx(conn, player_id).await?;
         Ok(Some(families.len() + browsers as usize))
     }
 
