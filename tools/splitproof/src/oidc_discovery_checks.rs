@@ -15,6 +15,11 @@
 //!   is gone before the respawn (`Running`'s drop kills and waits), so its cache cannot serve the
 //!   answer. When [SK3] is red or [SK0] cut the pass short there is no kid to compare, so the pass
 //!   records [SK4] red as "not run" (the cause in its detail) instead of skipping it.
+//! - [SK5] the same document lists the authorization code endpoints under that issuer
+//!   (`authorization_endpoint`, `token_endpoint`, `revocation_endpoint`) and the rest of the D10
+//!   metadata: response type `code`, the `/token` grants, PKCE `S256`, the `none`,
+//!   `client_secret_basic` and `client_secret_post` authentication methods of `/token` and
+//!   `/revoke`, `ES256` id_tokens, `public` subjects and `accountsapi::scopes::ALL`.
 //! - [SK0] / [SK0m] report only a fault no check records: a transport error or an unreadable body on
 //!   the discovery GET, or a failed read (or an unparsable `public_jwk`) of `accounts.signing_keys`.
 //!   A discovery document without a `jwks_uri`, and a `jwks_uri` GET that fails, still record
@@ -34,7 +39,8 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use serde_json::Value;
+use accountsapi::grant_types::{AUTHORIZATION_CODE, REFRESH_TOKEN};
+use serde_json::{json, Value};
 use sqlx::PgPool;
 use splitproof::Running;
 
@@ -97,6 +103,16 @@ async fn served_key(
         code == 200 && served_issuer == issuer && jwks_uri == want_uri,
         format!("code={code} issuer={served_issuer} jwks_uri={jwks_uri}"),
     );
+    let wrong: Vec<String> = d10_fields(issuer)
+        .into_iter()
+        .filter(|(name, want)| doc.get(*name) != Some(want))
+        .map(|(name, _)| format!("{name}={}", doc.get(name).unwrap_or(&Value::Null)))
+        .collect();
+    p.check(
+        &format!("[SK5{tag}] the discovery document lists /authorize, /token and /revoke under {issuer} and the code flow metadata"),
+        code == 200 && wrong.is_empty(),
+        format!("code={code} wrong={wrong:?}"),
+    );
 
     // No served `jwks_uri`, or its GET failed: nothing read, so [SK2] (the error in its detail) and
     // [SK3] record red on `code=0` and no keys.
@@ -124,6 +140,24 @@ async fn served_key(
         detail,
     );
     Ok(ok.then_some(kid))
+}
+
+/// The discovery members the code flow added (D10), each with the value `issuer` must serve.
+fn d10_fields(issuer: &str) -> Vec<(&'static str, Value)> {
+    let auth_methods = json!(["none", "client_secret_basic", "client_secret_post"]);
+    vec![
+        ("authorization_endpoint", json!(format!("{issuer}/authorize"))),
+        ("token_endpoint", json!(format!("{issuer}/token"))),
+        ("revocation_endpoint", json!(format!("{issuer}/revoke"))),
+        ("response_types_supported", json!(["code"])),
+        ("grant_types_supported", json!([AUTHORIZATION_CODE, REFRESH_TOKEN])),
+        ("code_challenge_methods_supported", json!(["S256"])),
+        ("token_endpoint_auth_methods_supported", auth_methods.clone()),
+        ("revocation_endpoint_auth_methods_supported", auth_methods),
+        ("id_token_signing_alg_values_supported", json!(["ES256"])),
+        ("subject_types_supported", json!(["public"])),
+        ("scopes_supported", json!(accountsapi::scopes::ALL)),
+    ]
 }
 
 /// [SK4]: kill accounts-svc, respawn it from its canonical spec, and read the JWKS at the pinned split

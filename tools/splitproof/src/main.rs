@@ -43,6 +43,7 @@ mod groups_admin_checks;
 mod idp;
 mod inventory_admin_checks;
 mod notifications_admin_checks;
+mod oidc_code_checks;
 mod oidc_discovery_checks;
 mod party_checks;
 mod pushws;
@@ -543,6 +544,8 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
     // Boxed: `run`'s future sits on the main thread's stack under `block_on`.
     Box::pin(accounts_admin_checks::assertions(ctx, pool, p, &m, &jar, "m")).await?;
     Box::pin(accounts_token_checks::assertions(ctx, pool, p, &m, &jar, "m")).await?;
+    // [OC1m]-[OC11m] the OIDC authorization code flow on the monolith's own router.
+    Box::pin(oidc_code_checks::assertions(ctx, pool, p, &m, &jar, "m")).await?;
     // [SK1m]-[SK3m] the OIDC discovery document and JWKS on the monolith's own router.
     oidc_discovery_checks::monolith(ctx, pool, p, &m).await;
     deletion_assertions(ctx, pool, p, &m, None, "m").await?;
@@ -5933,6 +5936,10 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     // The hosted sign-in through gateway-svc -> accounts-svc and the per-IP sign-in bucket; its
     // bursts run last in the pass (see the module doc).
     Box::pin(accounts_browser_checks::assertions(ctx, pool, p, &g, &cfg, "")).await?;
+    // [OC1]-[OC11] the OIDC authorization code flow: /authorize, /token and /revoke through
+    // gateway-svc's passthrough into accounts-svc, /accounts/refresh dispatched to it, and every
+    // bearer checked by gateway-svc's own verifier.
+    Box::pin(oidc_code_checks::assertions(ctx, pool, p, &g, &cfg, "")).await?;
 
     // --- Parties over the multiplexed socket: every invoke is Remote-dispatched from
     // gateway-svc to party-svc, whose post-commit pushes cross the backplane back to the

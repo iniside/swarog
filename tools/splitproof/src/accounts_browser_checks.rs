@@ -616,15 +616,15 @@ async fn met(req: reqwest::RequestBuilder, refusal: &str) -> Result<Option<u16>>
 }
 
 /// One answer as a browser meets it: status, `Location`, every `Set-Cookie` and the body.
-struct Answer {
-    status: u16,
-    location: String,
-    cookies: Vec<String>,
-    body: String,
+pub(super) struct Answer {
+    pub(super) status: u16,
+    pub(super) location: String,
+    pub(super) cookies: Vec<String>,
+    pub(super) body: String,
 }
 
 /// Sends the request `build` makes past the gateway's 429s, never following a redirect.
-async fn browse(build: impl Fn() -> reqwest::RequestBuilder) -> Result<Answer> {
+pub(super) async fn browse(build: impl Fn() -> reqwest::RequestBuilder) -> Result<Answer> {
     let r = patient(build).await?;
     let status = r.status().as_u16();
     let location = r.headers().get(LOCATION).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
@@ -643,13 +643,13 @@ async fn sign_in(ctx: &Ctx, front: &str, email: &str, password: &str) -> Result<
 }
 
 /// The `Set-Cookie` for `name`, empty when the answer sets none.
-fn set_cookie(cookies: &[String], name: &str) -> String {
+pub(super) fn set_cookie(cookies: &[String], name: &str) -> String {
     let prefix = format!("{name}=");
     cookies.iter().find(|c| c.starts_with(&prefix)).cloned().unwrap_or_default()
 }
 
 /// The value a `Set-Cookie` line sets, empty for a cleared or absent cookie.
-fn cookie_value(set_cookie: &str) -> String {
+pub(super) fn cookie_value(set_cookie: &str) -> String {
     let pair = set_cookie.split(';').next().unwrap_or_default();
     pair.split_once('=').map(|(_, v)| v.trim().to_string()).unwrap_or_default()
 }
