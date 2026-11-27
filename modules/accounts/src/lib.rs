@@ -35,6 +35,8 @@
 mod admin;
 mod clients;
 mod codes;
+#[cfg_attr(not(test), expect(dead_code, reason = "the device authorization routes are its callers"))]
+mod device_codes;
 pub mod conformance;
 mod discovery;
 mod epic_oauth;
@@ -313,7 +315,40 @@ CREATE TABLE IF NOT EXISTS accounts.oidc_codes (
 	family_id      uuid,
 	CHECK ((redeemed_at IS NULL) = (family_id IS NULL))
 );
+
+-- Device authorization grants (RFC 8628), keyed by the device_code's SHA-256 digest; the
+-- user_code the player types is stored as its digest too. A row stays until the replay window
+-- passes its expiry, so a replayed device_code can still find its redemption. Approval sets
+-- player_id, session_digest and auth_time from the approving browser session. Deleting that
+-- session sets session_digest NULL, and an approved code redeems only while it is set.
+-- player_id is declared before session_digest so the approval's foreign-key checks lock the
+-- player row before the session row, the order a reset locks them.
+CREATE TABLE IF NOT EXISTS accounts.device_codes (
+	device_code_digest bytea PRIMARY KEY,
+	user_code_digest   bytea       NOT NULL UNIQUE,
+	client_id          text        NOT NULL REFERENCES accounts.oidc_clients(client_id) ON DELETE CASCADE,
+	scope              text        NOT NULL,
+	interval_secs      integer     NOT NULL,
+	last_polled_at     timestamptz,
+	expires_at         timestamptz NOT NULL,
+	status             text        NOT NULL DEFAULT 'pending'
+		CHECK (status IN ('pending', 'approved', 'denied')),
+	player_id          uuid        REFERENCES accounts.players(id) ON DELETE CASCADE,
+	session_digest     bytea       REFERENCES accounts.browser_sessions(token_digest) ON DELETE SET NULL,
+	auth_time          timestamptz,
+	redeemed_at        timestamptz,
+	family_id          uuid,
+	requested_ip       text        NOT NULL CHECK (octet_length(requested_ip) <= {MAX_DEVICE_IP}),
+	user_agent         text        CHECK (octet_length(user_agent) <= {MAX_DEVICE_UA}),
+	created_at         timestamptz NOT NULL DEFAULT now(),
+	CHECK ((status = 'approved') = (player_id IS NOT NULL AND auth_time IS NOT NULL)),
+	CHECK ((status = 'approved') OR (player_id IS NULL AND auth_time IS NULL AND session_digest IS NULL)),
+	CHECK ((redeemed_at IS NULL) = (family_id IS NULL)),
+	CHECK (redeemed_at IS NULL OR status = 'approved')
+);
 "#,
+        MAX_DEVICE_IP = device_codes::MAX_REQUESTED_IP_BYTES,
+        MAX_DEVICE_UA = device_codes::MAX_USER_AGENT_BYTES,
         DEFAULT_DEVICE_TTL = clients::DEFAULT_DEVICE_CODE_TTL_SECS,
         MIN_DEVICE_TTL = clients::MIN_DEVICE_CODE_TTL_SECS,
         MAX_DEVICE_TTL = clients::MAX_DEVICE_CODE_TTL_SECS,
@@ -1917,6 +1952,22 @@ impl Accounts {
             .index(
                 "accounts.oidc_codes_created_idx",
                 "CREATE INDEX oidc_codes_created_idx ON accounts.oidc_codes(created_at)",
+            )
+            .index(
+                "accounts.device_codes_player_idx",
+                "CREATE INDEX device_codes_player_idx ON accounts.device_codes(player_id)",
+            )
+            .index(
+                "accounts.device_codes_client_idx",
+                "CREATE INDEX device_codes_client_idx ON accounts.device_codes(client_id)",
+            )
+            .index(
+                "accounts.device_codes_session_idx",
+                "CREATE INDEX device_codes_session_idx ON accounts.device_codes(session_digest)",
+            )
+            .index(
+                "accounts.device_codes_expires_idx",
+                "CREATE INDEX device_codes_expires_idx ON accounts.device_codes(expires_at)",
             )
             .index(
                 "accounts.token_revocations_expires_idx",

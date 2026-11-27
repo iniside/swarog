@@ -59,7 +59,7 @@ pub(crate) enum StoreError {
 
 /// `true` for a Postgres unique violation (23505) — a duplicate email / an already
 /// linked external identity (Go's `isUniqueViolation`).
-fn is_unique_violation(e: &sqlx::Error) -> bool {
+pub(crate) fn is_unique_violation(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23505"))
 }
 
@@ -1259,8 +1259,9 @@ impl Store {
             .await?;
         let browsers = self.delete_player_browser_sessions_tx(conn, player_id).await?;
         // The session delete only sets the codes' session_digest NULL (a redeemed row stays
-        // for replay detection): this delete is what removes the player's codes.
+        // for replay detection): these deletes are what remove the player's codes.
         self.delete_player_oidc_codes_tx(conn, player_id).await?;
+        self.delete_player_device_codes_tx(conn, player_id).await?;
         Ok(Some(families.rows_affected() + browsers))
     }
 
@@ -1338,8 +1339,9 @@ impl Store {
         }
         let browsers = self.delete_player_browser_sessions_tx(conn, player_id).await?;
         // The session delete only sets the codes' session_digest NULL (a redeemed row stays
-        // for replay detection): this delete is what removes the player's codes.
+        // for replay detection): these deletes are what remove the player's codes.
         self.delete_player_oidc_codes_tx(conn, player_id).await?;
+        self.delete_player_device_codes_tx(conn, player_id).await?;
         Ok(Some(families.len() + browsers as usize))
     }
 
