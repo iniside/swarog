@@ -1,6 +1,6 @@
 # Admin
 
-Last updated: 2026-11-26
+Last updated: 2026-11-27
 
 ## In progress
 
@@ -23,6 +23,9 @@ _None._
   Fix at the source: enforce the bound once on the serving path, where `LocalFace` /
   `controlplanerpc::register_face` hand a call to `Provider::invoke`, rather than per-module copies.
   Source: proof-auditor review of the INVOKE_DEADLINE change, admin-second-pass step 15 (2026-11-24).
+- [ ] **The OIDC clients table has no pager**
+  The accounts clients page lists every row of `accounts.oidc_clients` in one query
+  (modules/accounts/src/clients.rs:104, no LIMIT). Source: one-token-mechanism step 1 review (2026-11-26).
 - [ ] **Operator attribution on portal money movements**
   WALLET-07. `admin.action` records the actor and field names only, and
   `adminSubmit` carries no operator identity across the edge to the wallet. Source:

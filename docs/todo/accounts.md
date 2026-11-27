@@ -1,6 +1,6 @@
 # Accounts
 
-Last updated: 2026-11-26
+Last updated: 2026-11-27
 
 ## In progress
 
@@ -48,6 +48,9 @@ _None._
   until its last token expires. When rotation lands, splitproof `[SK3]`/`[SK3m]`
   (tools/splitproof/src/oidc_discovery_checks.rs) must change: they expect exactly one live row.
   Scheduled with roadmap Step 9 (docs/plans/2026-11-24-0004-lore-integration-roadmap-plan.md).
+  The gateway learns a new key only on its next `token_state` pull (every 5 s), so a token signed
+  with a brand-new kid gets 401 until then. Publish a new key before signing with it
+  (modules/gateway/src/verifier.rs, one-token-mechanism step 5 review, 2026-11-27).
   Source: docs/plans/2026-11-26-1415-oidc-signing-keys-plan.md D8, owner answer 3 (2026-11-26).
 - [ ] **KEK rotation**
   Changing `ACCOUNTS_SIGNING_KEK` refuses startup until `accounts.signing_keys` is dropped and
@@ -78,3 +81,24 @@ _None._
 - [ ] **EPIC_START hard-codes dev-game**
   `tools/splitproof/src/accounts_browser_checks.rs:68` writes `dev-game` literally while every
   other site uses `accountsapi::DEV_GAME_CLIENT_ID`.
+
+### Known limits (one-token-mechanism step 1)
+
+- [ ] **`oidc_clients.audience` has no length bound**
+  The column is unbounded `text` (modules/accounts/src/lib.rs:243) and the client insert
+  (modules/accounts/src/clients.rs:63) does not cap it. Bound it before A3 makes the audience
+  per client.
+- [ ] **The `delete_client` lock has no test**
+  No test shows that `delete_client` (modules/accounts/src/clients.rs) serializes with a
+  concurrent login or refresh on the same client.
+
+### Known limits (one-token-mechanism step 6)
+
+- [ ] **The Epic flow reads the whole token state per request**
+  `epic_oauth.rs:130` and `:206` call `Tokens::verify_access` (modules/accounts/src/jwt.rs:194),
+  which loads the whole snapshot (keys and every live revocation) from the database each time.
+  Correct, but costly at volume.
+- [ ] **A minted `iat` can run ahead of the clock**
+  `mint_access_tx` raises `iat` to one second past the latest live cut-off, so each fast
+  revoke-then-mint cycle can push it about 2 s ahead. `REVOCATION_SKEW_MARGIN` (60 s) covers it;
+  only operator actions repeated faster than that could exhaust it (review of a289af45, 2026-11-27).
