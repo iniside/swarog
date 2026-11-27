@@ -102,3 +102,11 @@ _None._
   `mint_access_tx` raises `iat` to one second past the latest live cut-off, so each fast
   revoke-then-mint cycle can push it about 2 s ahead. `REVOCATION_SKEW_MARGIN` (60 s) covers it;
   only operator actions repeated faster than that could exhaust it (review of a289af45, 2026-11-27).
+
+### Deferred
+
+- [ ] **A consent screen on `/authorize`**
+  The A3 plan (docs/plans/2026-11-27-1020-oidc-authorization-code-plan.md, owner answer 2) issues a code
+  without asking the player, because every client is made by the operator in the portal. A consent
+  screen may be needed later, for example for a third-party client or one asking for more than
+  `openid profile offline_access`.
