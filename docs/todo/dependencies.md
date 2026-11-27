@@ -1,12 +1,20 @@
 # Dependencies
 
-Last updated: 2026-11-17
+Last updated: 2026-11-27
 
 ## In progress
 
 _None._
 
 ## Open
+
+- [ ] **New RustSec advisories fail the audit stage**
+  `cargo audit` reports 8 vulnerabilities and 1 warning:
+  - cookie 0.18.1, RUSTSEC-2026-0594 (fix: >=0.18.3);
+  - lettre 0.11.23, RUSTSEC-2026-0560 to -0565 (fix: >=0.11.24);
+  - url 2.5.8, RUSTSEC-2026-0592 (fix: >=2.5.9);
+  - chrono 0.4.45, RUSTSEC-2026-0543, unmaintained, no fixed upgrade (warning only).
+  Source: verifyctl run verify-1795776086-65428-62521403, 2026-11-27.
 
 ### Known limits (security-quick-wins step 1b)
 

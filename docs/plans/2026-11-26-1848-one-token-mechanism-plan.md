@@ -1,5 +1,7 @@
 # One token mechanism: player access tokens become ES256 JWTs
 
+Status: done
+
 Date: 2026-11-26
 Parent: docs/plans/2026-11-24-0004-lore-integration-roadmap-plan.md, Phase A, between Step 2 (done) and Step 3.
 Owner answers (2026-11-26): Q1 yes, an explicit-only dev seed; no separate `federated` grant, because an external provider (Epic, Google) only proves who the user is and every client may use every configured provider, as in Keycloak.

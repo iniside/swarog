@@ -109,6 +109,11 @@ _None._
   menu by design. The new screens themselves are declared Pending (fdc97507). Options: port
   the two row menus, or let `EXCLUDED_MOCK_MENUS` cover a drawn menu. Owner 2026-11-24:
   admindiff is left alone for now.
+  On 2026-11-27 it fails 8 tests: the five above plus `mock::mock_tests`
+  `the_harness_forces_the_ok_state_on_the_real_mockup`, `the_harness_opens_the_real_skip_poison_modal`
+  and `the_harness_records_every_real_registry_menu`. The mockup also draws `holding`,
+  `friendship` and `schedule` menus that neither PAGE_MAP nor `EXCLUDED_MOCK_MENUS` cover.
+  Source: verifyctl run verify-1795776086-65428-62521403, 2026-11-27.
 - [ ] **Two change-note inputs with different behaviour**
   The confirm dialog's note (`core/admin/src/templates/modal.html.tmpl:19`, gated by
   `data-reason-required` in admin.js) and the form note (`reason_field`,
