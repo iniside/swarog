@@ -926,14 +926,7 @@ pub fn decode_field(kind: &FieldKind, raw: &str) -> Result<FieldValue, FieldErro
         FieldKind::Json => serde_json::from_str::<serde::de::IgnoredAny>(raw)
             .map(|_| FieldValue::Text(raw.to_string()))
             .map_err(|_| FieldError::new("must be valid JSON")),
-        FieldKind::Duration => {
-            let digits = raw.strip_suffix(['s', 'm', 'h', 'd']).unwrap_or("");
-            if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
-                Ok(FieldValue::Text(raw.to_string()))
-            } else {
-                Err(FieldError::new("must be digits followed by s, m, h or d"))
-            }
-        }
+        FieldKind::Duration => duration_parts(raw).map(|_| FieldValue::Text(raw.to_string())),
         FieldKind::Money(currencies) => {
             let (amount, currency) = decode_money(raw)
                 .map_err(|MoneyShapeError| FieldError::new("must be a JSON object with amount and currency"))?;
@@ -947,6 +940,36 @@ pub fn decode_field(kind: &FieldKind, raw: &str) -> Result<FieldValue, FieldErro
         }
         FieldKind::RequestId => Err(FieldError::new("is filled by the portal and carries no value")),
     }
+}
+
+/// The Duration units as suffix and seconds: the one table [`decode_field`] and
+/// [`duration_secs`] read.
+const DURATION_UNITS: [(char, u64); 4] = [('s', 1), ('m', 60), ('h', 3_600), ('d', 86_400)];
+
+/// The digits and the unit's seconds of a Duration value: ASCII digits then one unit suffix.
+fn duration_parts(raw: &str) -> Result<(&str, u64), FieldError> {
+    let unit = DURATION_UNITS.iter().find(|(suffix, _)| raw.ends_with(*suffix));
+    match unit.map(|(suffix, secs)| (&raw[..raw.len() - suffix.len_utf8()], *secs)) {
+        Some((digits, secs)) if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) => {
+            Ok((digits, secs))
+        }
+        _ => {
+            let suffixes: Vec<String> = DURATION_UNITS.iter().map(|(suffix, _)| suffix.to_string()).collect();
+            let (last, rest) = suffixes.split_last().expect("DURATION_UNITS is not empty");
+            Err(FieldError::new(format!("must be digits followed by {} or {last}", rest.join(", "))))
+        }
+    }
+}
+
+/// The seconds of a Duration field value; refused as [`decode_field`] refuses it, or when the
+/// seconds do not fit a `u64`.
+pub fn duration_secs(raw: &str) -> Result<u64, FieldError> {
+    let (digits, scale) = duration_parts(raw)?;
+    digits
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(scale))
+        .ok_or_else(|| FieldError::new("is too long to count in seconds"))
 }
 
 /// The raw string of `value`; `decode_field(kind, &encode_field(kind, v)) == Ok(v)` for every

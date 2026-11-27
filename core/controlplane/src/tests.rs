@@ -589,6 +589,31 @@ fn decode_field_accepts_and_refuses_per_the_step_8a_table() {
     }
 }
 
+/// Every unit converts at its own scale, and a value `decode_field` refuses `duration_secs`
+/// refuses with the same reason.
+#[test]
+fn duration_secs_converts_each_unit_and_refuses_what_decode_field_refuses() {
+    for (raw, want) in [("0s", 0), ("10s", 10), ("5m", 300), ("2h", 7_200), ("7d", 604_800), ("007m", 420)] {
+        assert_eq!(duration_secs(raw), Ok(want), "{raw:?}");
+    }
+    for (suffix, secs) in DURATION_UNITS {
+        assert_eq!(duration_secs(&format!("3{suffix}")), Ok(3 * secs), "{suffix}");
+        assert!(decode_field(&FieldKind::Duration, &format!("3{suffix}")).is_ok(), "{suffix}");
+    }
+    let shape = "must be digits followed by s, m, h or d";
+    for raw in ["", "s", "10", "10x", "1.5h", "-1s", "+1s", "10S", " 1s", "1s ", "m5", "1ms", "١s"] {
+        let refused = decode_field(&FieldKind::Duration, raw).unwrap_err();
+        assert_eq!(refused.reason, shape, "{raw:?}");
+        assert_eq!(duration_secs(raw), Err(refused), "{raw:?}");
+    }
+    let max_days = u64::MAX / 86_400;
+    assert_eq!(duration_secs(&format!("{max_days}d")), Ok(max_days * 86_400));
+    for raw in [format!("{}d", max_days + 1), format!("{}m", u64::MAX / 60 + 1), "18446744073709551616s".to_string()] {
+        assert_eq!(duration_secs(&raw).unwrap_err().reason, "is too long to count in seconds", "{raw}");
+    }
+    assert_eq!(duration_secs(&format!("{}s", u64::MAX)), Ok(u64::MAX), "the largest count fits");
+}
+
 /// value -> raw -> value is the identity; raw -> value -> raw may normalise.
 #[test]
 fn encode_field_round_trips_every_value_decode_field_returns() {

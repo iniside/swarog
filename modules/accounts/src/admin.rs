@@ -17,7 +17,7 @@ use controlplane::{
     SearchQuery, SecretReveal, SortDir, Then, DEFAULT_PANEL_DEADLINE_MS,
     DEFAULT_SEARCH_DEADLINE_MS,
 };
-use controlplane::{decode_field, encode_field, order, FieldValue};
+use controlplane::{decode_field, duration_secs, encode_field, order, FieldValue};
 use accountsapi::{grant_types, scopes, MAX_ACCESS_TOKEN_BYTES, SWAROG_AUDIENCE};
 use opsapi::Error;
 
@@ -328,15 +328,7 @@ fn lifetime(secs: i32) -> String {
 /// The seconds of a Duration field value when they are within the device code lifetime bounds.
 fn parse_device_code_ttl(raw: &str) -> Result<i32, String> {
     decode_field(&FieldKind::Duration, raw).map_err(|e| e.reason)?;
-    let (digits, unit) = raw.split_at(raw.len() - 1);
-    let scale: i64 = match unit {
-        "s" => 1,
-        "m" => 60,
-        "h" => 3_600,
-        _ => 86_400,
-    };
-    let secs = digits.parse::<i64>().ok().and_then(|n| n.checked_mul(scale));
-    match secs.and_then(|s| i32::try_from(s).ok()) {
+    match duration_secs(raw).ok().and_then(|s| i32::try_from(s).ok()) {
         Some(s) if (MIN_DEVICE_CODE_TTL_SECS..=MAX_DEVICE_CODE_TTL_SECS).contains(&s) => Ok(s),
         _ => Err(format!(
             "must be from {} to {}",

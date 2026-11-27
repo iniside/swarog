@@ -2425,6 +2425,7 @@ pub fn controlplane::ago(i64) -> alloc::string::String
 pub fn controlplane::declared_enums() -> &'static [controlplane::DeclaredEnum]
 pub fn controlplane::decode_field(&controlplane::FieldKind, &str) -> core::result::Result<controlplane::FieldValue, controlplane::FieldError>
 pub fn controlplane::decode_money(&str) -> core::result::Result<(alloc::string::String, alloc::string::String), controlplane::MoneyShapeError>
+pub fn controlplane::duration_secs(&str) -> core::result::Result<u64, controlplane::FieldError>
 pub fn controlplane::encode_field(&controlplane::FieldKind, &controlplane::FieldValue) -> alloc::string::String
 pub fn controlplane::fake_hash(&str, &str) -> u64
 pub fn controlplane::form_mode_error(&controlplane::Manifest, &controlplane::ActionPoint, &controlplane::FormMode) -> core::option::Option<alloc::string::String>
