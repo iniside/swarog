@@ -249,6 +249,7 @@ roznie wydawane dla poszczegolnyhc klientow z rozna zawartoscia"; "nie bedziemy 
     - The advisory lock is taken before any row lock and only by these two paths, so it adds no
       deadlock with a player delete.
     - A replay after `REPLAY_WINDOW` finds no row and is plain `invalid_grant` without a revocation.
+  - **Errata:** oidc_codes.session_digest references the issuing browser session ON DELETE CASCADE, so a reset, Revoke all or logout removes codes in flight (oidc-authorization-code step 3 review, owner 2026-11-27).
 
 - **D6. `/accounts/oidc/token` (POST, form, 8 KiB body limit).**
   - **`authorization_code`:**

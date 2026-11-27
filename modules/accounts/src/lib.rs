@@ -288,10 +288,15 @@ CREATE TABLE IF NOT EXISTS accounts.token_revocations (
 
 -- Authorization codes of /accounts/oidc/authorize, keyed by the code's SHA-256 digest. A
 -- redeemed row stays until the replay window passes, so a replay can still find it.
+-- session_digest is the browser session the code was issued under: a reset, Revoke all or
+-- logout deleting that session takes the code with it. It is declared after player_id so
+-- the insert's foreign-key checks lock the player row before the session row, the order a
+-- reset locks them (the checks fire in constraint-creation order).
 CREATE TABLE IF NOT EXISTS accounts.oidc_codes (
 	code_digest    bytea PRIMARY KEY,
 	client_id      text        NOT NULL REFERENCES accounts.oidc_clients(client_id) ON DELETE CASCADE,
 	player_id      uuid        NOT NULL REFERENCES accounts.players(id) ON DELETE CASCADE,
+	session_digest bytea       NOT NULL REFERENCES accounts.browser_sessions(token_digest) ON DELETE CASCADE,
 	redirect_uri   text        NOT NULL,
 	code_challenge text        NOT NULL,
 	scope          text        NOT NULL,
@@ -406,6 +411,25 @@ async fn refuse_stale_clients(pool: &sqlx::PgPool, schema: &str) -> anyhow::Resu
                  Remedy: DROP SCHEMA {schema} CASCADE; and reboot."
             );
         }
+    }
+    Ok(())
+}
+
+/// Refuses a `{schema}.oidc_codes` without the `session_digest` column every code insert
+/// writes: `CREATE TABLE IF NOT EXISTS` keeps an older table.
+async fn refuse_stale_codes(pool: &sqlx::PgPool, schema: &str) -> anyhow::Result<()> {
+    let present: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM information_schema.columns \
+         WHERE table_schema = $1 AND table_name = 'oidc_codes' AND column_name = 'session_digest'",
+    )
+    .bind(schema)
+    .fetch_one(pool)
+    .await?;
+    if present == 0 {
+        anyhow::bail!(
+            "accounts: {schema}.oidc_codes has no session_digest column. \
+             Remedy: DROP SCHEMA {schema} CASCADE; and reboot."
+        );
     }
     Ok(())
 }
@@ -1819,6 +1843,10 @@ impl Accounts {
                 "CREATE INDEX oidc_codes_client_idx ON accounts.oidc_codes(client_id)",
             )
             .index(
+                "accounts.oidc_codes_session_idx",
+                "CREATE INDEX oidc_codes_session_idx ON accounts.oidc_codes(session_digest)",
+            )
+            .index(
                 "accounts.oidc_codes_created_idx",
                 "CREATE INDEX oidc_codes_created_idx ON accounts.oidc_codes(created_at)",
             )
@@ -1853,6 +1881,7 @@ impl Accounts {
         refuse_stale_oauth_states(pool, "accounts").await?;
         refuse_unfamilied_tokens(pool, "accounts").await?;
         refuse_stale_clients(pool, "accounts").await?;
+        refuse_stale_codes(pool, "accounts").await?;
         signing_keys::migrate_signing_keys(pool, SIGNING_KEYS_SCHEMA, &kek).await?;
         clients::migrate_dev_seed(self.dev_seed_on(), pool).await?;
         Ok(())

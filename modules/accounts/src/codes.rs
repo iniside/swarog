@@ -57,8 +57,12 @@ impl Store {
     }
 
     /// Issues `code` under the live browser session whose token hashes to `session_digest`:
-    /// to that session's player, with its sign-in time as `auth_time`. `false` when that
-    /// session is gone, or its player or the client was deleted before the insert.
+    /// to that session's player, with its sign-in time as `auth_time`, bound to the session
+    /// by a cascading foreign key. `false` when that session is gone, or its player, the
+    /// client or the session itself was deleted before the insert. The insert reads the
+    /// session without a lock; its foreign-key check on the session row is what refuses a
+    /// session a racing reset, Revoke all or logout deleted, and what makes that delete wait
+    /// for, then cascade to, a code inserted first.
     pub(crate) async fn insert_oidc_code(
         &self,
         code: &str,
@@ -67,8 +71,9 @@ impl Store {
     ) -> sqlx::Result<bool> {
         let res = sqlx::query(
             "INSERT INTO accounts.oidc_codes \
-               (code_digest, client_id, player_id, redirect_uri, code_challenge, scope, nonce, auth_time) \
-             SELECT $1, $2, s.player_id, $3, $4, $5, $6, s.created_at \
+               (code_digest, client_id, player_id, session_digest, redirect_uri, code_challenge, \
+                scope, nonce, auth_time) \
+             SELECT $1, $2, s.player_id, s.token_digest, $3, $4, $5, $6, s.created_at \
                FROM accounts.browser_sessions s \
               WHERE s.token_digest = $7 AND s.expires_at > now()",
         )
