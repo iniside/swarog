@@ -1479,13 +1479,20 @@ async fn device_code_lifetime_is_picked_on_create_and_changed_by_the_row_action(
     delete_client(&pool, &id).await;
 }
 
-/// The table's CHECK holds the same bounds as the portal: a lifetime one second outside
-/// either bound is refused, one at each bound stored.
+/// A client inserted without a lifetime stores 10 minutes, and the table's CHECK holds the
+/// same bounds as the portal: a lifetime one second outside either bound is refused, one at
+/// each bound stored.
 #[tokio::test]
 async fn the_clients_table_refuses_a_device_code_lifetime_outside_the_bounds() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, _svc) = wired(&pool).await;
     let id = insert_client(&pool, &["password"]).await;
+    let stored: i32 = sqlx::query_scalar("SELECT device_code_ttl_secs FROM accounts.oidc_clients WHERE client_id = $1")
+        .bind(&id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, 600, "an insert without the column takes the DDL default");
     let set = |secs: i32| {
         sqlx::query("UPDATE accounts.oidc_clients SET device_code_ttl_secs = $2 WHERE client_id = $1")
             .bind(&id)
