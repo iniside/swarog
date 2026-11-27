@@ -286,6 +286,52 @@ async fn a_confidential_client_authenticates_with_its_secret() {
     delete_client(&pool, &client_id).await;
 }
 
+/// The op path replaying a confidential client's consumed refresh token outside the grace
+/// window is refused like a live one: the family survives and its current token still
+/// rotates at `/token`.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_op_path_replay_of_a_confidential_token_kills_nothing() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let base = serve_default(svc.clone()).await;
+    let client_id = token_client(&pool, &[AUTHORIZATION_CODE, REFRESH_TOKEN], true).await;
+    let (_, pid) = registered(&svc, "token-conf-replay").await;
+    let code = issue(&svc, &client_id, &pid, "openid", None).await;
+    let exchanged = post(&base, &set(exchange(&client_id, &code), "client_secret", Some(SECRET)), None).await;
+    assert_eq!(exchanged.status(), 200);
+    let first_refresh = json(exchanged).await["refresh_token"].as_str().unwrap().to_string();
+    let family = code_family(&pool, &code).await;
+    let refresh = |token: String| {
+        let base = base.clone();
+        let client_id = client_id.clone();
+        async move {
+            let form = [
+                ("grant_type", REFRESH_TOKEN),
+                ("refresh_token", token.as_str()),
+                ("client_id", client_id.as_str()),
+                ("client_secret", SECRET),
+            ];
+            post(&base, &form, None).await
+        }
+    };
+    let resp = refresh(first_refresh.clone()).await;
+    assert_eq!(resp.status(), 200);
+    let current = json(resp).await["refresh_token"].as_str().unwrap().to_string();
+
+    sqlx::query("UPDATE accounts.refresh_tokens SET used_at = now() - interval '60 seconds' WHERE token = $1")
+        .bind(&first_refresh)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let replay = svc.refresh(first_refresh).await;
+    assert_eq!(replay.unwrap_err().status, opsapi::Status::Unauthorized, "the op path replayed a confidential token");
+    assert_eq!(families(&pool, &family).await, 1, "an op-path replay killed a confidential family");
+    assert_eq!(refresh(current).await.status(), 200, "the family's current token no longer rotates");
+
+    cleanup_player(&pool, &pid).await;
+    delete_client(&pool, &client_id).await;
+}
+
 /// Basic credentials and a body secret, or a Basic id other than the body's, are two methods.
 #[tokio::test(flavor = "multi_thread")]
 async fn two_authentication_methods_are_an_invalid_request() {

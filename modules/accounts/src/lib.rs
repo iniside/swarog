@@ -1184,15 +1184,18 @@ impl Service {
             .await
     }
 
-    /// Refuses a refresh in family `family_id` once its client no longer lists
-    /// `refresh_token`; on the op path any refresh of a confidential client's family, and
-    /// at `/token` one of another client's family. The caller rolls back on the refusal, so
-    /// the presented token stays unconsumed.
+    /// Refuses `presenter` a token of family `family_id`: on the op path any token of a
+    /// confidential client's family, at `/token` one of another client's family, and, when
+    /// `rotating` (a rotation or a grace replay), one whose client no longer lists
+    /// `refresh_token`. A reuse outside the grace window passes `rotating = false`, so the
+    /// family's own presenter still kills it after its client dropped the grant. The caller
+    /// rolls back on the refusal, so nothing is consumed or killed.
     async fn refresh_allowed_tx(
         &self,
         conn: &mut PgConnection,
         family_id: &str,
         presenter: RefreshPresenter<'_>,
+        rotating: bool,
     ) -> Result<(), Error> {
         let client = self
             .store
@@ -1200,7 +1203,7 @@ impl Service {
             .await
             .map_err(internal)?;
         let allowed = client.is_some_and(|c| {
-            c.lists_grant
+            (c.lists_grant || !rotating)
                 && match presenter {
                     RefreshPresenter::OpPath => !c.confidential,
                     RefreshPresenter::Client(client_id) => c.client_id == client_id,
@@ -1214,9 +1217,10 @@ impl Service {
     }
 
     /// Rotates `refresh_token` for `presenter`: reuse inside the grace window replays the
-    /// recorded successor, reuse outside it kills the family, except that a
-    /// [`RefreshPresenter::Client`] presenting another client's family is refused with
-    /// nothing consumed or killed.
+    /// recorded successor, reuse outside it kills the family, except that a presenter
+    /// [`Service::refresh_allowed_tx`] refuses the family (the op path a confidential
+    /// client's, a [`RefreshPresenter::Client`] another client's) is refused with nothing
+    /// consumed or killed.
     pub(crate) async fn refresh_as(
         &self,
         refresh_token: String,
@@ -1255,7 +1259,7 @@ impl Service {
             store::RefreshVerdict::Rotate {
                 player_id,
                 family_id,
-            } => match self.refresh_allowed_tx(&mut tx, &family_id, presenter).await {
+            } => match self.refresh_allowed_tx(&mut tx, &family_id, presenter, true).await {
                 Ok(()) => {
                     self.complete_rotation_tx(&mut tx, &player_id, &family_id, &refresh_token, successor)
                         .await
@@ -1269,7 +1273,7 @@ impl Service {
                 player_id,
                 family_id,
                 successor,
-            } => match self.refresh_allowed_tx(&mut tx, &family_id, presenter).await {
+            } => match self.refresh_allowed_tx(&mut tx, &family_id, presenter, true).await {
                 Ok(()) => {
                     self.issue_access_in_family_tx(&mut tx, &player_id, &family_id, successor)
                         .await
@@ -1280,18 +1284,9 @@ impl Service {
                 }
             },
             store::RefreshVerdict::Revoke { family_id } => {
-                if let RefreshPresenter::Client(client_id) = presenter {
-                    match self.store.family_client_tx(&mut tx, &family_id, REFRESH_TOKEN).await {
-                        Ok(Some(owner)) if owner.client_id == client_id => {}
-                        Ok(_) => {
-                            tx.rollback().await.ok();
-                            return Err(Error::unauthorized("invalid refresh token"));
-                        }
-                        Err(e) => {
-                            tx.rollback().await.ok();
-                            return Err(internal(e));
-                        }
-                    }
+                if let Err(err) = self.refresh_allowed_tx(&mut tx, &family_id, presenter, false).await {
+                    tx.rollback().await.ok();
+                    return Err(err);
                 }
                 tracing::warn!(
                     %family_id,
