@@ -91,6 +91,11 @@ pub const ACCESS_EXP_LEEWAY: std::time::Duration = std::time::Duration::from_sec
 /// [`ACCESS_TTL_MINUTES`] + [`ACCESS_EXP_LEEWAY`] + this after it was written.
 pub const REVOCATION_SKEW_MARGIN: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How often the gateway's verifier pulls `token_state` for a fresh snapshot, so a revocation
+/// committed at accounts refuses its tokens at the gateway from the first pull that starts after
+/// the commit.
+pub const TOKEN_STATE_PULL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// The grant types an OIDC client lists: the ways a token may be minted for it.
 pub mod grant_types {
     /// Email and password register and login.

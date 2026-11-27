@@ -49,6 +49,9 @@
 //! - `create_browser_session_tx` also inserting the plaintext token into `accounts.sessions`
 //!   (`modules/accounts/src/web/session.rs`), run splitproof-63840: BL3 alone red as new
 //!   (`code=200 cookie_present=true`), BL1, BL2, BL4-BL7 and BR1-BR3 green (2026-11-26, step 7).
+//!   That table is gone (one-token-mechanism step 6): a bearer is now an ES256 JWT the gateway
+//!   checks against `token_state`, which neither `token_families` nor `token_revocations` can make
+//!   an opaque cookie pass, so BL3 now pins the verifier's refusal of a non-JWT bearer.
 
 use std::time::{Duration, Instant};
 

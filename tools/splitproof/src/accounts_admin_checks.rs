@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use sqlx::PgPool;
 
 use crate::apikeys_admin_checks::{fetch, patient};
 use crate::characters_admin_checks::{attr, attr_values, cut, table, text};
+use crate::accounts_token_checks::until_refused;
 use crate::{accounts_me, extract_form_fields, pass_nonce, post_json, Ctx, Proof};
 
 /// One login of the pass's player: its bearer, its refresh token and the refresh family both
@@ -25,8 +27,10 @@ type Button = (String, BTreeMap<String, String>);
 /// family). In the split the portal is admin-svc: the panel and its row actions, the prepared
 /// modal and both invokes are built or run in accounts-svc and reach admin-svc only through its
 /// `accounts` peer over `cp.*`; the effect is read where accounts keeps it (the family's rows in
-/// `accounts.refresh_tokens` and `accounts.sessions`) and as a player meets it (the revoked refresh
-/// token answers 401 at `/accounts/refresh`, the revoked bearer 401 at `/accounts/me`).
+/// `accounts.refresh_tokens` and `accounts.token_families`) and as a player meets it (the revoked
+/// refresh token answers 401 at `/accounts/refresh`; the revoked bearer answers 401 at
+/// `/accounts/me` within `REFUSAL_BOUND` of the revoke, once the gateway's next `token_state`
+/// pull brings the revocation).
 ///
 /// A repeated Revoke click inside the portal's click-repeat window (5 s) is answered by the
 /// portal's own claim and never reaches accounts; [AR3] ages the consumed click row in
@@ -134,21 +138,22 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
     // their rows and authenticate.
     let ar2 = async {
         let first = submit(admin, front, "revoke-session", &click).await?;
+        let since = Instant::now();
         let gone = rows_of(pool, &b.family).await?;
         let kept = (rows_of(pool, &a.family).await?, rows_of(pool, &c.family).await?);
         let b_refresh = post_json(ctx, &refresh_url, serde_json::json!({ "refresh_token": b.refresh })).await?.0;
-        let b_me = accounts_me(ctx, front, &b.token).await?.0;
+        let b_me = until_refused(since, || async { Ok(accounts_me(ctx, front, &b.token).await?.0) }).await?;
         let others_me = (accounts_me(ctx, front, &a.token).await?.0, accounts_me(ctx, front, &c.token).await?.0);
         let ok = first == (303, "Session revoked".to_string())
             && gone == 0
             && kept.0 > 0
             && kept.1 > 0
             && b_refresh == 401
-            && b_me == 401
+            && b_me.refused
             && others_me == (200, 200);
         anyhow::Ok((
             ok,
-            format!("post={first:?} b_rows={gone} a_c_rows={kept:?} b_refresh={b_refresh} b_me={b_me} a_c_me={others_me:?}"),
+            format!("post={first:?} b_rows={gone} a_c_rows={kept:?} b_refresh={b_refresh} b_me=({b_me}) a_c_me={others_me:?}"),
         ))
     }
     .await;
@@ -193,21 +198,24 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
     let title = format!("Revoke all sessions of {handle}?");
     let ar4 = async {
         let (modal_title, impact, first) = revoke_all(admin, front, &revoke_all_url).await?;
+        let since = Instant::now();
         let left = families(pool, &pid).await?;
         let a_refresh = post_json(ctx, &refresh_url, serde_json::json!({ "refresh_token": a.refresh })).await?.0;
         let c_refresh = post_json(ctx, &refresh_url, serde_json::json!({ "refresh_token": c.refresh })).await?.0;
-        let me = (accounts_me(ctx, front, &a.token).await?.0, accounts_me(ctx, front, &c.token).await?.0);
+        let a_me = until_refused(since, || async { Ok(accounts_me(ctx, front, &a.token).await?.0) }).await?;
+        let c_me = until_refused(since, || async { Ok(accounts_me(ctx, front, &c.token).await?.0) }).await?;
         let ok = modal_title == title
             && impact.as_deref() == Some("2")
             && first == (303, "All sessions revoked".to_string())
             && left.is_empty()
             && (a_refresh, c_refresh) == (401, 401)
-            && me == (401, 401);
+            && a_me.refused
+            && c_me.refused;
         anyhow::Ok((
             ok,
             format!(
                 "modal_title={modal_title:?} want={title:?} impact={impact:?} post={first:?} families_left={left:?} \
-                 a_c_refresh={:?} a_c_me={me:?}",
+                 a_c_refresh={:?} a_me=({a_me}) c_me=({c_me})",
                 (a_refresh, c_refresh)
             ),
         ))
@@ -255,11 +263,11 @@ async fn session(ctx: &Ctx, pool: &PgPool, front: &str, path: &str, body: serde_
     Ok((pid, Login { token, refresh, family }))
 }
 
-/// The refresh token and access session rows of one family.
+/// The refresh token rows and the family row of one family.
 async fn rows_of(pool: &PgPool, family: &str) -> Result<i64> {
     sqlx::query_scalar(
         "SELECT (SELECT count(*) FROM accounts.refresh_tokens WHERE family_id::text = $1) \
-              + (SELECT count(*) FROM accounts.sessions WHERE family_id::text = $1)",
+              + (SELECT count(*) FROM accounts.token_families WHERE id::text = $1)",
     )
     .bind(family)
     .fetch_one(pool)
@@ -267,12 +275,12 @@ async fn rows_of(pool: &PgPool, family: &str) -> Result<i64> {
     .context("count a family's rows")
 }
 
-/// The families holding any refresh token or access session of a player, sorted.
+/// The families of a player, by its family rows or any refresh token, sorted.
 async fn families(pool: &PgPool, pid: &str) -> Result<Vec<String>> {
     sqlx::query_scalar(
         "SELECT family_id::text FROM accounts.refresh_tokens WHERE player_id::text = $1 \
          UNION \
-         SELECT family_id::text FROM accounts.sessions WHERE player_id::text = $1 \
+         SELECT id::text FROM accounts.token_families WHERE player_id::text = $1 \
          ORDER BY 1",
     )
     .bind(pid)
@@ -346,7 +354,7 @@ fn row_buttons(html: &str) -> Vec<Button> {
 }
 
 /// The flash toast's text (`<div data-toast …>`), empty when the page draws none.
-fn toast(html: &str) -> String {
+pub(super) fn toast(html: &str) -> String {
     let Some(at) = html.find("<div data-toast") else { return String::new() };
     let rest = &html[at..];
     let end = rest.find("</div>").unwrap_or(rest.len());

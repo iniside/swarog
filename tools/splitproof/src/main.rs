@@ -33,6 +33,7 @@ use crate::pushws::{Frame, PushClient};
 
 mod accounts_admin_checks;
 mod accounts_browser_checks;
+mod accounts_token_checks;
 mod apikeys_admin_checks;
 mod audit_admin_checks;
 mod characters_admin_checks;
@@ -541,6 +542,7 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
     wallet_ledger_checks::assertions(ctx, pool, p, &m, &jar, "m").await?;
     // Boxed: `run`'s future sits on the main thread's stack under `block_on`.
     Box::pin(accounts_admin_checks::assertions(ctx, pool, p, &m, &jar, "m")).await?;
+    Box::pin(accounts_token_checks::assertions(ctx, pool, p, &m, &jar, "m")).await?;
     // [SK1m]-[SK3m] the OIDC discovery document and JWKS on the monolith's own router.
     oidc_discovery_checks::monolith(ctx, pool, p, &m).await;
     deletion_assertions(ctx, pool, p, &m, None, "m").await?;
@@ -2915,6 +2917,8 @@ async fn deletion_checks(
         Some(serde_json::json!({ "ticket": &ticket })),
     )
     .await?;
+    // The delete's commit happened before its answer: [DL2] times the refusal from here.
+    let deleted_since = Instant::now();
     let receipt_handle = del_body.get("handle").and_then(|v| v.as_str()).unwrap_or_default().to_string();
     let receipt_deleted_at = del_body.get("deleted_at").and_then(|v| v.as_str()).unwrap_or_default().to_string();
     let deleted_events: Vec<(String, String)> = sqlx::query_as(
@@ -2927,21 +2931,32 @@ async fn deletion_checks(
     .unwrap_or_default();
     let deleted_event_id = deleted_events.first().map(|(id, _)| id.clone()).unwrap_or_default();
     let player_rows = count_of(pool, "SELECT count(*) FROM accounts.players WHERE id::text = $1", &s.player_id).await;
-    let session_rows = count_of(pool, "SELECT count(*) FROM accounts.sessions WHERE player_id::text = $1", &s.player_id).await;
+    let family_rows = count_of(pool, "SELECT count(*) FROM accounts.token_families WHERE player_id::text = $1", &s.player_id).await;
+    let player_revocations = count_of(
+        pool,
+        "SELECT count(*) FROM accounts.token_revocations WHERE player_id::text = $1",
+        &s.player_id,
+    )
+    .await;
     p.check(
-        &format!("[DL1{tag}] begin twice -> one ticket; delete -> 200 receipt, player + sessions gone, ONE player.deleted carrying the handle"),
+        &format!(
+            "[DL1{tag}] begin twice -> one ticket; delete -> 200 receipt, player + token families gone, a player \
+             revocation written, ONE player.deleted carrying the handle"
+        ),
         begin1_code == 200
             && !ticket.is_empty()
             && ticket2 == ticket
             && del_code == 200
             && receipt_handle == s.handle
             && player_rows == 0
-            && session_rows == 0
+            && family_rows == 0
+            && player_revocations >= 1
             && deleted_events.len() == 1
             && deleted_events.first().map(|(_, h)| h.as_str()) == Some(s.handle.as_str()),
         format!(
             "begin={begin1_code} same_ticket={} delete={del_code} receipt_handle={receipt_handle} \
-             handle={} players={player_rows} sessions={session_rows} events={:?}",
+             handle={} players={player_rows} families={family_rows} player_revocations={player_revocations} \
+             events={:?}",
             ticket2 == ticket,
             s.handle,
             deleted_events
@@ -2949,24 +2964,29 @@ async fn deletion_checks(
     );
 
     // ---- [DL2] the client leg ----------------------------------------------------------
-    // EXACTLY 401, never `!= 200`: the same verifier answers 503 when accounts is
-    // unreachable, and a loose assertion would wave through "accounts-svc fell over" as a
-    // proof that the session died with the player. `delete_account` is `#[retry_safe]` and
-    // that does NOT reach a client — the session is gone, so the gateway refuses before
-    // accounts is dispatched at all.
-    let (replay_code, _) = friends_call(
-        ctx,
-        front,
-        &s.token,
-        reqwest::Method::POST,
-        "/accounts/delete",
-        Some(serde_json::json!({ "ticket": &ticket })),
-    )
+    // EXACTLY 401, never `!= 200`: the same verifier answers 503 when its token-state snapshot
+    // is stale, and a loose assertion would wave through "accounts-svc fell over" as a proof
+    // that the token died with the player. The delete's player revocation reaches the gateway
+    // with its next `token_state` pull, so the re-POST is retried until the gateway refuses it
+    // before accounts is dispatched, within `REFUSAL_BOUND` of the delete; until then accounts
+    // answers it from the receipt (`delete_account` is `#[retry_safe]`), appending nothing.
+    let replay = accounts_token_checks::until_refused(deleted_since, || async {
+        let (code, _) = friends_call(
+            ctx,
+            front,
+            &s.token,
+            reqwest::Method::POST,
+            "/accounts/delete",
+            Some(serde_json::json!({ "ticket": &ticket })),
+        )
+        .await?;
+        Ok(code)
+    })
     .await?;
     p.check(
-        &format!("[DL2{tag}] a client re-POST of /accounts/delete with the dead bearer -> exactly 401"),
-        replay_code == 401,
-        format!("code={replay_code} (503 would mean accounts-svc is down, not that the session died)"),
+        &format!("[DL2{tag}] a client re-POST of /accounts/delete with the dead bearer -> exactly 401 within the pull bound"),
+        replay.refused,
+        format!("{replay} (503 would mean the gateway's token state is stale, not that the token died)"),
     );
 
     // ---- [DL2e] the internal-edge leg, split-only --------------------------------------
@@ -3380,8 +3400,9 @@ async fn deletion_checks(
     );
 
     // ---- [DL11] the tombstone write guard -----------------------------------------------------
-    // A really-deleted player is 401 at the gateway and never reaches the guard (F4 revokes
-    // the sessions in the producing transaction), so the guard is reached the only way it can
+    // A really-deleted player is 401 at the gateway and never reaches the guard (F4 writes a
+    // player revocation in the producing transaction, refused from the gateway's next pull; [DL2]
+    // waits for it), so the guard is reached the only way it can
     // be: a `player.deleted` appended straight onto the plane through `asyncevents.append_event`
     // for a player still LIVE in accounts (the `[ML1]` producer shape). That synthetic event
     // fires all seven sweeps against a live player, so `w` is dedicated, consumed once, and never
@@ -4213,9 +4234,11 @@ async fn push_invoke_assertions(
     );
     ph12.disconnect().await;
 
-    // [PH13] a session revoked under a live socket: the invoke path checks the bearer per
-    // invoke, uncached, so the next invoke after self-delete answers Unauthorized as a
-    // result, without waiting for the socket's re-verify tick.
+    // [PH13] a token revoked under a live socket: the invoke path checks the bearer per invoke
+    // against the gateway's token-state snapshot, so once the self-delete's player revocation
+    // arrives with the next `token_state` pull, within `REFUSAL_BOUND` of the delete, an invoke
+    // answers Unauthorized as a result, without waiting for the socket's re-verify tick. Until
+    // then accounts answers `accounts.me` NotFound (the player row is gone), never Unauthorized.
     let (ph13_code, ph13_guest) = create_guest(ctx, base).await?;
     let mut ph13 = PushClient::connect(ws, &ph13_guest.token, "dev-key-client").await?;
     let ph13_ack = matches!(
@@ -4247,17 +4270,36 @@ async fn push_invoke_assertions(
         Some(serde_json::json!({ "ticket": &ph13_ticket })),
     )
     .await?;
-    let ph13_sessions: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM accounts.sessions WHERE player_id::text = $1")
-            .bind(&ph13_guest.player_id)
-            .fetch_one(pool)
-            .await
-            .unwrap_or(-1);
-    let ph13_after = ph13.invoke(2, "accounts.me", serde_json::json!({}), budget).await;
+    let ph13_since = Instant::now();
+    let ph13_families = count_of(
+        pool,
+        "SELECT count(*) FROM accounts.token_families WHERE player_id::text = $1",
+        &ph13_guest.player_id,
+    )
+    .await;
+    let ph13_revocations = count_of(
+        pool,
+        "SELECT count(*) FROM accounts.token_revocations WHERE player_id::text = $1",
+        &ph13_guest.player_id,
+    )
+    .await;
+    // Invokes start only inside the bound; the last one's answer is the verdict.
+    let mut ph13_invokes = 0i64;
+    let mut ph13_after = Err(anyhow::anyhow!("no accounts.me invoke started inside the pull bound"));
+    let mut ph13_waited = Duration::ZERO;
+    while ph13_since.elapsed() <= accounts_token_checks::REFUSAL_BOUND {
+        ph13_waited = ph13_since.elapsed();
+        ph13_invokes += 1;
+        ph13_after = ph13.invoke(1 + ph13_invokes, "accounts.me", serde_json::json!({}), budget).await;
+        if status(&ph13_after).as_deref() == Some("Unauthorized") || ph13_after.is_err() {
+            break;
+        }
+        tokio::time::sleep(accounts_token_checks::PROBE_GAP).await;
+    }
     p.check(
         &format!(
-            "[PH13{tag}] self-delete revokes the session under a live /push socket -> the next \
-             accounts.me invoke answers an Unauthorized result, not a close"
+            "[PH13{tag}] self-delete revokes the token under a live /push socket -> within the pull \
+             bound an accounts.me invoke answers an Unauthorized result, not a close"
         ),
         ph13_code == 201
             && ph13_ack
@@ -4266,12 +4308,15 @@ async fn push_invoke_assertions(
             && ph13_begin_code == 200
             && !ph13_ticket.is_empty()
             && ph13_delete_code == 200
-            && ph13_sessions == 0
+            && ph13_families == 0
+            && ph13_revocations >= 1
             && status(&ph13_after).as_deref() == Some("Unauthorized")
             && err(&ph13_after).as_deref() == Some("unauthorized"),
         format!(
             "guest={ph13_code} ack={ph13_ack} before={ph13_before:?} begin={ph13_begin_code} \
-             delete={ph13_delete_code} sessions={ph13_sessions} after={ph13_after:?} pid={}",
+             delete={ph13_delete_code} families={ph13_families} player_revocations={ph13_revocations} \
+             invokes={ph13_invokes} waited_ms={} after={ph13_after:?} pid={}",
+            ph13_waited.as_millis(),
             ph13_guest.player_id
         ),
     );
@@ -5181,23 +5226,57 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     };
     p.check("[SC1] scheduler.fired proof-tick + audit cursor advanced", sc, "");
 
-    // --- Session prune: scheduler fires accounts-sessions-prune; D prunes on delivery. ---
-    let sp_token = format!("prune-proof-{suffix}");
-    // [SP0] plant a throwaway player + an EXPIRED session (FK needs a real player).
+    // --- Token prune: scheduler fires accounts-sessions-prune; D prunes on delivery. ---
+    // [SP0] plant a throwaway player (the family's FK needs a real one), a dev-client token
+    // family whose access token expired a day ago and that holds no refresh token (a family
+    // that no longer grants), and a player revocation that expired a day ago.
     // Claims the handle in the same statement: a `players` row without one is exactly what
     // accounts' migrate refuses to boot on, and the monolith re-run migrates this DB again.
     let sp_pid: Option<String> = sqlx::query_scalar("WITH h AS (INSERT INTO accounts.handles (display_name_lower, discriminator, player_id) VALUES (lower($1), '0001', gen_random_uuid()) RETURNING player_id, discriminator) INSERT INTO accounts.players (id, display_name, discriminator) SELECT h.player_id, $1, h.discriminator FROM h RETURNING id::text")
         .bind(format!("prune-proof-{suffix}")).fetch_optional(pool).await.ok().flatten();
-    if let Some(pid) = &sp_pid {
-        sqlx::query("INSERT INTO accounts.sessions (token, player_id, expires_at) VALUES ($1, $2::uuid, now() - interval '1 day')")
-            .bind(&sp_token).bind(pid).execute(pool).await.ok();
+    let sp_family: Option<String> = match &sp_pid {
+        Some(pid) => sqlx::query_scalar(
+            "INSERT INTO accounts.token_families (id, player_id, client_id, access_expires_at) \
+             VALUES (gen_random_uuid(), $1::uuid, $2, now() - interval '1 day') RETURNING id::text",
+        )
+        .bind(pid)
+        .bind(accountsapi::DEV_GAME_CLIENT_ID)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten(),
+        None => None,
+    };
+    let sp_revocation: Option<String> = match &sp_pid {
+        Some(pid) => sqlx::query_scalar(
+            "INSERT INTO accounts.token_revocations (player_id, revoked_at, expires_at) \
+             VALUES ($1::uuid, now() - interval '2 days', now() - interval '1 day') RETURNING id::text",
+        )
+        .bind(pid)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten(),
+        None => None,
+    };
+    if let (Some(family), Some(revocation)) = (&sp_family, &sp_revocation) {
         // [SP1] force the seeded prune schedule due NOW.
         sqlx::query("UPDATE scheduler.schedules SET last_fired = to_timestamp(0) WHERE name = 'accounts-sessions-prune'").execute(pool).await.ok();
-        // [SP2] poll until D's prune handler removes the expired row (durable H -> D).
-        let sp = poll_count(pool, "SELECT count(*) FROM accounts.sessions WHERE token=$1", &sp_token, 0).await;
-        p.check("[SP2] expired session pruned (scheduler -> accounts)", sp, "");
+        // [SP2] poll until D's prune handler removes both expired rows (durable H -> D).
+        let family_gone = poll_count(pool, "SELECT count(*) FROM accounts.token_families WHERE id::text = $1", family, 0).await;
+        let revocation_gone =
+            poll_count(pool, "SELECT count(*) FROM accounts.token_revocations WHERE id::text = $1", revocation, 0).await;
+        p.check(
+            "[SP2] expired token family and revocation pruned (scheduler -> accounts)",
+            family_gone && revocation_gone,
+            format!("family_gone={family_gone} revocation_gone={revocation_gone}"),
+        );
     } else {
-        p.check("[SP0] plant throwaway player", false, "insert failed");
+        p.check(
+            "[SP0] plant throwaway player, expired token family and expired revocation",
+            false,
+            format!("player={sp_pid:?} family={sp_family:?} revocation={sp_revocation:?}"),
+        );
     }
 
     // --- Wallet ---------------------------------------------------------------------
@@ -5850,6 +5929,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     wallet_ledger_checks::assertions(ctx, pool, p, &g, &cfg, "").await?;
     // Boxed: `run`'s future sits on the main thread's stack under `block_on`.
     Box::pin(accounts_admin_checks::assertions(ctx, pool, p, &g, &cfg, "")).await?;
+    Box::pin(accounts_token_checks::assertions(ctx, pool, p, &g, &cfg, "")).await?;
     // The hosted sign-in through gateway-svc -> accounts-svc and the per-IP sign-in bucket; its
     // bursts run last in the pass (see the module doc).
     Box::pin(accounts_browser_checks::assertions(ctx, pool, p, &g, &cfg, "")).await?;
@@ -7051,37 +7131,59 @@ async fn federated_assertions(
     let (c2, s2) = post_json(ctx, &refresh_url, serde_json::json!({"refresh_token": r0})).await?;
     let grace = c2 == 200 && s2.get("refresh_token").and_then(|v| v.as_str()) == Some(r1.as_str());
 
+    // The family the kill must revoke, read while its rows still exist.
+    let a9_family: String = sqlx::query_scalar("SELECT family_id::text FROM accounts.refresh_tokens WHERE token = $1")
+        .bind(&r0)
+        .fetch_optional(pool)
+        .await?
+        .unwrap_or_default();
     sqlx::query("UPDATE accounts.refresh_tokens SET used_at = now() - interval '10 minutes' WHERE token = $1")
         .bind(&r0)
         .execute(pool)
         .await?;
 
     let (c3, _) = post_json(ctx, &refresh_url, serde_json::json!({"refresh_token": r0})).await?;
+    let killed_since = Instant::now();
     // The family kill commits on the 401 path, so it is observable from OUTSIDE: the
-    // successor no longer refreshes, the access token minted at rotation no longer
-    // authenticates, and the family's rows are gone.
+    // successor no longer refreshes, the family's rows are gone and its revocation row is
+    // written, and the access token minted at rotation stops authenticating once the gateway's
+    // next `token_state` pull brings that row, within `REFUSAL_BOUND` of the kill.
     let (c4, _) = post_json(ctx, &refresh_url, serde_json::json!({"refresh_token": r1})).await?;
-    let me_code = ctx
-        .http
-        .get(format!("{base}/accounts/me"))
-        .header("X-Api-Key", "dev-key-client")
-        .header("Authorization", format!("Bearer {t1}"))
-        .send()
-        .await?
-        .status()
-        .as_u16();
     let surviving: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM accounts.refresh_tokens WHERE player_id::text = $1",
     )
     .bind(&a9_pid)
     .fetch_one(pool)
     .await?;
+    let families: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM accounts.token_families WHERE player_id::text = $1",
+    )
+    .bind(&a9_pid)
+    .fetch_one(pool)
+    .await?;
+    let family_revocations: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM accounts.token_revocations WHERE family_id::text = $1",
+    )
+    .bind(&a9_family)
+    .fetch_one(pool)
+    .await?;
+    let me = accounts_token_checks::until_refused(killed_since, || async {
+        Ok(accounts_me(ctx, base, &t1).await?.0)
+    })
+    .await?;
     p.check(
-        &format!("[A9{m}] refresh rotates; in-grace replay 200; late replay -> 401 + family dead"),
-        rotated && grace && c3 == 401 && c4 == 401 && me_code == 401 && surviving == 0,
+        &format!("[A9{m}] refresh rotates; in-grace replay 200; late replay -> 401 + family dead, its bearer 401 within the pull bound"),
+        rotated
+            && grace
+            && c3 == 401
+            && c4 == 401
+            && surviving == 0
+            && families == 0
+            && family_revocations == 1
+            && me.refused,
         format!(
-            "rotate={c1} grace={c2}/{grace} late={c3} successor={c4} me={me_code} \
-             surviving_refresh_rows={surviving}"
+            "rotate={c1} grace={c2}/{grace} late={c3} successor={c4} me=({me}) \
+             surviving_refresh_rows={surviving} families={families} family_revocations={family_revocations}"
         ),
     );
 

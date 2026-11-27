@@ -88,8 +88,9 @@ impl SessionVerifier for DevSessionVerifier {
     }
 }
 
-/// How often the pull loop asks `accounts.token_state` for a fresh snapshot.
-pub(crate) const PULL_INTERVAL: Duration = Duration::from_secs(5);
+/// How often the pull loop asks `accounts.token_state` for a fresh snapshot: the contract's
+/// constant, which the split proof bounds revocation latency by.
+pub(crate) const PULL_INTERVAL: Duration = accountsapi::TOKEN_STATE_PULL_INTERVAL;
 /// The bound on one `token_state` call.
 pub(crate) const PULL_TIMEOUT: Duration = Duration::from_secs(4);
 /// The oldest snapshot [`JwtVerifier`] verifies with, measured from the instant its pull
