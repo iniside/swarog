@@ -34,6 +34,15 @@ Every client is made by an operator in the admin portal (Clients page); none is 
   `authorization_code` and `refresh_token` grants. The op path (`/accounts/login`,
   `/accounts/refresh`) refuses it.
 - A client with `authorization_code` must register at least one redirect URI.
+- `urn:ietf:params:oauth:grant-type:device_code` (`grant_types::DEVICE_CODE`) is in the grant
+  picker. A public client only: the portal refuses it for a confidential client, and `/token`
+  answers `unauthorized_client` for a client that does not list it.
+- Each client has a device code lifetime (`oidc_clients.device_code_ttl_secs`), from
+  `MIN_DEVICE_CODE_TTL_SECS` to `MAX_DEVICE_CODE_TTL_SECS` (`modules/accounts/src/clients.rs`);
+  a new client gets `DEFAULT_DEVICE_CODE_TTL_SECS` unless Create client's optional "Device code
+  lifetime" field sets one. The "Device code lifetime" row action on the Clients page changes it.
+  Both forms take a duration (digits and `s`, `m`, `h` or `d`) and refuse a value outside the
+  bounds with a field error; the table's CHECK holds the same bounds.
 - The client's `audience` becomes the `aud` of its access tokens.
 
 ## Authorization code flow
