@@ -38,6 +38,28 @@ pub(crate) struct AccessClaims {
     pub(crate) root_domains: Vec<String>,
 }
 
+/// The `typ` header of an id_token. Both access verifiers accept only [`ACCESS_TOKEN_TYP`], so
+/// an id_token is never taken for an access token.
+#[cfg_attr(not(test), expect(dead_code, reason = "the /token endpoint is its only signer"))]
+pub(crate) const ID_TOKEN_TYP: &str = "JWT";
+
+/// The claims of one id_token (OIDC Core 1.0 section 2). `aud` is the client's id,
+/// `auth_time` when the player logged in, `nonce` the authorization request's when it sent
+/// one.
+#[cfg_attr(not(test), expect(dead_code, reason = "the /token endpoint is its only signer"))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct IdClaims {
+    pub(crate) iss: String,
+    pub(crate) sub: String,
+    pub(crate) aud: String,
+    pub(crate) iat: i64,
+    pub(crate) exp: i64,
+    pub(crate) auth_time: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) nonce: Option<String>,
+    pub(crate) preferred_username: String,
+}
+
 /// `(family_id, player_id, client_id, revoked_at_unix)` of one revoked subject.
 type RevocationRow = (Option<String>, Option<String>, Option<String>, i64);
 
@@ -108,13 +130,23 @@ impl Tokens {
         }
     }
 
-    /// Signs `claims` with the active key. A cache refresh reads the key on `conn`, never on
-    /// a second pool connection: a mint signing inside its transaction passes that
+    /// Signs access token `claims` as `typ` [`ACCESS_TOKEN_TYP`] with the active key.
+    pub(crate) async fn sign(&self, conn: &mut PgConnection, claims: &AccessClaims) -> anyhow::Result<String> {
+        self.sign_typed(conn, ACCESS_TOKEN_TYP, claims).await
+    }
+
+    /// Signs `claims` as `typ` with the active key. A cache refresh reads the key on `conn`,
+    /// never on a second pool connection: a mint signing inside its transaction passes that
     /// transaction's connection, so it cannot wait on the pool while holding one of its own.
-    pub(crate) async fn sign<C: Serialize>(&self, conn: &mut PgConnection, claims: &C) -> anyhow::Result<String> {
+    async fn sign_typed<C: Serialize>(
+        &self,
+        conn: &mut PgConnection,
+        typ: &str,
+        claims: &C,
+    ) -> anyhow::Result<String> {
         let active = self.active_key(conn).await?;
         let mut header = Header::new(Algorithm::ES256);
-        header.typ = Some(ACCESS_TOKEN_TYP.to_string());
+        header.typ = Some(typ.to_string());
         header.kid = Some(active.kid.clone());
         Ok(jsonwebtoken::encode(&header, claims, &active.key)?)
     }
@@ -171,17 +203,32 @@ impl Tokens {
         Ok(self.sign(conn, &self.claims(uuid, uuid, &minted)).await?.len())
     }
 
-    /// Fails when a token of this issuer for a [`SWAROG_AUDIENCE`] client with no root domains
-    /// can be over [`MAX_ACCESS_TOKEN_BYTES`].
-    pub(crate) async fn check_token_size(&self) -> anyhow::Result<()> {
-        let mut conn = self.pool.acquire().await?;
-        let len = self.longest_token_bytes(&mut conn, SWAROG_AUDIENCE, &[]).await?;
+    /// Fails when an access token of this issuer can be over [`MAX_ACCESS_TOKEN_BYTES`]: for a
+    /// client of the default [`SWAROG_AUDIENCE`] and no root domains, or for any client stored
+    /// in `oidc_clients`, read on `conn`.
+    pub(crate) async fn check_token_size(&self, conn: &mut PgConnection) -> anyhow::Result<()> {
+        let len = self.longest_token_bytes(conn, SWAROG_AUDIENCE, &[]).await?;
         if len > MAX_ACCESS_TOKEN_BYTES {
             anyhow::bail!(
                 "accounts: an access token for issuer {} can be {len} bytes, over the {MAX_ACCESS_TOKEN_BYTES} \
                  a verifier accepts. Remedy: a shorter ACCOUNTS_OIDC_ISSUER.",
                 self.issuer
             );
+        }
+        let clients: Vec<(String, String, Vec<String>)> = sqlx::query_as(
+            "SELECT client_id, audience, root_domains FROM accounts.oidc_clients ORDER BY client_id",
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+        for (client_id, audience, root_domains) in clients {
+            let len = self.longest_token_bytes(conn, &audience, &root_domains).await?;
+            if len > MAX_ACCESS_TOKEN_BYTES {
+                anyhow::bail!(
+                    "accounts: an access token for client {client_id} can be {len} bytes, over the \
+                     {MAX_ACCESS_TOKEN_BYTES} a verifier accepts. Remedy: delete the client and create it \
+                     again with a shorter audience or fewer root domains."
+                );
+            }
         }
         Ok(())
     }
@@ -208,6 +255,37 @@ impl Tokens {
             }
         }
         Ok(snapshot)
+    }
+}
+
+#[cfg_attr(not(test), expect(dead_code, reason = "the /token endpoint is its only signer"))]
+impl Tokens {
+    /// The claims of the id_token issued to `client_id` at `iat` for player `sub` of `handle`,
+    /// who logged in at `auth_time`. It lives as long as an access token.
+    pub(crate) fn id_claims(
+        &self,
+        sub: &str,
+        client_id: &str,
+        iat: i64,
+        auth_time: i64,
+        nonce: Option<&str>,
+        handle: &str,
+    ) -> IdClaims {
+        IdClaims {
+            iss: self.issuer.clone(),
+            sub: sub.to_string(),
+            aud: client_id.to_string(),
+            iat,
+            exp: iat.saturating_add(ACCESS_TTL_SECS),
+            auth_time,
+            nonce: nonce.map(str::to_string),
+            preferred_username: handle.to_string(),
+        }
+    }
+
+    /// Signs id_token `claims` as `typ` [`ID_TOKEN_TYP`] with the active key, read on `conn`.
+    pub(crate) async fn sign_id(&self, conn: &mut PgConnection, claims: &IdClaims) -> anyhow::Result<String> {
+        self.sign_typed(conn, ID_TOKEN_TYP, claims).await
     }
 }
 

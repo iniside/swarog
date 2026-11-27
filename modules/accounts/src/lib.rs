@@ -2057,7 +2057,9 @@ impl Module for Accounts {
     /// `spawn_blocking` thread, so the first unknown-user login never pays the
     /// 64 MiB argon2id init cost on an async Tokio worker.
     async fn start(&self, _ctx: &Context) -> anyhow::Result<()> {
-        self.svc().tokens.check_token_size().await?;
+        let mut conn = self.svc().store.pool.acquire().await?;
+        self.svc().tokens.check_token_size(&mut conn).await?;
+        drop(conn);
         tokio::task::spawn_blocking(|| {
             std::sync::LazyLock::force(&DUMMY_HASH);
         })

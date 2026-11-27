@@ -104,7 +104,8 @@ async fn a_swarog_clients_token_gains_only_the_players_handle() {
 async fn the_boot_size_check_passes_the_default_issuer_and_refuses_a_long_one() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
-    svc.tokens.check_token_size().await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    svc.tokens.check_token_size(&mut conn).await.unwrap();
 
     let long = Tokens::new(
         pool.clone(),
@@ -112,8 +113,73 @@ async fn the_boot_size_check_passes_the_default_issuer_and_refuses_a_long_one() 
         format!("https://{}.example/accounts/oidc", "a".repeat(3000)),
         Arc::new(OnceLock::from(dev_kek())),
     );
-    let err = long.check_token_size().await.unwrap_err().to_string();
+    let err = long.check_token_size(&mut conn).await.unwrap_err().to_string();
     assert!(err.contains("ACCOUNTS_OIDC_ISSUER"), "{err}");
+}
+
+/// The boot size check measures every stored client: one whose audience makes its tokens too
+/// long fails it, naming the client. The client is inserted in a rolled-back transaction, so no
+/// other test's boot sees it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_boot_size_check_refuses_an_oversized_stored_client() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let mut tx = pool.begin().await.unwrap();
+    svc.tokens.check_token_size(&mut tx).await.unwrap();
+
+    let client_id = format!("t-oversized-{}", suffix());
+    sqlx::query(
+        "INSERT INTO accounts.oidc_clients (client_id, display_name, grant_types, audience) \
+         VALUES ($1, 'oversized', $2, $3)",
+    )
+    .bind(&client_id)
+    .bind(&accountsapi::grant_types::ALL[..])
+    .bind("a".repeat(accountsapi::MAX_ACCESS_TOKEN_BYTES))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    let err = svc.tokens.check_token_size(&mut tx).await.unwrap_err().to_string();
+    tx.rollback().await.unwrap();
+    assert!(err.contains(&format!("client {client_id}")), "{err}");
+}
+
+/// An id_token is signed by the active key as `typ` JWT with the D7 claims, `aud` the client's
+/// id, and neither access verifier takes it for an access token.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_id_token_is_typ_jwt_and_refused_by_the_access_verifiers() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let tokens = &svc.tokens;
+    let sub = random_uuid(&pool).await;
+    let now = Tokens::unix_now();
+    let mut conn = pool.acquire().await.unwrap();
+
+    let claims = tokens.id_claims(&sub, TEST_CLIENT_ID, now, now - 30, Some("n-0S6_WzA2Mj"), "Tester#0001");
+    let without_nonce = tokens.id_claims(&sub, TEST_CLIENT_ID, now, now - 30, None, "Tester#0001");
+    let token = tokens.sign_id(&mut conn, &claims).await.unwrap();
+    let bare = tokens.sign_id(&mut conn, &without_nonce).await.unwrap();
+
+    let header = jsonwebtoken::decode_header(&token).unwrap();
+    assert_eq!(header.typ.as_deref(), Some(crate::jwt::ID_TOKEN_TYP));
+    assert_eq!(header.alg, jsonwebtoken::Algorithm::ES256);
+    let snapshot = tokens.snapshot().await.unwrap();
+    let jwk = snapshot.keys.iter().find(|k| Some(&k.kid) == header.kid.as_ref()).expect("signed by a live key");
+    let key = jsonwebtoken::DecodingKey::from_ec_components(&jwk.x, &jwk.y).unwrap();
+    let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::ES256);
+    validation.set_issuer(&[&snapshot.issuer]);
+    validation.set_audience(&[TEST_CLIENT_ID]);
+    let decoded = jsonwebtoken::decode::<crate::jwt::IdClaims>(&token, &key, &validation).unwrap().claims;
+    assert_eq!(decoded, claims);
+    assert_eq!(decoded.exp, now + crate::jwt::ACCESS_TTL_SECS);
+
+    let mut names: Vec<String> = unverified_claims(&bare).as_object().unwrap().keys().cloned().collect();
+    names.sort_unstable();
+    assert_eq!(names, ["aud", "auth_time", "exp", "iat", "iss", "preferred_username", "sub"]);
+
+    for id_token in [&token, &bare] {
+        assert_eq!(tokens.verify_access(id_token).await.unwrap(), None, "verify_access took an id_token");
+        assert_eq!(Tokens::verify_against(&snapshot, id_token, now), None, "verify_against took an id_token");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
