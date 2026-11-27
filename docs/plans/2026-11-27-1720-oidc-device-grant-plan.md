@@ -169,9 +169,10 @@ devices" :70); 3b denied.
      status = 'approved' AND redeemed_at IS NULL AND session_digest IS NOT NULL AND expires_at > now()
      RETURNING …`, committed, then mint in a separate transaction (D7).
   All errors are 400 JSON. A lost race between steps falls through to the refusal of a later step, never a
-  5xx.
-- **D7 Mint.** `mint_code_tx` takes a redeemed-grant value (player, client, scope, session, family,
-  auth_time, nonce = None) that also carries (a) the grant name passed to `client_allows_tx` and (b) which
+  5xx. Erratum (review of b1343acf): after a guarded statement loses, the row is read and classified
+  again once, so the settled row gets its own answer; only a second loss in a row answers `slow_down`.
+- **D7 Mint.** `mint_code_tx` takes a redeemed-grant value (player, client, scope, family,
+  auth_time, nonce = None; erratum: no session, the redeem UPDATE alone checks it) that also carries (a) the grant name passed to `client_allows_tx` and (b) which
   table the "kept" check re-reads after the player key share. Both grants share its lock order. The
   answer equals the code exchange: `refresh_token` when the client has the grant, `scope`, and
   `id_token` when the scope has `openid`.
