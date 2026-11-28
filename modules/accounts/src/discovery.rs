@@ -8,11 +8,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 
-use accountsapi::grant_types::{AUTHORIZATION_CODE, REFRESH_TOKEN};
+use accountsapi::grant_types::{AUTHORIZATION_CODE, DEVICE_CODE, REFRESH_TOKEN};
 use accountsapi::scopes;
 
 use crate::signing_keys::SigningKeys;
-
 pub(crate) const DISCOVERY: &str = "/accounts/oidc/.well-known/openid-configuration";
 pub(crate) const JWKS: &str = "/accounts/oidc/jwks";
 
@@ -27,7 +26,7 @@ const CLIENT_AUTH_METHODS: [&str; 3] = ["none", "client_secret_basic", "client_s
 
 /// Both routes; `issuer` is the parsed `ACCOUNTS_OIDC_ISSUER`, whose path is always
 /// `/accounts/oidc`, so its `/jwks`, `/authorize`, `/token` and `/revoke` are [`JWKS`] and the
-/// hosted endpoints of `web`. `grant_types_supported` lists the `/token` grants only.
+/// hosted endpoints of `web`. `grant_types_supported` lists the `/token` grants only, the device grant included.
 pub(crate) fn router(issuer: &str, keys: Arc<SigningKeys>) -> Router {
     let discovery = serde_json::json!({
         "issuer": issuer,
@@ -35,8 +34,9 @@ pub(crate) fn router(issuer: &str, keys: Arc<SigningKeys>) -> Router {
         "authorization_endpoint": format!("{issuer}/authorize"),
         "token_endpoint": format!("{issuer}/token"),
         "revocation_endpoint": format!("{issuer}/revoke"),
+        "device_authorization_endpoint": format!("{issuer}/device_authorization"),
         "response_types_supported": ["code"],
-        "grant_types_supported": [AUTHORIZATION_CODE, REFRESH_TOKEN],
+        "grant_types_supported": [AUTHORIZATION_CODE, REFRESH_TOKEN, DEVICE_CODE],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": CLIENT_AUTH_METHODS,
         "revocation_endpoint_auth_methods_supported": CLIENT_AUTH_METHODS,

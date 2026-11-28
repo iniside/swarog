@@ -34,3 +34,15 @@ fn a_stored_row_with_a_private_member_fails_and_names_it() {
     assert!(!ok, "a stored public_jwk holding `d` must fail [SK3]: {detail}");
     assert!(detail.contains(r#"stored_private=[("k1", ["d"])]"#), "{detail}");
 }
+
+#[test]
+fn the_expected_metadata_names_the_device_endpoint_and_grant() {
+    let fields = d10_fields("https://id.example/accounts/oidc");
+    let get = |name: &str| fields.iter().find(|(n, _)| *n == name).map(|(_, v)| v.clone());
+    assert_eq!(
+        get("device_authorization_endpoint"),
+        Some(json!("https://id.example/accounts/oidc/device_authorization"))
+    );
+    let grants = get("grant_types_supported").unwrap();
+    assert!(grants.as_array().unwrap().contains(&json!(DEVICE_CODE)), "{grants}");
+}

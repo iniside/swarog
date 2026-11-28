@@ -16,8 +16,8 @@
 //!   answer. When [SK3] is red or [SK0] cut the pass short there is no kid to compare, so the pass
 //!   records [SK4] red as "not run" (the cause in its detail) instead of skipping it.
 //! - [SK5] the same document lists the authorization code endpoints under that issuer
-//!   (`authorization_endpoint`, `token_endpoint`, `revocation_endpoint`) and the rest of the D10
-//!   metadata: response type `code`, the `/token` grants, PKCE `S256`, the `none`,
+//!   (`authorization_endpoint`, `token_endpoint`, `revocation_endpoint`, `device_authorization_endpoint`) and the rest of the D10
+//!   metadata: response type `code`, the `/token` grants (the device grant included), PKCE `S256`, the `none`,
 //!   `client_secret_basic` and `client_secret_post` authentication methods of `/token` and
 //!   `/revoke`, `ES256` id_tokens, `public` subjects and `accountsapi::scopes::ALL`.
 //! - [SK0] / [SK0m] report only a fault no check records: a transport error or an unreadable body on
@@ -39,7 +39,7 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use accountsapi::grant_types::{AUTHORIZATION_CODE, REFRESH_TOKEN};
+use accountsapi::grant_types::{AUTHORIZATION_CODE, DEVICE_CODE, REFRESH_TOKEN};
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use splitproof::Running;
@@ -149,8 +149,9 @@ fn d10_fields(issuer: &str) -> Vec<(&'static str, Value)> {
         ("authorization_endpoint", json!(format!("{issuer}/authorize"))),
         ("token_endpoint", json!(format!("{issuer}/token"))),
         ("revocation_endpoint", json!(format!("{issuer}/revoke"))),
+        ("device_authorization_endpoint", json!(format!("{issuer}/device_authorization"))),
         ("response_types_supported", json!(["code"])),
-        ("grant_types_supported", json!([AUTHORIZATION_CODE, REFRESH_TOKEN])),
+        ("grant_types_supported", json!([AUTHORIZATION_CODE, REFRESH_TOKEN, DEVICE_CODE])),
         ("code_challenge_methods_supported", json!(["S256"])),
         ("token_endpoint_auth_methods_supported", auth_methods.clone()),
         ("revocation_endpoint_auth_methods_supported", auth_methods),

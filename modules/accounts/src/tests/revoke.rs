@@ -9,6 +9,7 @@ use super::token::{
 };
 use super::*;
 use crate::web::authorize::AUTHORIZE;
+use crate::web::device::DEVICE_AUTHORIZATION;
 use crate::web::revoke::REVOKE;
 use crate::web::token::TOKEN;
 
@@ -226,8 +227,9 @@ async fn discovery_lists_the_endpoints_under_the_issuer_and_what_they_support() 
         "authorization_endpoint": format!("{origin}{AUTHORIZE}"),
         "token_endpoint": format!("{origin}{TOKEN}"),
         "revocation_endpoint": format!("{origin}{REVOKE}"),
+        "device_authorization_endpoint": format!("{origin}{DEVICE_AUTHORIZATION}"),
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "grant_types_supported": ["authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": auth_methods,
         "revocation_endpoint_auth_methods_supported": auth_methods,
