@@ -152,6 +152,18 @@ _None._
 - [ ] **The enter-code screen shows a lifetime bound, not the lifetime**
   Each client has its own `device_code_ttl_secs` and screen 1 knows no client yet, so it says a code
   expires at most `MAX_DEVICE_CODE_TTL_SECS` after issue. Source: e86554d8; owner deferred (2026-11-28).
+- [ ] **A player deleted mid-approval gets a login redirect, not the generic error**
+  `found()` in modules/accounts/src/web/device.rs answers `Refused::SignedOut` (a 303 to a bare login,
+  no `return_to`) when the signed-in player's row is gone after a code was found. Looking the player up
+  before the code removes both. Source: review of e86554d8 (2026-11-28).
+- [ ] **No test pins escaping on the device pages**
+  User-Agent and client name are attacker-controlled; only the `.html` template names turn on
+  minijinja's auto-escape. A test should issue a code with a `<script>` User-Agent and check the confirm
+  page. Source: review of e86554d8 (2026-11-28).
+- [ ] **The router's expired-decision test stops at the pre-check**
+  The expired approve/deny case in tests/device_pages.rs is refused by `found()`, not by the guarded
+  UPDATE; the UPDATE's own expiry guard is pinned only at store level (tests/device_codes.rs:465-467).
+  Source: review of e86554d8 (2026-11-28).
 
 ### Deferred
 
