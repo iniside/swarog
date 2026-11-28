@@ -4,7 +4,7 @@ Date: 2026-11-27
 Parent: docs/plans/2026-11-24-0004-lore-integration-roadmap-plan.md, Phase A, Step 4.
 Builds on: docs/plans/2026-11-27-1020-oidc-authorization-code-plan.md (A3: `/authorize`, `/token`,
 `/revoke`, `oidc_codes`, the generalised mint, confidential clients).
-Status: approved (owner, 2026-11-27); Step 1 done; Steps 2, 3a and 3b done ("ok to zrob kroki 2 i 3"); Step 4 dispatched ("ok dopisz do todo i zrob krok 4"); Steps 5 and later wait for the owner
+Status: approved (owner, 2026-11-27); Step 1 done; Steps 2, 3a and 3b done ("ok to zrob kroki 2 i 3"); Step 4 landed in e86554d8, review running ("ok, mozesz tak zrobic i mzesz zrobic review"); Steps 5 and later wait for the owner
 Plan review: core-reviewer (opus, high), REJECT with 13 items; all applied below.
 Owner answers (2026-11-27, "na punkty mozesz byc jak rekomendujesz"): D2 per-client lifetime on the
 Clients page, as recommended; D10 "View devices" drawn disabled until roadmap Step 12, as recommended.
@@ -263,7 +263,8 @@ a hand-injected fault (skip the status check, skip the interval check, skip the 
 without CSRF), then green. Then a proof-auditor (opus, high) review.
 
 ### Step 7 [docs-writer, sonnet, medium]: docs
-(a) docs/reference/accounts-oidc.md (routes, the device flow, errors, the lifetime setting, and that the
+(a) docs/reference/accounts-oidc.md (routes, including the approval pages `/accounts/oidc/device`, `/device/approve`
+and `/device/deny` and their accounts entry, the device flow, errors, the lifetime setting, and that the
 Lore client must list `offline_access` and every default scope Lore is configured with), the accounts
 entry and the `/token` wording in .claude/rules/domain-modules.md.
 (b) Lore operators configure the client from it.

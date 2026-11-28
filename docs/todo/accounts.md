@@ -1,6 +1,6 @@
 # Accounts
 
-Last updated: 2026-11-27
+Last updated: 2026-11-28
 
 ## In progress
 
@@ -146,6 +146,12 @@ _None._
   A transient 503 after the redemption commits leaves the row redeemed; the next poll is a replay and gets
   `invalid_grant`. The code grant behaves the same.
   Source: review of 91f2c2a2 (2026-11-27).
+
+### Known limits (oidc-device-grant step 4)
+
+- [ ] **The enter-code screen shows a lifetime bound, not the lifetime**
+  Each client has its own `device_code_ttl_secs` and screen 1 knows no client yet, so it says a code
+  expires at most `MAX_DEVICE_CODE_TTL_SECS` after issue. Source: e86554d8; owner deferred (2026-11-28).
 
 ### Deferred
 
