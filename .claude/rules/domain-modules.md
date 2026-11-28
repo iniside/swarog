@@ -35,7 +35,8 @@ Per-module mechanics live in each `modules/<name>/src/lib.rs` header and the
   live in `accounts.signing_keys` sealed under `ACCOUNTS_SIGNING_KEK`, which is REQUIRED
   (unset, malformed, or a KEK that cannot open a stored key fails startup). It serves
   `/authorize` (code flow, PKCE S256 for every client, no consent screen), `/token`
-  (`authorization_code`, `refresh_token`) and `/revoke` (RFC 7009) under the issuer path. A
+  (`authorization_code`, `refresh_token`, device grant), `/device_authorization` with its
+  approval pages under `/device` (RFC 8628) and `/revoke` (RFC 7009) under the issuer path. A
   code lives 60 s, is single-use and bound to the browser session (`ON DELETE SET NULL`, so
   signing out kills it); a second redemption is refused and revokes the first one's tokens.
   A confidential client holds only `authorization_code` and `refresh_token` and the op path
